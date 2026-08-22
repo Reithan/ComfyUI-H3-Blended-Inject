@@ -84,6 +84,8 @@ def _run_sampler(  # pragma: no cover
     start_at_step: int,
     end_at_step: int,
     return_with_leftover_noise: str,
+    target_rows: int,
+    audio_ticks: int,
 ) -> tuple[dict[str, Any]]:
     """GPU/ComfyUI sampling pipeline — not CPU-testable.
 
@@ -139,18 +141,18 @@ def _run_sampler(  # pragma: no cover
         row_idx = row_s.row_idx
         inject_at_row = constants.frame_to_row(inj.inject_at)
         inject_start_tick = constants.video_row_to_audio_tick(inject_at_row)
-        tick = constants.video_row_to_audio_tick(row_idx)
-        clip_tick = tick - inject_start_tick
         n_clip_ticks = int(inj.audio_latent.shape[-1])
-        if clip_tick < 0 or clip_tick >= n_clip_ticks:
-            continue
-        audio_row_original[tick] = inj.audio_latent[:, :, :, clip_tick : clip_tick + 1]
-        audio_row_noise[tick] = draw_row_noise(
-            noise_seed,
-            audio_row_original[tick].shape,
-            device=audio_row_original[tick].device,
-            dtype=audio_row_original[tick].dtype,
-        )
+        for tick in constants.audio_tick_range(row_idx, target_rows, audio_ticks):
+            clip_tick = tick - inject_start_tick
+            if clip_tick < 0 or clip_tick >= n_clip_ticks:
+                continue
+            audio_row_original[tick] = inj.audio_latent[:, :, :, clip_tick : clip_tick + 1]
+            audio_row_noise[tick] = draw_row_noise(
+                noise_seed,
+                audio_row_original[tick].shape,
+                device=audio_row_original[tick].device,
+                dtype=audio_row_original[tick].dtype,
+            )
 
     # --- Step 7: Derive audio_scale_factor from model_sampling if available. ---
     # audio_scale = sigma_shift_video / sigma_shift_audio = 12.0 / 3.0 = 4.0
@@ -186,6 +188,8 @@ def _run_sampler(  # pragma: no cover
         audio_row_noise,
         audio_scale_factor,
         latent_shapes=latent_shapes,
+        target_rows=target_rows,
+        audio_ticks=audio_ticks,
     )
     m.model_options = {**m.model_options, "model_function_wrapper": wrapper}
 
@@ -797,6 +801,8 @@ class H3InjectSampler:
             start_at_step=start_at_step,
             end_at_step=end_at_step,
             return_with_leftover_noise=return_with_leftover_noise,
+            target_rows=target_rows,
+            audio_ticks=audio_ticks,
         )
 
 
