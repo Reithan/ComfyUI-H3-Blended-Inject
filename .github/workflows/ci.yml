@@ -38,3 +38,38 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  diff-coverage:
+    # Require >= 90% BRANCH coverage on changed/new code only (not the whole
+    # tree, not line/statement coverage). Only meaningful on PRs, where there is
+    # a base branch to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group dev --python 3.12
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin ${{ github.base_ref }}
+
+      - name: Run tests with branch coverage
+        run: uv run pytest --cov=. --cov-branch --cov-report=xml
+
+      - name: Enforce 90% branch coverage on the diff
+        run: >-
+          uv run diff-cover coverage.xml
+          --compare-branch=origin/${{ github.base_ref }}
+          --branch-coverage
+          --fail-under=90
