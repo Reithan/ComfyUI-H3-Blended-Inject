@@ -202,7 +202,7 @@ def _run_sampler(  # pragma: no cover
 
     noise = None
     if not disable_noise:
-        noise = comfy.sample.prepare_noise(samples, noise_seed, noise_mask=None)
+        noise = comfy.sample.prepare_noise(samples, noise_seed)
 
     # H3 is CFG-distilled: when no negative is provided, pass an empty list so
     # ComfyUI's sampling_function skips the uncond evaluation pass entirely.
