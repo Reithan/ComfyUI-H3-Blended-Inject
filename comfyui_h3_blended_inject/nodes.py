@@ -577,7 +577,6 @@ class H3InjectSampler:
                 "sampler_name": (samplers,),
                 "scheduler": (schedulers,),
                 "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
                 "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
                 "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
@@ -586,6 +585,18 @@ class H3InjectSampler:
                     {"tooltip": "Return the latent with leftover noise (for chained samplers)."},
                 ),
                 "inject_list": (INJECT_LIST,),
+            },
+            "optional": {
+                "negative": (
+                    "CONDITIONING",
+                    {
+                        "tooltip": (
+                            "Optional. H3 is CFG-distilled and runs with no uncond by default — "
+                            "leave unconnected for standard H3 sampling. Connect a negative "
+                            "conditioning to enable CFG / NRS-style guidance."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -604,12 +615,12 @@ class H3InjectSampler:
         sampler_name: str,
         scheduler: str,
         positive: Any,
-        negative: Any,
         latent_image: dict[str, Any],
         start_at_step: int,
         end_at_step: int,
         return_with_leftover_noise: str,
         inject_list: InjectList,
+        negative: Any | None = None,
     ) -> tuple[dict[str, Any]]:
         """Run the H3 sampler with hold-and-release inject.
 
@@ -631,8 +642,6 @@ class H3InjectSampler:
             Scheduler name string (from ``comfy.samplers.KSampler.SCHEDULERS``).
         positive:
             Positive conditioning tensor.
-        negative:
-            Negative conditioning tensor.
         latent_image:
             ComfyUI LATENT dict with ``"samples"`` key.
         start_at_step:
@@ -643,6 +652,10 @@ class H3InjectSampler:
             ``"enable"`` to return the latent without final denoising (for chained samplers).
         inject_list:
             Ordered list of :class:`~comfyui_h3_blended_inject.schedule.Inject` instances.
+        negative:
+            Optional negative conditioning.  ``None`` (the default) means "no uncond" —
+            the H3 CFG-distilled default.  When provided, it is forwarded verbatim to the
+            sampler for CFG / NRS-style guidance.
 
         Returns
         -------
