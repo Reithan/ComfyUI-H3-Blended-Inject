@@ -34,8 +34,12 @@ class Inject:
     Attributes
     ----------
     inject_at:
-        Row index in the target latent where this inject begins.  Must be a multiple of 17
-        after snapping (see :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`).
+        Latent FRAME index in the target latent where this inject begins.  Must be a
+        multiple of 17 frames after snapping
+        (see :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`).
+        The fade indices (start_fade_in, start_keyframes, end_keyframes, end_fade_out) are
+        **clip frame indices** — positions within this inject's own source content.
+        Clip frame ``k`` maps to latent frame ``inject_at + k``.
     start_fade_in:
         Source clip frame index where the fade-in begins.  Denoise = 1.0 here.
     start_keyframes:
@@ -143,7 +147,7 @@ def merge_schedule(
     """
     row_map: dict[int, tuple[Inject, float]] = {}
     for inj in inject_list:
-        denoise_values = evaluate_envelope(
+        for row_idx, d in evaluate_envelope(
             inj.start_fade_in,
             inj.start_keyframes,
             inj.end_keyframes,
@@ -153,9 +157,7 @@ def merge_schedule(
             inj.source_length,
             target_rows,
             inj.inject_at,
-        )
-        for i, d in enumerate(denoise_values):
-            row_idx = inj.inject_at + i
+        ):
             if 0 <= row_idx < target_rows:
                 row_map[row_idx] = (inj, d)  # last writer wins
     return [
