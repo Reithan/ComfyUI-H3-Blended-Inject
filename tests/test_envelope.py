@@ -462,7 +462,7 @@ def test_evaluate_envelope_hold_region_row_equals_min_denoise():
     result = evaluate_envelope(
         start_fade_in=0,
         start_keyframes=5,  # hold starts at clip frame 5
-        end_keyframes=9,  # hold ends at clip frame 9 (row 2 centers 5.5-8.5 fully in [5,9])
+        end_keyframes=10,  # exclusive: last hold frame = ekf-1=9 (row 2 centers 5.5-8.5 all <= 9)
         end_fade_out=17,
         min_denoise=min_denoise,
         interpolation_type="linear",
@@ -471,7 +471,7 @@ def test_evaluate_envelope_hold_region_row_equals_min_denoise():
         inject_at=0,
     )
     # Row 2 centers (inject_at=0): latent row 2 = clip row 2 = centers (5.5,6.5,7.5,8.5).
-    # All are in [5,9], so row 2 gets exactly min_denoise.
+    # All are in [5, ekf-1=9], so row 2 gets exactly min_denoise.
     row_map = {r: d for r, d in result}
     assert 2 in row_map, "row 2 should be included"
     assert row_map[2] == pytest.approx(min_denoise)
@@ -506,12 +506,12 @@ def test_evaluate_envelope_hold_rows_with_zero_min_denoise_yield_zero():
     """Rows fully inside the hold region with min_denoise=0 must produce denoise exactly 0.0.
 
     Row 3 covers clip centers (9.5,10.5,11.5,12.5) with inject_at=0.
-    Hold region [9, 13] contains all four centers.
+    Hold region [9, ekf-1=13] contains all four centers.
     """
     result = evaluate_envelope(
         start_fade_in=0,
         start_keyframes=9,
-        end_keyframes=13,
+        end_keyframes=14,  # exclusive: last hold frame = ekf-1=13 (centers 9.5-12.5 all <= 13)
         end_fade_out=20,
         min_denoise=0.0,
         interpolation_type="linear",
@@ -571,18 +571,18 @@ def test_evaluate_envelope_still_inject_out_of_bounds_returns_empty():
 
 
 def test_is_row_exactly_zero_true_when_min_denoise_zero_and_fully_in_hold():
-    """min_denoise==0 and all clip centers in hold [skf, ekf] → True.
+    """min_denoise==0 and all clip centers in hold [skf, ekf-1] → True.
 
     Row 1 with inject_at=0 has clip centers (1.5, 2.5, 3.5, 4.5).
-    Hold [1, 5] contains all four centers (4.5 <= 5).
+    Hold [1, ekf-1=5] contains all four centers (4.5 <= ekf-1=5).
     """
     assert (
         is_row_exactly_zero(
             row_idx=1,
             start_fade_in=0,
             start_keyframes=1,
-            end_keyframes=5,
-            end_fade_out=6,
+            end_keyframes=6,  # exclusive: ekf-1=5 is the last hold frame; 4.5 <= 5
+            end_fade_out=7,
             min_denoise=0.0,
             inject_at=0,
         )
@@ -667,13 +667,13 @@ def test_is_row_exactly_zero_consistent_with_evaluate_envelope_zero():
     """is_row_exactly_zero(r) is True iff evaluate_envelope yields denoise exactly 0.0 for r.
 
     Row 3 with inject_at=0: clip centers (9.5,10.5,11.5,12.5).
-    Hold [9, 13] contains all centers. min_denoise=0 → both is_row_exactly_zero=True and
-    averaged denoise=0.0.
+    Hold [9, ekf-1=13] contains all centers. min_denoise=0 → both is_row_exactly_zero=True
+    and averaged denoise=0.0.
     """
     inject_at = 0
     row_idx = 3
     start_keyframes = 9
-    end_keyframes = 13
+    end_keyframes = 14  # exclusive: ekf-1=13 is the last hold frame; 12.5 <= 13
 
     zero_check = is_row_exactly_zero(
         row_idx=row_idx,
@@ -890,3 +890,78 @@ class TestHalfOpenEnvelopeAnchorRegression:
         )
         assert len(result) > 0, "Should have at least one row"
         assert all(d < 1.0 for _, d in result), "All rows should have denoise < 1.0"
+
+
+# ---------------------------------------------------------------------------
+# end_keyframes exclusive regression tests — FAIL before COMMIT 3, PASS after
+# ---------------------------------------------------------------------------
+
+
+class TestExclusiveEndKeyframesRegression:
+    """Regression tests for the exclusive end_keyframes boundary (half-open hold region).
+
+    Hold region = [start_keyframes, end_keyframes).  end_keyframes is the FIRST fade-out
+    frame; the last held frame is end_keyframes - 1.
+
+    Every test in this class FAILS with the old inclusive end_keyframes and PASSES after
+    the COMMIT 3 fix.
+    """
+
+    def test_denoise_at_end_keyframes_is_above_min(self):
+        """At t = end_keyframes exactly, denoise must be > min_denoise (fade-out has started).
+
+        OLD: hold branch `t <= ekf` fires → min_denoise.  FAILS assertion `> min_denoise`.
+        NEW: hold branch `t <= ekf-1` does not fire → fade-out → denoise > min_denoise.
+        """
+        sfi, skf, ekf, efo = 0, 3, 8, 12
+        min_d = 0.3
+        d_at_ekf_minus_1 = _denoise_at_frame_time(
+            float(ekf - 1), sfi, skf, ekf, efo, min_d, "linear"
+        )
+        d_at_ekf = _denoise_at_frame_time(float(ekf), sfi, skf, ekf, efo, min_d, "linear")
+        assert d_at_ekf_minus_1 == pytest.approx(min_d), (
+            f"t=ekf-1 should be exactly min_denoise={min_d}, got {d_at_ekf_minus_1}"
+        )
+        assert d_at_ekf > min_d, (
+            f"t=ekf should be above min_denoise={min_d} (fade-out started), got {d_at_ekf}"
+        )
+
+    def test_mirror_symmetry_under_exclusive_endpoints(self):
+        """sfi=0, skf=2, ekf=15, efo=17 (linear, min_denoise=0.0): the ramp is symmetric.
+
+        Under the half-open model:
+          anchor = -1, last-hold = ekf-1 = 14, efo-anchor = 18
+          t=0 -> fade_t=1/3 -> 2/3     t=16 -> fade_t=2/3 -> 2/3  (equal)
+          t=1 -> fade_t=2/3 -> 1/3     t=15 -> fade_t=1/3 -> 1/3  (equal)
+          t=2..14 -> 0.0
+
+        OLD (inclusive ekf=15): t=15 in hold (15<=15) → 0.0 ≠ t=1 → 0.5 (sfi-anchor-less model).
+        FAILS before: frame 1 ≠ frame 15.
+        """
+        sfi, skf, ekf, efo = 0, 2, 15, 17
+
+        def d(t: float) -> float:
+            return _denoise_at_frame_time(t, sfi, skf, ekf, efo, 0.0, "linear")
+
+        assert d(0) == pytest.approx(d(16)), f"frame 0 ({d(0)}) != frame 16 ({d(16)})"
+        assert d(1) == pytest.approx(d(15)), f"frame 1 ({d(1)}) != frame 15 ({d(15)})"
+        for t in range(2, 15):
+            assert d(float(t)) == pytest.approx(0.0), f"frame {t} should be 0.0, got {d(float(t))}"
+
+    def test_is_row_exactly_zero_false_when_max_center_equals_end_keyframes_minus_half(self):
+        """A row whose highest center is ekf - 0.5 is NOT exactly zero under the new model.
+
+        Row 1, skf=1, ekf=5: centers (1.5, 2.5, 3.5, 4.5).  Highest center = 4.5 = ekf - 0.5.
+        OLD: all <= ekf=5 → is_row_exactly_zero=True (with min_denoise=0).  FAILS assertion.
+        NEW: 4.5 > ekf-1=4 → not all in hold → is_row_exactly_zero=False.  PASSES.
+        """
+        result = is_row_exactly_zero(
+            row_idx=1,
+            start_fade_in=0,
+            start_keyframes=1,
+            end_keyframes=5,
+            end_fade_out=8,
+            min_denoise=0.0,
+            inject_at=0,
+        )
+        assert result is False, "center 4.5 = ekf-0.5 falls outside hold [skf=1, ekf-1=4]"
