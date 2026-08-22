@@ -24,7 +24,7 @@ from typing import Any
 
 import torch
 
-from comfyui_h3_blended_inject.constants import video_row_to_audio_tick
+from comfyui_h3_blended_inject.constants import audio_tick_range
 from comfyui_h3_blended_inject.schedule import RowSchedule
 
 
@@ -106,9 +106,9 @@ def derive_mask(
             if 0 <= r.row_idx < video_rows:
                 video_zeros[r.row_idx] = True
         if r.audio_frozen:
-            tick = video_row_to_audio_tick(r.row_idx)
-            if 0 <= tick < audio_ticks:
-                audio_zeros[tick] = True
+            for tick in audio_tick_range(r.row_idx, video_rows, audio_ticks):
+                if 0 <= tick < audio_ticks:
+                    audio_zeros[tick] = True
 
     if video_component_shape is None:
         # --- Non-nested (dict) path — backward-compatible ---
