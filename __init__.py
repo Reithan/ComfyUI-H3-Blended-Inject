@@ -6,7 +6,8 @@ ComfyUI entry point. ComfyUI imports this module from ``custom_nodes/`` and read
 Node implementations live in the ``comfyui_h3_blended_inject`` package. They are
 kept separate from this entry point so the pure-logic modules (envelope,
 schedule, sanitization, derived mask) can be unit-tested without a running
-ComfyUI. The mappings below are empty until the nodes land.
+ComfyUI. Both mappings are re-exported directly from
+``comfyui_h3_blended_inject.nodes``.
 """
 
 from comfyui_h3_blended_inject.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
