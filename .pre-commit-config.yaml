@@ -1,0 +1,43 @@
+# Install the hooks once per clone with:  uv run pre-commit install
+# This registers both the pre-commit and pre-push stages (see hook types below).
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: local
+    hooks:
+      # Guard: never commit or push directly on main. Runs on both stages.
+      - id: forbid-main-commit
+        name: forbid committing directly to main
+        entry: scripts/forbid-main.sh commit
+        language: script
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+      - id: forbid-main-push
+        name: forbid pushing directly to main
+        entry: scripts/forbid-main.sh push
+        language: script
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+      # Heavy check: run the test suite before pushing (mirrors CI).
+      - id: pytest
+        name: run tests before push
+        entry: uv run pytest
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+  # Fast checks and autofixes on commit.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        name: ruff lint (autofix)
+        args: [--fix]
+        stages: [pre-commit]
+      - id: ruff-format
+        stages: [pre-commit]
