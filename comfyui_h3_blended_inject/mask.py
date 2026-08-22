@@ -23,6 +23,7 @@ from typing import Any
 
 import torch
 
+from comfyui_h3_blended_inject.constants import video_row_to_audio_tick
 from comfyui_h3_blended_inject.schedule import RowSchedule
 
 
@@ -62,7 +63,18 @@ def derive_mask(
         This dict is the value that gets stored under the ``"noise_mask"`` key of the
         ComfyUI latent dict via :func:`apply_derived_mask`.
     """
-    raise NotImplementedError("derive_mask: build video and audio mask tensors from schedule")
+    video_mask = torch.ones(1, video_rows, dtype=torch.float32)
+    audio_mask = torch.ones(1, audio_ticks, dtype=torch.float32)
+
+    for r in schedule:
+        if r.denoise == 0.0:
+            video_mask[0, r.row_idx] = 0.0
+        if r.audio_frozen:
+            tick = video_row_to_audio_tick(r.row_idx)
+            if tick < audio_ticks:
+                audio_mask[0, tick] = 0.0
+
+    return {"video_mask": video_mask, "audio_mask": audio_mask}
 
 
 def apply_derived_mask(
@@ -114,4 +126,7 @@ def apply_derived_mask(
             UserWarning,
             stacklevel=2,
         )
-    raise NotImplementedError("apply_derived_mask: call derive_mask and write into latent copy")
+    mask = derive_mask(schedule, video_rows, audio_ticks)
+    new_latent = dict(latent)
+    new_latent["noise_mask"] = mask
+    return new_latent

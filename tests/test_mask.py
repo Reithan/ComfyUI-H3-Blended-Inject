@@ -275,7 +275,7 @@ def test_property_video_mask_all_nonzero_positions_are_one(schedule):
 def test_property_audio_mask_zero_set_equals_frozen_ticks(schedule):
     """audio_mask zero positions == ticks corresponding to audio_frozen rows."""
     video_rows = 10
-    audio_ticks = 32
+    audio_ticks = 64
     result = derive_mask(schedule, video_rows=video_rows, audio_ticks=audio_ticks)
     audio_mask = result["audio_mask"][0]
 
