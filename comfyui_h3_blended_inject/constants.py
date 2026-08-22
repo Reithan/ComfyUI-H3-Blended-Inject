@@ -184,6 +184,51 @@ def video_row_to_audio_tick(row_idx: int) -> int:
     return round(start_frame * AUDIO_HZ / FPS)
 
 
+def audio_tick_range(row_idx: int, total_rows: int, audio_ticks: int) -> range:
+    """Return the range of audio tick indices owned by video row ``row_idx``.
+
+    Row ``r`` owns the half-open interval ``[start, end)`` where:
+
+    - ``start = video_row_to_audio_tick(row_idx)``, clamped to ``[0, audio_ticks)``.
+    - ``end = video_row_to_audio_tick(row_idx + 1)`` for all rows except the last.
+    - ``end = audio_ticks`` for the final row (``row_idx == total_rows - 1``).
+    - ``end`` is further clamped to ``audio_ticks``.
+
+    Adjacent rows' ranges are contiguous (no gap, no overlap), and together they tile
+    ``[0, audio_ticks)`` exactly when ``audio_ticks == audio_ticks_for_rows(total_rows)``.
+
+    Parameters
+    ----------
+    row_idx:
+        Zero-based latent video row index.  Must be non-negative.
+    total_rows:
+        Total number of latent video rows (the ``target_rows`` from the sampler).
+    audio_ticks:
+        Total number of audio ticks (the ``audio_ticks`` from the sampler).
+
+    Returns
+    -------
+    range
+        Half-open integer range ``[start, end)`` of audio tick indices for this row.
+        May be empty if ``row_idx`` is beyond the audio extent.
+
+    Raises
+    ------
+    ValueError
+        If ``row_idx`` is negative.
+    """
+    if row_idx < 0:
+        raise ValueError(f"row_idx must be non-negative, got {row_idx}")
+    start = max(0, video_row_to_audio_tick(row_idx))
+    if row_idx >= total_rows - 1:
+        end = audio_ticks
+    else:
+        end = video_row_to_audio_tick(row_idx + 1)
+    start = min(start, audio_ticks)
+    end = min(end, audio_ticks)
+    return range(start, end)
+
+
 def audio_ticks_for_rows(n_rows: int) -> int:
     """Return the number of audio ticks in the audio latent for a clip with ``n_rows`` video rows.
 
