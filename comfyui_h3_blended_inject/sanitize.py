@@ -17,23 +17,25 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
+from comfyui_h3_blended_inject.constants import frame_to_row
+
 # H3 audio constants (matches nodes.py from the motion-context reference).
 _FPS: int = 24
 _AUDIO_HZ: float = 40.0
 
 
 def snap_inject_at(inject_at: int) -> int:
-    """Snap ``inject_at`` down to the nearest multiple of 17 and warn if a snap occurred.
+    """Snap ``inject_at`` down to the nearest multiple of 17 frames and warn if a snap occurred.
 
-    ``inject_at`` must align to the 17-frame row-group boundary so the inject starts at a
-    valid token boundary in the target latent.  Values that are not already multiples of 17
-    are silently rounded **down** (floor snap) and a :func:`warnings.warn` is issued with
-    the original and snapped values.
+    ``inject_at`` is a **latent FRAME index** indicating where the inject begins in the
+    target latent.  It must align to the 17-frame row-group boundary so the inject starts at
+    a valid token boundary.  Values that are not already multiples of 17 are rounded **down**
+    (floor snap) and a :func:`warnings.warn` is issued with the original and snapped values.
 
     Parameters
     ----------
     inject_at:
-        Requested start row index in the target latent.  Must be non-negative.
+        Requested latent FRAME index in the target latent.  Must be non-negative.
 
     Returns
     -------
@@ -273,7 +275,7 @@ def validate_envelope_indices(
     end_fade_out: int,
     source_length: int,
     target_rows: int,
-    inject_at_row: int,
+    inject_at: int,
 ) -> None:
     """Validate envelope index ordering and bounds; raise with offending values on violation.
 
@@ -283,25 +285,26 @@ def validate_envelope_indices(
     Bounds constraints:
     - All indices must be >= 0.
     - ``end_fade_out`` must be < ``source_length``.
-    - The row span of the envelope (from ``inject_at_row`` to the row containing
-      ``inject_at_row + end_fade_out``) must fit within ``target_rows``.
+    - The last latent frame the envelope touches is ``inject_at + end_fade_out``; the row
+      containing that latent frame (``frame_to_row(inject_at + end_fade_out)``) must be
+      ``< target_rows``.
 
     Parameters
     ----------
     start_fade_in:
-        Source frame index where fade-in begins.
+        Clip frame index where fade-in begins.
     start_keyframes:
-        Source frame index where hold begins.
+        Clip frame index where hold begins.
     end_keyframes:
-        Source frame index where hold ends.
+        Clip frame index where hold ends.
     end_fade_out:
-        Source frame index where fade-out ends.
+        Clip frame index where fade-out ends.
     source_length:
         Total number of source frames in the inject content.
     target_rows:
         Total number of rows in the target latent.
-    inject_at_row:
-        Row index in the target latent where the inject starts.
+    inject_at:
+        Latent FRAME index in the target latent where the inject starts.
 
     Returns
     -------
@@ -351,11 +354,12 @@ def validate_envelope_indices(
             f"end_fade_out={end_fade_out} must be < source_length={source_length}. {indices_str}"
         )
 
-    # Check row span fits within target_rows.
-    span_end = inject_at_row + end_fade_out
-    if span_end >= target_rows:
+    # Check that the last row the envelope touches fits within target_rows.
+    # Convert the last latent frame to a row index (frame→row, not mixed units).
+    last_row = frame_to_row(inject_at + end_fade_out)
+    if last_row >= target_rows:
         raise ValueError(
-            f"Row span exceeds target: inject_at_row={inject_at_row} + "
-            f"end_fade_out={end_fade_out} = {span_end} >= target_rows={target_rows}. "
-            f"{indices_str}"
+            f"Envelope span exceeds target: frame_to_row(inject_at={inject_at} + "
+            f"end_fade_out={end_fade_out}) = last_row={last_row} >= "
+            f"target_rows={target_rows}. {indices_str}"
         )

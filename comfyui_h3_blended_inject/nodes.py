@@ -67,8 +67,11 @@ class H3AddInject:
                         "max": 10000,
                         "step": 17,
                         "tooltip": (
-                            "Row index in the target latent where this inject begins. "
-                            "Snapped down to the nearest multiple of 17. "
+                            "Latent FRAME index in the target latent where this inject begins. "
+                            "Snapped down to the nearest multiple of 17 frames. "
+                            "The fade indices (start_fade_in, start_keyframes, end_keyframes, "
+                            "end_fade_out) are CLIP frame indices — positions within the "
+                            "injected clip's own content, not in the target latent. "
                             "Positions that are not multiples of 51 incur an audio-tick "
                             "rounding error of up to ~12.5 ms (a warning is issued)."
                         ),
@@ -208,7 +211,8 @@ class H3AddInject:
         Parameters
         ----------
         inject_at:
-            Requested start row in the target latent (snapped down to 17n internally).
+            Requested latent FRAME index in the target latent where the inject begins
+            (snapped down to the nearest multiple of 17 frames internally).
         start_fade_in:
             Source frame where fade-in begins.
         start_keyframes:
