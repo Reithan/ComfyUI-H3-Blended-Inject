@@ -397,6 +397,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -441,6 +443,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -486,6 +490,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         result = wrapper(
             lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
@@ -542,6 +548,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=audio_scale,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         result = wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -603,6 +611,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         wrapper(
             lambda *a, **kw: flat_zeros.clone(),  # noqa: ARG005
@@ -650,6 +660,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -700,6 +712,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -747,6 +761,8 @@ class TestBuildModelFunctionWrapper:
             audio_noise,
             audio_scale_factor=1.0,
             latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
         )
         result = wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
@@ -754,6 +770,63 @@ class TestBuildModelFunctionWrapper:
         assert torch.allclose(result, packed_input, atol=1e-7), (
             "Non-held wrapper: result must equal input when no rows are held"
         )
+
+    def test_wrapper_accepts_target_rows_and_audio_ticks_params(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """build_model_function_wrapper must accept target_rows and audio_ticks kwargs.
+
+        FAILS before fix: TypeError (unexpected keyword argument).
+        PASSES after: params accepted, full tick range gets tick_denoise entries.
+        """
+        denoise = 0.2
+        sigma = 0.8
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        sigma_audio = constants.time_shift_sigma(sigma)
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        audio_in = unpacked_in[1]
+
+        # All audio ticks in audio_orig should be held (full range check)
+        for j in audio_orig:
+            if is_held(sigma_audio, denoise):
+                expected = audio_internal_scale(
+                    hold_value(audio_orig[j], audio_noise[j], sigma_audio),
+                    sigma_audio,
+                    1.0,
+                )
+                actual = audio_in[:, :, :, j : j + 1]
+                assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
+                    f"Audio tick {j} must be held when target_rows/audio_ticks provided"
+                )
 
 
 # ---------------------------------------------------------------------------
