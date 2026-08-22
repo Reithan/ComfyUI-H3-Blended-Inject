@@ -384,3 +384,164 @@ class TestApplyDerivedMaskWarnings:
         with pytest.warns(UserWarning):
             result = apply_derived_mask(latent, [], video_rows=5, audio_ticks=8)
         assert result["noise_mask"] is not foreign_mask
+
+
+# ---------------------------------------------------------------------------
+# Nested NestedTensor mask path (new in NestedTensor fix)
+# ---------------------------------------------------------------------------
+#
+# When video_component_shape and audio_component_shape are provided to derive_mask,
+# the mask must be a NestedTensor (via factory) with FULL component shapes —
+# video [B,C_v,T,Hl,Wl] and audio [B,C_a,2,audio_t] — with 0/1 values expanded
+# across all channels and spatial dims.  Tests use a fake factory that returns a
+# simple namespace so comfy is not imported.
+
+
+class FakeNestedTensor:
+    """Minimal stand-in for comfy.nested_tensor.NestedTensor."""
+
+    def __init__(self, video_mask: torch.Tensor, audio_mask: torch.Tensor) -> None:
+        self.tensors = [video_mask, audio_mask]
+
+
+def _fake_nested_factory(video_mask: torch.Tensor, audio_mask: torch.Tensor) -> FakeNestedTensor:
+    return FakeNestedTensor(video_mask, audio_mask)
+
+
+# Shared component shapes for the nested-mask tests.
+# Video: B=1, C=24, T=5, Hl=4, Wl=4  —  audio: B=1, C=32, 2, audio_t=7
+_V_SHAPE = (1, 24, 5, 4, 4)
+_A_SHAPE = (1, 32, 2, 7)
+_VIDEO_ROWS = _V_SHAPE[2]  # 5
+_AUDIO_TICKS = _A_SHAPE[3]  # 7
+
+
+class TestDeriveMaskNestedPath:
+    """derive_mask: with component shapes + factory → NestedTensor with full shapes."""
+
+    def _run(self, schedule=None):
+        if schedule is None:
+            schedule = []
+        return derive_mask(
+            schedule,
+            video_rows=_VIDEO_ROWS,
+            audio_ticks=_AUDIO_TICKS,
+            video_component_shape=_V_SHAPE,
+            audio_component_shape=_A_SHAPE,
+            nested_factory=_fake_nested_factory,
+        )
+
+    def test_returns_nested_tensor_not_dict(self):
+        """With component shapes, result must not be a plain dict."""
+        result = self._run()
+        assert not isinstance(result, dict), (
+            "derive_mask must return a NestedTensor (not a dict) when component shapes given"
+        )
+
+    def test_video_mask_full_shape(self):
+        """Video mask must have the full component shape [B,C,T,Hl,Wl]."""
+        result = self._run()
+        assert result.tensors[0].shape == torch.Size(_V_SHAPE)
+
+    def test_audio_mask_full_shape(self):
+        """Audio mask must have the full component shape [B,C,2,audio_t]."""
+        result = self._run()
+        assert result.tensors[1].shape == torch.Size(_A_SHAPE)
+
+    def test_video_mask_all_ones_empty_schedule(self):
+        """Empty schedule → all video mask entries are 1 (generate)."""
+        result = self._run(schedule=[])
+        assert torch.all(result.tensors[0] == 1.0)
+
+    def test_audio_mask_all_ones_empty_schedule(self):
+        """Empty schedule → all audio mask entries are 1 (generate)."""
+        result = self._run(schedule=[])
+        assert torch.all(result.tensors[1] == 1.0)
+
+    def test_video_mask_zero_row_expanded_across_channels_and_spatial(self):
+        """A d=0 row → ALL channels and spatial positions at that T slice are 0."""
+        target_row = 2  # within the 5-row range
+        schedule = [row(target_row, denoise=0.0)]
+        result = self._run(schedule)
+        # tensors[0] shape: [1, 24, 5, 4, 4]; T dim is dim 2
+        t_slice = result.tensors[0][:, :, target_row, :, :]  # [1, 24, 4, 4]
+        assert torch.all(t_slice == 0.0), (
+            f"Row {target_row} d=0: all channels/spatial at T={target_row} must be 0"
+        )
+
+    def test_video_mask_other_rows_are_one(self):
+        """Non-zero-denoise rows must have 1 in all video mask positions."""
+        schedule = [row(2, denoise=0.0)]  # only row 2 is zeroed
+        result = self._run(schedule)
+        vm = result.tensors[0]
+        for t in range(_VIDEO_ROWS):
+            if t != 2:
+                assert torch.all(vm[:, :, t, :, :] == 1.0), f"Row {t} should be 1 in video mask"
+
+    def test_audio_mask_frozen_tick_expanded_across_channels(self):
+        """A frozen-audio row → ALL channels at that audio tick are 0."""
+        target_row = 0  # maps to audio tick 0
+        schedule = [row(target_row, denoise=1.0, audio_frozen=True)]
+        from comfyui_h3_blended_inject.constants import video_row_to_audio_tick
+
+        tick = video_row_to_audio_tick(target_row)
+        result = self._run(schedule)
+        # tensors[1] shape: [1, 32, 2, 7]; audio_t dim is dim 3
+        if tick < _AUDIO_TICKS:
+            a_slice = result.tensors[1][:, :, :, tick]  # [1, 32, 2]
+            assert torch.all(a_slice == 0.0), (
+                f"Frozen tick {tick}: all channels at audio_t={tick} must be 0"
+            )
+
+    def test_video_mask_binary_values_only(self):
+        """All video mask values must be exactly 0.0 or 1.0 (no fractional)."""
+        schedule = [row(i, denoise=d) for i, d in enumerate([0.0, 0.5, 1.0, 0.0, 0.3])]
+        result = self._run(schedule)
+        vm = result.tensors[0]
+        assert torch.all((vm == 0.0) | (vm == 1.0))
+
+    def test_audio_mask_binary_values_only(self):
+        """All audio mask values must be exactly 0.0 or 1.0."""
+        schedule = [row(0, denoise=1.0, audio_frozen=True)]
+        result = self._run(schedule)
+        am = result.tensors[1]
+        assert torch.all((am == 0.0) | (am == 1.0))
+
+
+class TestApplyDerivedMaskNestedPath:
+    """apply_derived_mask: warning still fires; nested mask stored under noise_mask."""
+
+    def test_warning_still_fires_with_component_shapes(self):
+        """Foreign noise_mask warning still fires on the nested path."""
+        foreign_mask = {"video_mask": torch.ones(1, 5), "audio_mask": torch.ones(1, 8)}
+        latent = {"samples": torch.zeros(1, 4, 10, 10), "noise_mask": foreign_mask}
+        with pytest.warns(UserWarning, match="noise_mask"):
+            apply_derived_mask(
+                latent,
+                [],
+                video_rows=_VIDEO_ROWS,
+                audio_ticks=_AUDIO_TICKS,
+                video_component_shape=_V_SHAPE,
+                audio_component_shape=_A_SHAPE,
+                nested_factory=_fake_nested_factory,
+            )
+
+    def test_noise_mask_is_fake_nested_tensor_with_component_shapes(self):
+        """noise_mask must be a FakeNestedTensor when component shapes are provided."""
+        latent = {"samples": torch.zeros(1, 4, 10, 10)}
+        result = apply_derived_mask(
+            latent,
+            [],
+            video_rows=_VIDEO_ROWS,
+            audio_ticks=_AUDIO_TICKS,
+            video_component_shape=_V_SHAPE,
+            audio_component_shape=_A_SHAPE,
+            nested_factory=_fake_nested_factory,
+        )
+        assert isinstance(result["noise_mask"], FakeNestedTensor)
+
+    def test_no_component_shapes_returns_dict_as_before(self):
+        """Without component shapes, noise_mask is the old dict form (backward compat)."""
+        latent = {"samples": torch.zeros(1, 4, 10, 10)}
+        result = apply_derived_mask(latent, [], video_rows=5, audio_ticks=8)
+        assert isinstance(result["noise_mask"], dict)
