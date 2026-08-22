@@ -635,3 +635,70 @@ class TestH3InjectSamplerBehavior:
         )
         assert len(calls) == 1
         assert calls[0]["negative"] is sentinel_negative
+
+    def test_nested_tensor_latent_does_not_crash_at_dim(self, monkeypatch):
+        """Regression: NestedTensor latent (FLOW_AV) must not raise AttributeError.
+
+        Before the fix, sample() called samples.dim() which NestedTensor does not
+        implement, crashing on GPU with a real H3 latent.  After the fix, sample()
+        must detect is_nested and extract dims from .tensors[0] / .tensors[1].
+
+        This test MUST fail before the fix and pass after.
+        """
+        import torch
+
+        import comfyui_h3_blended_inject.nodes as nodes_mod
+
+        calls: list[dict] = []
+
+        def stub_run_sampler(**kwargs):
+            calls.append(kwargs)
+            return ({"samples": None},)
+
+        monkeypatch.setattr(nodes_mod, "_run_sampler", stub_run_sampler)
+        # Bypass mask creation so comfy is not needed on this CPU path.
+        monkeypatch.setattr(nodes_mod, "apply_derived_mask", lambda lat, *a, **kw: lat)
+
+        # Fake NestedTensor that matches the H3 FLOW_AV structure.
+        video = torch.zeros(1, 24, 5, 4, 4)  # [B=1, C=24, T=5, Hl=4, Wl=4]
+        audio = torch.zeros(1, 32, 2, 7)  # [B=1, C=32, 2, audio_t=7]
+
+        class FakeNestedTensor:
+            is_nested = True
+
+            def __init__(self) -> None:
+                self.tensors = [video, audio]
+
+        valid_inject = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.5,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=1,
+        )
+
+        node = H3InjectSampler()
+        # Must NOT raise AttributeError ("NestedTensor has no attribute dim").
+        node.sample(
+            model=object(),
+            add_noise="enable",
+            noise_seed=0,
+            steps=20,
+            cfg=7.0,
+            sampler_name="euler",
+            scheduler="normal",
+            positive=object(),
+            latent_image={"samples": FakeNestedTensor()},
+            start_at_step=0,
+            end_at_step=20,
+            return_with_leftover_noise="disable",
+            inject_list=[valid_inject],
+        )
+        assert len(calls) == 1, "sample() must call _run_sampler for a nested latent"
