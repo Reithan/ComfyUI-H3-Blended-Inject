@@ -9,7 +9,6 @@ schedule, sanitization, derived mask) can be unit-tested without a running
 ComfyUI. The mappings below are empty until the nodes land.
 """
 
-NODE_CLASS_MAPPINGS: dict = {}
-NODE_DISPLAY_NAME_MAPPINGS: dict = {}
+from comfyui_h3_blended_inject.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
