@@ -99,8 +99,15 @@ def _run_sampler(  # pragma: no cover
     from comfyui_h3_blended_inject.hold_release import build_model_function_wrapper, draw_row_noise
 
     # --- Step 6: Build per-row original and noise tensors from inject latents. ---
-    # H3 video latent shape: [N, C, T, H/16, W/16]; row axis is dim 2 (T).
-    # H3 audio latent shape: [1, 32, 2, T_audio]; tick axis is dim 3 (T_audio).
+    # H3 video latent: [1, C_v, T, Hl, Wl]; clip row axis is dim 2.
+    # H3 audio latent: [1, C_a, 2, audio_t]; clip tick axis is dim 3.
+    #
+    # Row-offset fix: row_s.row_idx is the ABSOLUTE target latent row.  The inject
+    # clip's own latent starts at clip row 0 corresponding to target row inject_at_row.
+    # clip_row = row_idx - inject_at_row.  NOTE: the frame→row boundary for non-51n
+    # inject_at values (e.g. inject_at=34 starts between rows) may not align clip rows
+    # to target rows exactly — needs live-model validation.  The additive offset is the
+    # straightforward mapping; a future fix may add sub-row alignment.
     per_row_original: dict[int, Any] = {}
     per_row_noise: dict[int, Any] = {}
     audio_row_original: dict[int, Any] = {}
@@ -111,7 +118,13 @@ def _run_sampler(  # pragma: no cover
         if inj is None or inj.video_latent is None:
             continue
         row_idx = row_s.row_idx
-        per_row_original[row_idx] = inj.video_latent[..., row_idx : row_idx + 1, :, :]
+        inject_at_row = constants.frame_to_row(inj.inject_at)
+        clip_row = row_idx - inject_at_row
+        n_clip_rows = int(inj.video_latent.shape[2])
+        if clip_row < 0 or clip_row >= n_clip_rows:
+            # Guard out-of-range: this row falls outside the clip latent.
+            continue
+        per_row_original[row_idx] = inj.video_latent[:, :, clip_row : clip_row + 1, :, :]
         per_row_noise[row_idx] = draw_row_noise(
             noise_seed,
             per_row_original[row_idx].shape,
@@ -124,8 +137,14 @@ def _run_sampler(  # pragma: no cover
         if inj is None or inj.audio_latent is None:
             continue
         row_idx = row_s.row_idx
+        inject_at_row = constants.frame_to_row(inj.inject_at)
+        inject_start_tick = constants.video_row_to_audio_tick(inject_at_row)
         tick = constants.video_row_to_audio_tick(row_idx)
-        audio_row_original[tick] = inj.audio_latent[..., tick : tick + 1]
+        clip_tick = tick - inject_start_tick
+        n_clip_ticks = int(inj.audio_latent.shape[-1])
+        if clip_tick < 0 or clip_tick >= n_clip_ticks:
+            continue
+        audio_row_original[tick] = inj.audio_latent[:, :, :, clip_tick : clip_tick + 1]
         audio_row_noise[tick] = draw_row_noise(
             noise_seed,
             audio_row_original[tick].shape,
@@ -135,19 +154,30 @@ def _run_sampler(  # pragma: no cover
 
     # --- Step 7: Derive audio_scale_factor from model_sampling if available. ---
     # audio_scale = sigma_shift_video / sigma_shift_audio = 12.0 / 3.0 = 4.0
-    # Derivation from model_sampling needs GPU verification against a real H3 model.
+    # We prefer the computed property .audio_scale when present.
     try:
-        audio_scale_factor = (
-            model.model.model_sampling.shift / model.model.model_sampling.audio_shift
-        )
+        audio_scale_factor = float(model.model.model_sampling.audio_scale)
     except AttributeError:
-        audio_scale_factor = 4.0  # default; needs GPU verification
+        try:
+            audio_scale_factor = (
+                model.model.model_sampling.shift / model.model.model_sampling.audio_shift
+            )
+        except AttributeError:
+            audio_scale_factor = 4.0  # default; needs GPU verification
 
     # --- Step 8: Clone model and install the hold-and-release wrapper. ---
     # model.clone() is called before the comfy.* imports so that a plain-object model
     # (used in CPU tests) raises AttributeError before any import of the unavailable
     # comfy package is attempted.
     m = model.clone()
+
+    # Derive latent_shapes by packing the input nested latent's components.
+    # CFGGuider will have done the same pack before calling our wrapper, so
+    # these shapes are correct for unpack_latents inside the wrapper.
+    import comfy.utils as _comfy_utils
+
+    _, latent_shapes = _comfy_utils.pack_latents(latent_image["samples"].unbind())
+
     wrapper = build_model_function_wrapper(
         schedule,
         per_row_original,
@@ -155,6 +185,7 @@ def _run_sampler(  # pragma: no cover
         audio_row_original,
         audio_row_noise,
         audio_scale_factor,
+        latent_shapes=latent_shapes,
     )
     m.model_options = {**m.model_options, "model_function_wrapper": wrapper}
 
@@ -678,20 +709,42 @@ class H3InjectSampler:
             If any inject's image resolution does not match the latent or if envelope
             index validation fails.
         """
-        # 1. Derive target pixel resolution from the latent's spatial dimensions.
+        # 1. Derive target pixel resolution and temporal dimensions from the latent.
         #    H3 spatial downsample is 16x, so multiply back to pixel space.
+        #    Real H3 FLOW_AV latents are NestedTensor((video, audio)); plain tensors
+        #    are used in CPU tests.
         samples = latent_image["samples"]
-        target_h = int(samples.shape[-2]) * 16
-        target_w = int(samples.shape[-1]) * 16
 
-        # 2. Derive target_rows from the latent temporal dimension.
-        #    Real H3 latents are 5-dim [N, C, T, H/16, W/16]; test tensors are 4-dim.
-        if samples.dim() == 5:  # pragma: no cover
-            target_rows = int(samples.shape[2])  # temporal dim for a real H3 latent
+        if getattr(samples, "is_nested", False):
+            # Real H3 FLOW_AV NestedTensor latent (GPU path).
+            # video: [B, 24, T, Hl, Wl]  audio: [B, 32, 2, audio_t]
+            _video = samples.tensors[0]
+            _audio = samples.tensors[1]
+            target_rows = int(_video.shape[2])
+            target_h = int(_video.shape[-2]) * 16
+            target_w = int(_video.shape[-1]) * 16
+            # Read the real audio tick count directly from the audio latent shape.
+            _audio_ticks_from_latent: int | None = int(_audio.shape[-1])
+            _video_component_shape: tuple[int, ...] | None = tuple(int(d) for d in _video.shape)
+            _audio_component_shape: tuple[int, ...] | None = tuple(int(d) for d in _audio.shape)
+        elif samples.dim() == 5:  # pragma: no cover
+            # Plain 5-dim tensor: [N, C, T, H/16, W/16] (non-nested GPU latent).
+            target_rows = int(samples.shape[2])
+            target_h = int(samples.shape[-2]) * 16
+            target_w = int(samples.shape[-1]) * 16
+            _audio_ticks_from_latent = None
+            _video_component_shape = None
+            _audio_component_shape = None
         else:
-            target_rows = int(samples.shape[1])  # fallback for synthetic test tensors
+            # 4-dim synthetic tensor used in CPU tests: [N, rows, H, W].
+            target_rows = int(samples.shape[1])
+            target_h = int(samples.shape[-2]) * 16
+            target_w = int(samples.shape[-1]) * 16
+            _audio_ticks_from_latent = None
+            _video_component_shape = None
+            _audio_component_shape = None
 
-        # 3. Validate all injects: resolution first (so the CPU test can raise before
+        # 2. Validate all injects: resolution first (so the CPU test can raise before
         #    touching the model), then envelope indices.
         for inj in inject_list:
             if inj.images is not None:
@@ -706,12 +759,25 @@ class H3InjectSampler:
                 inj.inject_at,
             )
 
-        # 4. Merge inject list into a flat per-row schedule (last-in-wins).
+        # 3. Merge inject list into a flat per-row schedule (last-in-wins).
         schedule = merge_schedule(inject_list, target_rows)
 
-        # 5. Derive audio tick count and apply the derived AV noise mask.
-        audio_ticks = constants.audio_ticks_for_rows(target_rows)
-        latent_image = apply_derived_mask(latent_image, schedule, target_rows, audio_ticks)
+        # 4. Derive audio tick count (real value from nested latent when available;
+        #    computed from row count as fallback for plain-tensor paths).
+        if _audio_ticks_from_latent is not None:
+            audio_ticks = _audio_ticks_from_latent
+        else:
+            audio_ticks = constants.audio_ticks_for_rows(target_rows)
+
+        # 5. Derive and apply the nested AV noise mask.
+        latent_image = apply_derived_mask(
+            latent_image,
+            schedule,
+            target_rows,
+            audio_ticks,
+            video_component_shape=_video_component_shape,
+            audio_component_shape=_audio_component_shape,
+        )
 
         # 6–9. GPU/ComfyUI-dependent: per-row tensor construction, model clone,
         #       model_function_wrapper installation, and sampler execution.
