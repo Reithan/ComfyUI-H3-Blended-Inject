@@ -58,7 +58,13 @@ def draw_row_noise(
     torch.Tensor
         Standard-normal tensor of ``shape``, drawn from a seeded RNG.
     """
-    raise NotImplementedError("draw_row_noise: seed RNG, sample standard normal of shape")
+    if device is None:
+        device = torch.device("cpu")
+    if dtype is None:
+        dtype = torch.float32
+    gen = torch.Generator(device=device)
+    gen.manual_seed(seed)
+    return torch.randn(shape, generator=gen, device=device, dtype=dtype)
 
 
 def hold_value(
@@ -87,7 +93,7 @@ def hold_value(
     torch.Tensor
         Blended tensor of the same shape as ``original`` and ``noise``.
     """
-    raise NotImplementedError("hold_value: return (1 - sigma) * original + sigma * noise")
+    return (1.0 - sigma) * original + sigma * noise
 
 
 def is_held(sigma: float, d: float) -> bool:
@@ -110,7 +116,7 @@ def is_held(sigma: float, d: float) -> bool:
     bool
         ``True`` if ``sigma > d``, ``False`` otherwise.
     """
-    raise NotImplementedError("is_held: return sigma > d")
+    return sigma > d
 
 
 def audio_internal_scale(
@@ -140,7 +146,7 @@ def audio_internal_scale(
     torch.Tensor
         Rescaled tensor at sampler-internal audio scale, same shape as ``value``.
     """
-    raise NotImplementedError("audio_internal_scale: apply audio_scale_factor to value")
+    return value * audio_scale_factor
 
 
 def build_model_function_wrapper(
@@ -211,7 +217,88 @@ def build_model_function_wrapper(
     The wrapper must handle both flow directions of the sigma convention; ``timestep / 1000``
     is the recovery path verified against the H3 engine source.
     """
-    raise NotImplementedError(
-        "build_model_function_wrapper: return lambda(apply_model, args_dict) that applies "
-        "hold-and-release to video and audio rows using lazy comfy imports"
-    )
+    from comfyui_h3_blended_inject import constants as _constants
+
+    # Pre-compute: audio tick -> denoise mapping.
+    # Each video row owns the audio ticks from its start tick (inclusive) to the next row's
+    # start tick (exclusive).  video_row_to_audio_tick gives the start tick for each row.
+    sorted_schedule = sorted(schedule, key=lambda s: s.row_idx)
+
+    tick_denoise: dict[int, float] = {}
+    for i, row_s in enumerate(sorted_schedule):
+        start_tick = _constants.video_row_to_audio_tick(row_s.row_idx)
+        if i + 1 < len(sorted_schedule):
+            end_tick: int | None = _constants.video_row_to_audio_tick(
+                sorted_schedule[i + 1].row_idx
+            )
+        else:
+            end_tick = None  # last row: owns all remaining ticks
+
+        for tick in audio_row_original:
+            if end_tick is None:
+                if tick >= start_tick:
+                    tick_denoise[tick] = row_s.denoise
+            elif start_tick <= tick < end_tick:
+                tick_denoise[tick] = row_s.denoise
+
+    def wrapper(
+        apply_model: Callable[..., Any],
+        args_dict: dict[str, Any],
+    ) -> Any:
+        import comfy.utils
+
+        # Step 1: Recover sigma from timestep (convention: timestep / 1000).
+        sigma_video = float(args_dict["timestep"].flatten()[0].item() / 1000.0)
+        sigma_audio = _constants.time_shift_sigma(sigma_video)
+
+        # Step 2: Unpack the packed AV latent into video and audio streams.
+        packed_input = args_dict["input"]
+        latent_shapes = getattr(getattr(apply_model, "__self__", None), "latent_shapes", None)
+        video, audio = comfy.utils.unpack_latents(packed_input, latent_shapes)
+
+        # Work on fresh copies — never mutate sampler-owned tensors.
+        video_edit = video.clone()
+        audio_edit = audio.clone()
+
+        # Step 3: Write hold_value into held video rows.
+        for row_s in sorted_schedule:
+            row_idx = row_s.row_idx
+            if row_idx in per_row_original and is_held(sigma_video, row_s.denoise):
+                video_edit[row_idx] = hold_value(
+                    per_row_original[row_idx], per_row_noise[row_idx], sigma_video
+                )
+
+        # Step 4: Write held audio ticks at internal scale.
+        for tick, d in tick_denoise.items():
+            if tick in audio_row_original and is_held(sigma_audio, d):
+                held_audio = hold_value(
+                    audio_row_original[tick], audio_row_noise[tick], sigma_audio
+                )
+                audio_edit[tick] = audio_internal_scale(held_audio, sigma_audio, audio_scale_factor)
+
+        # Step 5: Repack edited streams and call apply_model.
+        packed_edit = comfy.utils.pack_latents(video_edit, audio_edit)
+        raw_prediction = apply_model(packed_edit, args_dict["timestep"], **args_dict["c"])
+
+        # Step 6: Unpack prediction and overwrite held rows.
+        pred_video, pred_audio = comfy.utils.unpack_latents(raw_prediction, latent_shapes)
+        pred_video_edit = pred_video.clone()
+        pred_audio_edit = pred_audio.clone()
+
+        # Overwrite held video rows with their original content.
+        for row_s in sorted_schedule:
+            row_idx = row_s.row_idx
+            if row_idx in per_row_original and is_held(sigma_video, row_s.denoise):
+                pred_video_edit[row_idx] = per_row_original[row_idx]
+
+        # Overwrite held audio ticks with original audio at internal scale.
+        for tick, d in tick_denoise.items():
+            if tick in audio_row_original and is_held(sigma_audio, d):
+                pred_audio_edit[tick] = audio_internal_scale(
+                    audio_row_original[tick], sigma_audio, audio_scale_factor
+                )
+
+        # Step 7: Repack and return the edited prediction.
+        return comfy.utils.pack_latents(pred_video_edit, pred_audio_edit)
+
+    return wrapper
