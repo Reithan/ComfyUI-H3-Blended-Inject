@@ -33,11 +33,11 @@ AUDIO_HZ: float = 40.0
 
 #: Conditioning timestep pinned for visual-stream preserved rows (near-clean label).
 #: From ``VISUAL_COND_TIMESTEP`` in ``comfy/ldm/minimax/model.py``.
-VISUAL_COND_TIMESTEP: float = 0.0  # TODO: source exact value from comfy
+VISUAL_COND_TIMESTEP: float = 0.999  # sourced from comfy/ldm/minimax/model.py
 
 #: Conditioning timestep pinned for audio-stream preserved ticks (near-clean label).
 #: From ``AUDIO_COND_TIMESTEP`` in ``comfy/ldm/minimax/model.py``.
-AUDIO_COND_TIMESTEP: float = 0.0  # TODO: source exact value from comfy
+AUDIO_COND_TIMESTEP: float = 1.0  # sourced from comfy/ldm/minimax/model.py
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +222,11 @@ def time_shift_sigma(sigma: float) -> float:
     float
         Shifted sigma value appropriate for the audio stream.
     """
-    # Standard flow-matching temporal shift from comfy/ldm/minimax/model.py.
-    # Formula: shift * sigma / (1 + (shift - 1) * sigma) with shift = 7.0.
-    # Satisfies f(0)=0, f(1)=1, monotone non-decreasing, result in [0, 1].
-    shift = 7.0
-    return float(shift * sigma / (1.0 + (shift - 1.0) * sigma))
+    # Two-step warp from comfy/ldm/minimax/model.py: invert the video shift (12.0) to
+    # recover the base grid, then re-apply the audio shift (3.0).
+    # This module returns the raw warp value; ComfyUI applies `1.0 - warp` at the model
+    # boundary as the audio conditioning timestep.  The contract here is f(0)=0, f(1)=1.
+    from_shift = 12.0  # sigma_shift_video
+    to_shift = 3.0  # sigma_shift_audio
+    base = sigma / (from_shift + sigma * (1.0 - from_shift))
+    return float(to_shift * base / (1.0 + (to_shift - 1.0) * base))
