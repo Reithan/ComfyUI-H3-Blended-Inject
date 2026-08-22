@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+from comfyui_h3_blended_inject.constants import frame_to_row, row_center_times
+
 
 class InterpolationType(str, Enum):
     """Supported interpolation curves for envelope fade regions.
@@ -67,7 +69,58 @@ def evaluate_curve(t: float, interpolation_type: str) -> float:
     ValueError
         If ``t`` is outside [0.0, 1.0] or ``interpolation_type`` is not a recognised value.
     """
-    raise NotImplementedError("evaluate_curve: apply selected curve formula to t")
+    if not (0.0 <= t <= 1.0):
+        raise ValueError(f"t must be in [0.0, 1.0], got {t!r}")
+    if interpolation_type not in INTERPOLATION_TYPES:
+        raise ValueError(f"Unknown interpolation_type: {interpolation_type!r}")
+    if interpolation_type == "ease_in":
+        return t**2
+    if interpolation_type == "ease_out":
+        return 1.0 - (1.0 - t) ** 2
+    if interpolation_type == "ease_in_out":
+        return 3.0 * t**2 - 2.0 * t**3
+    if interpolation_type == "linear":
+        return t
+    # "none" — step: 0 for t < 1.0, 1 for t == 1.0
+    return 0.0 if t < 1.0 else 1.0
+
+
+def _denoise_at_frame_time(
+    t: float,
+    start_fade_in: int,
+    start_keyframes: int,
+    end_keyframes: int,
+    end_fade_out: int,
+    min_denoise: float,
+    interpolation_type: str,
+) -> float:
+    """Return the denoise value at continuous source frame time ``t``.
+
+    Returns 1.0 for times outside the envelope [start_fade_in, end_fade_out].
+    """
+    if t < start_fade_in or t > end_fade_out:
+        return 1.0
+
+    if t <= start_keyframes:
+        # Fade-in region: 1.0 at start_fade_in → min_denoise at start_keyframes.
+        if start_keyframes == start_fade_in:
+            # Zero-length fade-in; treat this time as the hold value.
+            return min_denoise
+        fade_t = (t - start_fade_in) / (start_keyframes - start_fade_in)
+        w = evaluate_curve(fade_t, interpolation_type)
+        return 1.0 - w * (1.0 - min_denoise)
+
+    if t <= end_keyframes:
+        # Hold region.
+        return min_denoise
+
+    # Fade-out region: min_denoise at end_keyframes → 1.0 at end_fade_out.
+    if end_fade_out == end_keyframes:
+        # Zero-length fade-out.
+        return min_denoise
+    fade_t = (t - end_keyframes) / (end_fade_out - end_keyframes)
+    w = evaluate_curve(fade_t, interpolation_type)
+    return min_denoise + w * (1.0 - min_denoise)
 
 
 def evaluate_envelope(
@@ -131,7 +184,41 @@ def evaluate_envelope(
         If envelope indices violate ordering constraints
         (``start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out``).
     """
-    raise NotImplementedError("evaluate_envelope: map row centers to frame-time, apply curve")
+    if not (start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out):
+        raise ValueError(
+            f"Envelope indices must satisfy start_fade_in <= start_keyframes <= "
+            f"end_keyframes <= end_fade_out, got "
+            f"{start_fade_in=}, {start_keyframes=}, {end_keyframes=}, {end_fade_out=}"
+        )
+
+    # Degenerate still-inject: all four indices equal → single row at min_denoise.
+    if start_fade_in == start_keyframes == end_keyframes == end_fade_out:
+        return [min_denoise]
+
+    start_local_row = frame_to_row(start_fade_in)
+    end_local_row = frame_to_row(end_fade_out)
+
+    result = []
+    for local_row in range(start_local_row, end_local_row + 1):
+        target_row = inject_at_row + local_row
+        if target_row >= target_rows:
+            break
+        centers = row_center_times(local_row)
+        values = [
+            _denoise_at_frame_time(
+                c,
+                start_fade_in,
+                start_keyframes,
+                end_keyframes,
+                end_fade_out,
+                min_denoise,
+                interpolation_type,
+            )
+            for c in centers
+        ]
+        result.append(sum(values) / len(values))
+
+    return result
 
 
 def is_row_exactly_zero(
@@ -173,7 +260,17 @@ def is_row_exactly_zero(
         True iff all frames covered by ``row_idx`` are within the hold region and
         ``min_denoise == 0.0``.
     """
-    raise NotImplementedError("is_row_exactly_zero: check full-frame coverage within hold region")
+    if min_denoise != 0.0:
+        return False
+    local_row = row_idx - inject_at_row
+    # Source frames covered by local_row (inclusive on both ends).
+    if local_row == 0:
+        first_frame = 0
+        last_frame = 0
+    else:
+        first_frame = 1 + (local_row - 1) * 4
+        last_frame = first_frame + 3
+    return first_frame >= start_keyframes and last_frame <= end_keyframes
 
 
 def still_inject_denoise(min_denoise: float) -> list[float]:
@@ -192,4 +289,4 @@ def still_inject_denoise(min_denoise: float) -> list[float]:
     list[float]
         A one-element list ``[min_denoise]``.
     """
-    raise NotImplementedError("still_inject_denoise: return [min_denoise]")
+    return [min_denoise]
