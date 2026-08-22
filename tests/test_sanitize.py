@@ -523,10 +523,10 @@ class TestValidateEnvelopeIndices:
         with pytest.raises(ValueError):
             validate_envelope_indices(0, -1, 5, 10, 20, 30, 0)
 
-    def test_end_fade_out_equals_source_length_raises(self):
-        # end_fade_out must be < source_length
-        with pytest.raises(ValueError):
-            validate_envelope_indices(0, 5, 10, 20, 20, 30, 0)
+    def test_end_fade_out_equals_source_length_allowed(self):
+        # Under the half-open [sfi, efo) model, efo == source_length is valid.
+        # FAILS before the guardrail fix (old code raises), PASSES after.
+        assert validate_envelope_indices(0, 5, 10, 20, 20, 30, 0) is None
 
     def test_end_fade_out_gt_source_length_raises(self):
         with pytest.raises(ValueError):
@@ -546,11 +546,12 @@ class TestValidateEnvelopeIndices:
     # -- Error message includes the values that violated the constraint ---------
 
     def test_bounds_violation_message_includes_values(self):
+        # efo=25 > source_length=20: must still raise under the >= fix.
         with pytest.raises(ValueError) as exc_info:
-            validate_envelope_indices(0, 5, 10, 20, 20, 30, 0)
+            validate_envelope_indices(0, 5, 10, 25, 20, 30, 0)
         msg = str(exc_info.value)
         # The offending end_fade_out or source_length should appear
-        assert "20" in msg
+        assert "25" in msg or "20" in msg
 
     def test_ordering_violation_message_includes_values(self):
         with pytest.raises(ValueError) as exc_info:
