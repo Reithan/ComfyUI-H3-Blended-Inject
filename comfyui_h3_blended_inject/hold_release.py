@@ -157,6 +157,8 @@ def build_model_function_wrapper(
     audio_row_noise: dict[int, torch.Tensor],
     audio_scale_factor: float,
     latent_shapes: list[tuple[int, ...]],
+    target_rows: int,
+    audio_ticks: int,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
     """Return a ``model_function_wrapper`` callable implementing hold-and-release.
 
@@ -211,6 +213,13 @@ def build_model_function_wrapper(
         Component shapes returned by ``comfy.utils.pack_latents`` when packing the
         input nested latent.  Closure-captured from ``_run_sampler`` so the wrapper
         does not depend on sampler-timing assignment to ``apply_model.__self__``.
+    target_rows:
+        Total number of latent video rows (the ``target_rows`` from the sampler).
+        Used with ``audio_ticks`` to compute the canonical tick range per video row
+        via :func:`~comfyui_h3_blended_inject.constants.audio_tick_range`.
+    audio_ticks:
+        Total number of audio ticks in the AV latent (the ``audio_ticks`` from the
+        sampler).  Used with ``target_rows`` to compute canonical per-row tick ranges.
 
     Returns
     -------
@@ -233,26 +242,14 @@ def build_model_function_wrapper(
     from comfyui_h3_blended_inject import constants as _constants
 
     # Pre-compute: audio tick -> denoise mapping.
-    # Each video row owns the audio ticks from its start tick (inclusive) to the next row's
-    # start tick (exclusive).  video_row_to_audio_tick gives the start tick for each row.
+    # Use audio_tick_range per row so the mapping is consistent with _run_sampler
+    # and derive_mask (canonical range, not "next scheduled row" boundary).
     sorted_schedule = sorted(schedule, key=lambda s: s.row_idx)
 
     tick_denoise: dict[int, float] = {}
-    for i, row_s in enumerate(sorted_schedule):
-        start_tick = _constants.video_row_to_audio_tick(row_s.row_idx)
-        if i + 1 < len(sorted_schedule):
-            end_tick: int | None = _constants.video_row_to_audio_tick(
-                sorted_schedule[i + 1].row_idx
-            )
-        else:
-            end_tick = None  # last row: owns all remaining ticks
-
-        for tick in audio_row_original:
-            if end_tick is None:
-                if tick >= start_tick:
-                    tick_denoise[tick] = row_s.denoise
-            elif start_tick <= tick < end_tick:
-                tick_denoise[tick] = row_s.denoise
+    for row_s in sorted_schedule:
+        for tick in _constants.audio_tick_range(row_s.row_idx, target_rows, audio_ticks):
+            tick_denoise[tick] = row_s.denoise
 
     def wrapper(
         apply_model: Callable[..., Any],
