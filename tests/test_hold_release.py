@@ -192,36 +192,53 @@ class TestAudioInternalScale:
 
 
 # ---------------------------------------------------------------------------
-# Fake comfy module for wrapper tests
+# Fake comfy.utils for wrapper tests
 # ---------------------------------------------------------------------------
 #
-# Fake packed layout (simple, documented):
-#   packed tensor shape = (N_VIDEO + N_AUDIO, FEAT)
-#   rows [0, N_VIDEO)            = video rows
-#   rows [N_VIDEO, N_VIDEO+N_AUDIO) = audio ticks
+# Faithful implementation of comfy.utils.pack_latents / unpack_latents geometry:
 #
-#   unpack_latents(packed, latent_shapes) -> (video, audio)
-#     Splits at _N_VIDEO; ignores latent_shapes (test constants are fixed).
-#   pack_latents(video, audio) -> torch.cat([video, audio], dim=0)
+#   pack_latents(iterable_of_tensors) -> (flat, latent_shapes)
+#     Each component tensor is reshaped to [B,1,-1] and concatenated along dim=-1.
+#     latent_shapes is the list of original component shapes (as tuples of ints).
+#     flat shape: [B, 1, sum_of_prod_shape[1:]]
 #
-# Goal: exercise the wrapper's held-row edit/overwrite logic, not H3's real AV packing.
+#   unpack_latents(flat, latent_shapes) -> list[Tensor]
+#     Splits flat along the last dim using prod(shape[1:]) per component.
+#     Batch dim B comes from the runtime flat tensor (not from latent_shapes).
+#     Each chunk is reshaped to [B, *shape[1:]].
+#
+# This matches the real comfy.utils contract so wrapper index math can be verified
+# without a live ComfyUI install.
 
-_N_VIDEO: int = 3  # video rows used in wrapper tests
-_N_AUDIO: int = 2  # audio ticks used in wrapper tests
-_FEAT: int = 4  # feature dimension per row/tick
+
+def _fake_pack_latents(
+    tensors_iterable: Any,
+) -> tuple[torch.Tensor, list[tuple[int, ...]]]:
+    """Pack list-of-tensors → (flat [B,1,C], latent_shapes)."""
+    tensors = list(tensors_iterable)
+    B = tensors[0].shape[0]
+    shapes: list[tuple[int, ...]] = [tuple(int(d) for d in t.shape) for t in tensors]
+    reshaped = [t.reshape(B, 1, -1) for t in tensors]
+    flat = torch.cat(reshaped, dim=-1)
+    return flat, shapes
 
 
 def _fake_unpack_latents(
-    packed: torch.Tensor,
-    latent_shapes: Any,  # ignored by the fake; split point is fixed
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return (video, audio) tensors from the concatenated packed tensor."""
-    return packed[:_N_VIDEO].clone(), packed[_N_VIDEO : _N_VIDEO + _N_AUDIO].clone()
-
-
-def _fake_pack_latents(video: torch.Tensor, audio: torch.Tensor) -> torch.Tensor:
-    """Concatenate (video, audio) into the test's packed format."""
-    return torch.cat([video, audio], dim=0)
+    flat: torch.Tensor,
+    latent_shapes: list[tuple[int, ...]],
+) -> list[torch.Tensor]:
+    """Unpack flat [B,1,C] → list of component tensors using latent_shapes."""
+    B = flat.shape[0]
+    results: list[torch.Tensor] = []
+    offset = 0
+    for shape in latent_shapes:
+        n = 1
+        for d in shape[1:]:
+            n *= d
+        chunk = flat[:, :, offset : offset + n]  # [B, 1, n]
+        results.append(chunk.reshape(B, *shape[1:]))
+        offset += n
+    return results
 
 
 @pytest.fixture()
@@ -242,10 +259,26 @@ def fake_comfy(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
 # ---------------------------------------------------------------------------
 # Shared fixtures for wrapper tests
 # ---------------------------------------------------------------------------
+#
+# Video component shape: [B=1, C_v=24, T=3, Hl=2, Wl=2]
+# Audio component shape: [B=1, C_a=32, 2, audio_t=2]
+# (Small spatial dims to keep pack/unpack fast in tests.)
+
+_B: int = 1
+_C_V: int = 24
+_T: int = 3  # video rows (was _N_VIDEO)
+_HL: int = 2
+_WL: int = 2
+_C_A: int = 32
+_AUDIO_T: int = 2  # audio ticks (was _N_AUDIO)
+
+_VIDEO_SHAPE: tuple[int, ...] = (_B, _C_V, _T, _HL, _WL)
+_AUDIO_SHAPE: tuple[int, ...] = (_B, _C_A, 2, _AUDIO_T)
 
 
 def _make_wrapper_fixtures(
     denoise: float = 0.3,
+    batch: int = 1,
 ) -> tuple[
     list[RowSchedule],
     dict[int, torch.Tensor],
@@ -253,24 +286,48 @@ def _make_wrapper_fixtures(
     dict[int, torch.Tensor],
     dict[int, torch.Tensor],
     torch.Tensor,
+    list[tuple[int, ...]],
 ]:
-    """Build schedule, per-row/tick tensors, and a packed input tensor.
+    """Build schedule, per-row/tick tensors, packed input, and latent_shapes.
 
-    Video row i has original=fill(i+1) and noise=fill(0.1*(i+1)).
-    Audio tick j has original=fill(j+10) and noise=fill(0.1*(j+10)).
-    Packed input has video rows=fill(i+100) and audio ticks=fill(j+200).
+    Video row i:  original=fill(i+1),     noise=fill(0.1*(i+1)),   shape [1,C_v,1,Hl,Wl]
+    Audio tick j: original=fill(j+10),    noise=fill(0.1*(j+10)),  shape [1,C_a,2,1]
+    Full video:   row i has all elements = float(i+100),            shape [B,C_v,T,Hl,Wl]
+    Full audio:   tick j has all elements = float(j+200),           shape [B,C_a,2,audio_t]
+
+    The packed tensor is built via _fake_pack_latents so the geometry matches the
+    real comfy.utils.pack_latents contract.  batch controls the batch dim B of the
+    PACKED input (simulates cond-batch; per_row_original stays at B=1).
     """
-    schedule = [RowSchedule(row_idx=i, denoise=denoise, inject=None) for i in range(_N_VIDEO)]
+    schedule = [RowSchedule(row_idx=i, denoise=denoise, inject=None) for i in range(_T)]
 
-    per_row_original = {i: torch.full((_FEAT,), float(i + 1)) for i in range(_N_VIDEO)}
-    per_row_noise = {i: torch.full((_FEAT,), 0.1 * (i + 1)) for i in range(_N_VIDEO)}
+    # Per-row originals/noise: shape [1, C_v, 1, Hl, Wl] (single temporal row).
+    per_row_original = {i: torch.full((1, _C_V, 1, _HL, _WL), float(i + 1)) for i in range(_T)}
+    per_row_noise = {i: torch.full((1, _C_V, 1, _HL, _WL), 0.1 * (i + 1)) for i in range(_T)}
 
-    audio_row_original = {j: torch.full((_FEAT,), float(j + 10)) for j in range(_N_AUDIO)}
-    audio_row_noise = {j: torch.full((_FEAT,), 0.1 * (j + 10)) for j in range(_N_AUDIO)}
+    # Per-tick originals/noise: shape [1, C_a, 2, 1] (single audio tick).
+    audio_row_original = {j: torch.full((1, _C_A, 2, 1), float(j + 10)) for j in range(_AUDIO_T)}
+    audio_row_noise = {j: torch.full((1, _C_A, 2, 1), 0.1 * (j + 10)) for j in range(_AUDIO_T)}
 
-    video_rows = torch.stack([torch.full((_FEAT,), float(i + 100)) for i in range(_N_VIDEO)])
-    audio_rows = torch.stack([torch.full((_FEAT,), float(j + 200)) for j in range(_N_AUDIO)])
-    packed_input = torch.cat([video_rows, audio_rows], dim=0)
+    # Full video tensor [B, C_v, T, Hl, Wl]; each row i filled with float(i+100).
+    video = torch.zeros(batch, _C_V, _T, _HL, _WL)
+    for i in range(_T):
+        video[:, :, i, :, :] = float(i + 100)
+
+    # Full audio tensor [B, C_a, 2, audio_t]; each tick j filled with float(j+200).
+    audio = torch.zeros(batch, _C_A, 2, _AUDIO_T)
+    for j in range(_AUDIO_T):
+        audio[:, :, :, j] = float(j + 200)
+
+    # Pack → latent_shapes uses shape[0]=1 (from original tensors, not `batch`).
+    # latent_shapes is derived from the canonical B=1 shapes so unpack works for any B.
+    _, latent_shapes = _fake_pack_latents(
+        [
+            torch.zeros(1, _C_V, _T, _HL, _WL),
+            torch.zeros(1, _C_A, 2, _AUDIO_T),
+        ]
+    )
+    packed_input, _ = _fake_pack_latents([video, audio])
 
     return (
         schedule,
@@ -279,14 +336,12 @@ def _make_wrapper_fixtures(
         audio_row_original,
         audio_row_noise,
         packed_input,
+        latent_shapes,
     )
 
 
 def _args_dict(packed_input: torch.Tensor, sigma: float) -> dict[str, Any]:
-    """Construct the args_dict the ComfyUI sampler passes to the wrapper.
-
-    Sigma is recovered inside the wrapper via timestep / 1000 (per plan).
-    """
+    """Construct the args_dict the ComfyUI sampler passes to the wrapper."""
     return {
         "input": packed_input,
         "timestep": torch.tensor([sigma * 1000.0]),
@@ -301,12 +356,21 @@ def _args_dict(packed_input: torch.Tensor, sigma: float) -> dict[str, Any]:
 
 
 class TestBuildModelFunctionWrapper:
-    """Wrapper: held rows get hold_value; prediction rows get original; aliasing-safe."""
+    """Wrapper: held rows get hold_value; prediction rows get original; aliasing-safe.
+
+    All tests use the faithful fake pack/unpack and proper 5D video + 4D audio tensors.
+    The wrapper must index the temporal dim (dim 2) of video and dim 3 of audio, NOT
+    the batch dim.
+    """
 
     def test_held_video_rows_written_with_hold_value_in_input(
         self, fake_comfy: types.ModuleType
     ) -> None:
-        """Held video rows: apply_model receives hold_value(original, noise, sigma) per row."""
+        """Held video rows: apply_model receives hold_value(original, noise, sigma) per row.
+
+        This test MUST fail before the wrapper fix (wrong indexing / pack API) and
+        pass after.
+        """
         denoise = 0.3
         sigma = 0.7  # sigma > denoise => all rows held
         (
@@ -316,45 +380,7 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             packed_input,
-        ) = _make_wrapper_fixtures(denoise=denoise)
-
-        received: list[torch.Tensor] = []
-
-        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
-            received.append(input_x.detach().clone())
-            return input_x  # return input as-is; prediction content irrelevant here
-
-        wrapper = build_model_function_wrapper(
-            schedule,
-            per_row_original,
-            per_row_noise,
-            audio_orig,
-            audio_noise,
-            audio_scale_factor=1.0,
-        )
-        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
-
-        assert len(received) == 1, "apply_model must be called exactly once"
-        video_in = received[0][:_N_VIDEO]
-
-        for i, row_s in enumerate(schedule):
-            if is_held(sigma, row_s.denoise):
-                expected = hold_value(per_row_original[i], per_row_noise[i], sigma)
-                assert torch.allclose(video_in[i], expected, atol=1e-6), (
-                    f"Held video row {i}: apply_model input must equal hold_value at sigma={sigma}"
-                )
-
-    def test_non_held_video_rows_untouched_in_input(self, fake_comfy: types.ModuleType) -> None:
-        """Non-held rows (sigma <= d): apply_model receives the unmodified input rows."""
-        denoise = 0.9
-        sigma = 0.5  # sigma < denoise => no rows held
-        (
-            schedule,
-            per_row_original,
-            per_row_noise,
-            audio_orig,
-            audio_noise,
-            packed_input,
+            latent_shapes,
         ) = _make_wrapper_fixtures(denoise=denoise)
 
         received: list[torch.Tensor] = []
@@ -370,16 +396,63 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
         )
         wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
-        video_in = received[0][:_N_VIDEO]
-        original_video = packed_input[:_N_VIDEO]
+        assert len(received) == 1, "apply_model must be called exactly once"
+        # Unpack to inspect the video component at the temporal dim.
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]  # [B, C_v, T, Hl, Wl]
 
-        for i in range(_N_VIDEO):
-            assert torch.allclose(video_in[i], original_video[i], atol=1e-7), (
-                f"Non-held video row {i} must be unchanged in apply_model input"
-            )
+        for i, row_s in enumerate(schedule):
+            if is_held(sigma, row_s.denoise):
+                expected = hold_value(per_row_original[i], per_row_noise[i], sigma)
+                actual = video_in[:, :, i : i + 1, :, :]  # [B, C_v, 1, Hl, Wl]
+                assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
+                    f"Held video row {i}: apply_model input must equal hold_value at sigma={sigma}"
+                )
+
+    def test_non_held_video_rows_untouched_in_input(self, fake_comfy: types.ModuleType) -> None:
+        """Non-held rows (sigma <= d): apply_model receives the unmodified input rows."""
+        denoise = 0.9
+        sigma = 0.5  # sigma < denoise => no rows held
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_video = unpacked_orig[0]
+
+        for i in range(_T):
+            assert torch.allclose(
+                video_in[:, :, i, :, :], original_video[:, :, i, :, :], atol=1e-7
+            ), f"Non-held video row {i} must be unchanged in apply_model input"
 
     def test_held_video_rows_prediction_overwritten_with_original(
         self, fake_comfy: types.ModuleType
@@ -394,9 +467,16 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             packed_input,
+            latent_shapes,
         ) = _make_wrapper_fixtures(denoise=denoise)
 
-        sentinel = torch.full((_N_VIDEO + _N_AUDIO, _FEAT), 999.0)
+        # Sentinel prediction packed to the same flat shape as packed_input.
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
 
         wrapper = build_model_function_wrapper(
             schedule,
@@ -405,28 +485,29 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
         )
         result = wrapper(
-            lambda *a, **kw: sentinel.clone(),  # noqa: ARG005
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
             _args_dict(packed_input, sigma),
         )
 
-        result_video = result[:_N_VIDEO]
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]  # [B, C_v, T, Hl, Wl]
+
         for i, row_s in enumerate(schedule):
             if is_held(sigma, row_s.denoise):
-                assert torch.allclose(result_video[i], per_row_original[i], atol=1e-7), (
+                expected = per_row_original[i]  # [1, C_v, 1, Hl, Wl]
+                actual = result_video[:, :, i : i + 1, :, :]
+                assert torch.allclose(actual, expected.expand_as(actual), atol=1e-7), (
                     f"Held video row {i}: wrapper must overwrite prediction with per_row_original"
                 )
 
     def test_audio_held_ticks_use_shifted_sigma_and_internal_scale(
         self, fake_comfy: types.ModuleType
     ) -> None:
-        """Held audio ticks: apply_model receives hold_value(..., time_shift_sigma(sigma)) at
-        audio_internal_scale, and the prediction rows are overwritten with audio_original
-        at internal scale.
-
-        Uses constants.time_shift_sigma and hold_release.audio_internal_scale directly so
-        the test tracks the real implementations (both currently unimplemented -> fails now).
+        """Held audio ticks: apply_model input is hold_value at shifted sigma + internal scale;
+        prediction is overwritten with audio_original at internal scale.
         """
         denoise = 0.2
         sigma = 0.8
@@ -438,14 +519,20 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             packed_input,
+            latent_shapes,
         ) = _make_wrapper_fixtures(denoise=denoise)
 
         received: list[torch.Tensor] = []
-        sentinel = torch.full((_N_VIDEO + _N_AUDIO, _FEAT), 999.0)
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
 
         def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
             received.append(input_x.detach().clone())
-            return sentinel.clone()
+            return flat_sentinel.clone()
 
         wrapper = build_model_function_wrapper(
             schedule,
@@ -454,30 +541,33 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             audio_scale_factor=audio_scale,
+            latent_shapes=latent_shapes,
         )
         result = wrapper(mock_apply_model, _args_dict(packed_input, sigma))
 
         sigma_audio = constants.time_shift_sigma(sigma)
-        audio_in = received[0][_N_VIDEO : _N_VIDEO + _N_AUDIO]
-        result_audio = result[_N_VIDEO : _N_VIDEO + _N_AUDIO]
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        audio_in = unpacked_in[1]  # [B, C_a, 2, audio_t]
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_audio = unpacked_result[1]
 
-        for j in range(_N_AUDIO):
+        for j in range(_AUDIO_T):
             if is_held(sigma_audio, denoise):
-                # Input: hold_value at shifted sigma, written at internal scale
                 expected_in = audio_internal_scale(
                     hold_value(audio_orig[j], audio_noise[j], sigma_audio),
                     sigma_audio,
                     audio_scale,
                 )
-                assert torch.allclose(audio_in[j], expected_in, atol=1e-6), (
-                    f"Audio tick {j}: apply_model input must be hold_value "
-                    f"at shifted sigma={sigma_audio}, at internal scale"
+                actual_in = audio_in[:, :, :, j : j + 1]  # [B, C_a, 2, 1]
+                assert torch.allclose(actual_in, expected_in.expand_as(actual_in), atol=1e-6), (
+                    f"Audio tick {j}: apply_model input must be hold_value at shifted sigma"
                 )
-                # Prediction: overwritten with audio_original at internal scale
                 expected_pred = audio_internal_scale(audio_orig[j], sigma_audio, audio_scale)
-                assert torch.allclose(result_audio[j], expected_pred, atol=1e-7), (
-                    f"Audio tick {j}: prediction must be overwritten with audio_original "
-                    f"at internal scale"
+                actual_pred = result_audio[:, :, :, j : j + 1]
+                expanded_pred = expected_pred.expand_as(actual_pred)
+                assert torch.allclose(actual_pred, expanded_pred, atol=1e-7), (
+                    f"Audio tick {j}: prediction must be overwritten with "
+                    f"audio_original at internal scale"
                 )
 
     def test_aliasing_safety_no_inplace_mutation_of_input(
@@ -493,9 +583,17 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             packed_input,
+            latent_shapes,
         ) = _make_wrapper_fixtures(denoise=denoise)
 
         snapshot = packed_input.clone()
+
+        flat_zeros, _ = _fake_pack_latents(
+            [
+                torch.zeros(1, _C_V, _T, _HL, _WL),
+                torch.zeros(1, _C_A, 2, _AUDIO_T),
+            ]
+        )
 
         wrapper = build_model_function_wrapper(
             schedule,
@@ -504,14 +602,157 @@ class TestBuildModelFunctionWrapper:
             audio_orig,
             audio_noise,
             audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
         )
         wrapper(
-            lambda *a, **kw: torch.zeros_like(packed_input),  # noqa: ARG005
+            lambda *a, **kw: flat_zeros.clone(),  # noqa: ARG005
             _args_dict(packed_input, sigma),
         )
 
         assert torch.equal(packed_input, snapshot), (
             "Wrapper must not mutate the caller's input tensor in place"
+        )
+
+    def test_temporal_dim_targeted_not_batch_dim(self, fake_comfy: types.ModuleType) -> None:
+        """Regression: wrapper must write into temporal dim 2, NOT batch dim 0.
+
+        Before the fix, video_edit[row_idx] indexed the batch dim, so row 0 of the
+        batch received row 0's hold_value but other batch-0 rows were untouched.
+        After the fix, video_edit[:,:,row_idx:row_idx+1,:,:] writes into the temporal
+        slice for ALL batch elements.
+
+        This test MUST fail before the wrapper indexing fix and pass after.
+        """
+        denoise = 0.3
+        sigma = 0.7
+        target_row = 1  # middle row to avoid boundary ambiguity
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]  # [1, C_v, T, Hl, Wl]
+
+        # Confirm that the TEMPORAL slice at target_row was written, not a batch-dim slot.
+        # The held value must be at [:, :, target_row, :, :] (temporal), not at [target_row, :].
+        expected = hold_value(
+            per_row_original[target_row], per_row_noise[target_row], sigma
+        )  # [1, C_v, 1, Hl, Wl]
+        actual = video_in[:, :, target_row : target_row + 1, :, :]  # [1, C_v, 1, Hl, Wl]
+        assert torch.allclose(actual, expected, atol=1e-6), (
+            f"Temporal row {target_row} must contain hold_value (temporal-dim targeting)"
+        )
+
+    def test_cond_batch_broadcast_both_batch_rows_receive_hold(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Cond-batch broadcast: when batch=2 (cond+uncond), held rows are written
+        to ALL batch elements (not just batch[0]).
+
+        This test MUST fail before the fix and pass after.
+        """
+        denoise = 0.3
+        sigma = 0.7
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,  # shape [2, 1, C] because batch=2
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, batch=2)
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]  # [2, C_v, T, Hl, Wl]
+
+        for i, row_s in enumerate(schedule):
+            if is_held(sigma, row_s.denoise):
+                expected = hold_value(per_row_original[i], per_row_noise[i], sigma)
+                for b in range(2):
+                    actual = video_in[b : b + 1, :, i : i + 1, :, :]
+                    assert torch.allclose(actual, expected, atol=1e-6), (
+                        f"Batch element {b}, held video row {i}: must receive hold_value"
+                    )
+
+    def test_pack_unpack_round_trip_through_wrapper(self, fake_comfy: types.ModuleType) -> None:
+        """Round-trip: packing then unpacking returns tensors equal to the originals.
+
+        Verifies the fake pack/unpack geometry is consistent and that the wrapper's
+        repack-for-apply_model produces a tensor that unpacks cleanly.
+        """
+        denoise = 0.9  # no rows held, so wrapper passes input through
+        sigma = 0.5
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+        )
+        result = wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        # With no held rows (sigma < denoise), the packed result should equal packed_input.
+        assert torch.allclose(result, packed_input, atol=1e-7), (
+            "Non-held wrapper: result must equal input when no rows are held"
         )
 
 
