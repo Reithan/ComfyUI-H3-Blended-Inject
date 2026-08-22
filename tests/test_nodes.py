@@ -12,7 +12,10 @@ FAIL NOW, PASS once implemented:
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +185,56 @@ class TestNodeMappings:
 
         assert "H3AddInject" in entry.NODE_CLASS_MAPPINGS
         assert "H3InjectSampler" in entry.NODE_CLASS_MAPPINGS
+
+    def test_entry_point_loads_when_pack_not_on_sys_path(self):
+        """Regression: entry __init__.py self-heals when pack dir is absent from sys.path.
+
+        ComfyUI execs the entry by file path from ``custom_nodes/`` without adding the
+        pack directory to ``sys.path``, so the sibling ``comfyui_h3_blended_inject``
+        package would be unimportable by default.  The fix (``sys.path.insert`` in
+        ``__init__.py``) must be present; this test fails if it is removed.
+
+        Global state (``sys.path``, ``sys.modules``) is saved before the test and
+        fully restored in ``finally`` so other tests are unaffected.
+        """
+        root = str(Path(__file__).resolve().parents[1])
+
+        # Save global state that this test temporarily mutates.
+        saved_path = list(sys.path)
+        saved_modules = {
+            k: v
+            for k, v in sys.modules.items()
+            if k == "comfyui_h3_blended_inject" or k.startswith("comfyui_h3_blended_inject.")
+        }
+
+        try:
+            # Remove pack modules so import resolution starts from scratch.
+            for k in list(saved_modules):
+                del sys.modules[k]
+
+            # Strip project-root entries from sys.path to replicate ComfyUI's env.
+            sys.path[:] = [p for p in sys.path if p not in ("", root, root + os.sep)]
+
+            # Precondition guard: the pack must now be unimportable.
+            # (If the pack is ever pip-installed, this guard may stop raising;
+            # the exec_module block below still validates the entry-point behaviour.)
+            with pytest.raises(ModuleNotFoundError):
+                importlib.import_module("comfyui_h3_blended_inject")
+
+            # Load exactly as ComfyUI does: exec the entry file by path.
+            entry_path = Path(root) / "__init__.py"
+            spec = importlib.util.spec_from_file_location("h3_entry_syspath_probe", entry_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            assert "H3AddInject" in mod.NODE_CLASS_MAPPINGS
+            assert "H3InjectSampler" in mod.NODE_CLASS_MAPPINGS
+
+        finally:
+            # Restore global state so subsequent tests are unaffected.
+            sys.path[:] = saved_path
+            # Overwrite any freshly-loaded copies with the original module objects.
+            sys.modules.update(saved_modules)
 
 
 # ---------------------------------------------------------------------------
