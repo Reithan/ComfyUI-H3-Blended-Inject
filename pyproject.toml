@@ -26,6 +26,9 @@ dev = [
     "diff-cover>=9.0",
     "ruff>=0.6",
     "pre-commit>=3.7",
+    "hypothesis>=6.0",
+    "numpy>=1.24",
+    "torch>=2.0",
 ]
 
 [tool.ruff]
