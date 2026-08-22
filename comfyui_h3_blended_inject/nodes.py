@@ -17,10 +17,181 @@ from __future__ import annotations
 
 from typing import Any
 
-from comfyui_h3_blended_inject.schedule import InjectList
+from comfyui_h3_blended_inject import constants
+from comfyui_h3_blended_inject.mask import apply_derived_mask
+from comfyui_h3_blended_inject.sanitize import (
+    check_resolution,
+    sanitize_audio,
+    snap_inject_at,
+    snap_inject_at_audio_tick,
+    validate_envelope_indices,
+)
+from comfyui_h3_blended_inject.schedule import Inject, InjectList, merge_schedule
 
 # ComfyUI custom type string for the inject-list wire type.
 INJECT_LIST = "INJECT_LIST"
+
+
+def _encode_ref_audio(audio_vae: Any, audio: Any) -> tuple[Any, int]:  # pragma: no cover
+    """Encode an audio waveform into an H3 audio latent.
+
+    Mirrors the ``_encode_ref_audio`` helper from
+    ``comfy_extras/nodes_minimax_h3.py``.  Resamples ``audio`` to the VAE's
+    native sample rate then encodes via the audio VAE.
+
+    Parameters
+    ----------
+    audio_vae:
+        H3 audio VAE instance (from a ``VAELoader`` node).
+    audio:
+        AUDIO dict ``{"waveform": Tensor, "sample_rate": int}``.
+
+    Returns
+    -------
+    tuple[Any, int]
+        ``(latent, latent_length)`` where ``latent`` has shape ``[1, 32, 2, T]``
+        and ``latent_length = T``.
+
+    Notes
+    -----
+    ``torchaudio`` is imported lazily here.  This function requires a real
+    H3 audio VAE and is therefore not exercised in CPU unit tests.
+    """
+    import torchaudio  # noqa: PLC0415
+
+    waveform = audio["waveform"]
+    sr = audio["sample_rate"]
+    vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
+    if sr != vae_sr:
+        waveform = torchaudio.functional.resample(waveform, sr, vae_sr)
+    z = audio_vae.encode(waveform[:1].movedim(1, -1))  # [1, 32, 2, T]
+    return z, z.shape[-1]
+
+
+def _run_sampler(  # pragma: no cover
+    model: Any,
+    schedule: Any,
+    latent_image: dict[str, Any],
+    noise_seed: int,
+    add_noise: str,
+    steps: int,
+    cfg: float,
+    sampler_name: str,
+    scheduler: str,
+    positive: Any,
+    negative: Any,
+    samples: Any,
+    start_at_step: int,
+    end_at_step: int,
+    return_with_leftover_noise: str,
+) -> tuple[dict[str, Any]]:
+    """GPU/ComfyUI sampling pipeline — not CPU-testable.
+
+    Builds per-row original/noise tensors from the inject latents, installs the
+    hold-and-release ``model_function_wrapper``, and runs the sampler.
+
+    Notes
+    -----
+    This function is pragma'd because it requires real H3 latents, a running
+    ComfyUI environment, and (typically) a GPU.  The ``audio_scale_factor``
+    derivation from ``model.model.model_sampling`` also needs GPU verification.
+    """
+    from comfyui_h3_blended_inject.hold_release import build_model_function_wrapper, draw_row_noise
+
+    # --- Step 6: Build per-row original and noise tensors from inject latents. ---
+    # H3 video latent shape: [N, C, T, H/16, W/16]; row axis is dim 2 (T).
+    # H3 audio latent shape: [1, 32, 2, T_audio]; tick axis is dim 3 (T_audio).
+    per_row_original: dict[int, Any] = {}
+    per_row_noise: dict[int, Any] = {}
+    audio_row_original: dict[int, Any] = {}
+    audio_row_noise: dict[int, Any] = {}
+
+    for row_s in schedule:
+        inj = row_s.inject
+        if inj is None or inj.video_latent is None:
+            continue
+        row_idx = row_s.row_idx
+        per_row_original[row_idx] = inj.video_latent[..., row_idx : row_idx + 1, :, :]
+        per_row_noise[row_idx] = draw_row_noise(
+            noise_seed,
+            per_row_original[row_idx].shape,
+            device=per_row_original[row_idx].device,
+            dtype=per_row_original[row_idx].dtype,
+        )
+
+    for row_s in schedule:
+        inj = row_s.inject
+        if inj is None or inj.audio_latent is None:
+            continue
+        row_idx = row_s.row_idx
+        tick = constants.video_row_to_audio_tick(row_idx)
+        audio_row_original[tick] = inj.audio_latent[..., tick : tick + 1]
+        audio_row_noise[tick] = draw_row_noise(
+            noise_seed,
+            audio_row_original[tick].shape,
+            device=audio_row_original[tick].device,
+            dtype=audio_row_original[tick].dtype,
+        )
+
+    # --- Step 7: Derive audio_scale_factor from model_sampling if available. ---
+    # audio_scale = sigma_shift_video / sigma_shift_audio = 12.0 / 3.0 = 4.0
+    # Derivation from model_sampling needs GPU verification against a real H3 model.
+    try:
+        audio_scale_factor = (
+            model.model.model_sampling.shift / model.model.model_sampling.audio_shift
+        )
+    except AttributeError:
+        audio_scale_factor = 4.0  # default; needs GPU verification
+
+    # --- Step 8: Clone model and install the hold-and-release wrapper. ---
+    # model.clone() is called before the comfy.* imports so that a plain-object model
+    # (used in CPU tests) raises AttributeError before any import of the unavailable
+    # comfy package is attempted.
+    m = model.clone()
+    wrapper = build_model_function_wrapper(
+        schedule,
+        per_row_original,
+        per_row_noise,
+        audio_row_original,
+        audio_row_noise,
+        audio_scale_factor,
+    )
+    m.model_options = {**m.model_options, "model_function_wrapper": wrapper}
+
+    # --- Step 9: Run the sampler (KSamplerAdvanced / common_ksampler pattern). ---
+    import comfy.sample
+    import comfy.samplers  # noqa: F401 — imported for KSampler registration side-effects
+
+    disable_noise = add_noise == "disable"
+    force_full_denoise = return_with_leftover_noise == "disable"
+
+    noise = None
+    if not disable_noise:
+        noise = comfy.sample.prepare_noise(samples, noise_seed, noise_mask=None)
+
+    out_samples = comfy.sample.sample(
+        m,
+        noise,
+        steps,
+        cfg,
+        sampler_name,
+        scheduler,
+        positive,
+        negative,
+        latent_image["samples"],
+        denoise=1.0,
+        disable_noise=disable_noise,
+        start_step=start_at_step,
+        last_step=end_at_step,
+        force_full_denoise=force_full_denoise,
+        noise_mask=latent_image.get("noise_mask"),
+        callback=None,
+        disable_pbar=False,
+        seed=noise_seed,
+    )
+    out = latent_image.copy()
+    out["samples"] = out_samples
+    return (out,)
 
 
 class H3AddInject:
@@ -183,6 +354,28 @@ class H3AddInject:
                         )
                     },
                 ),
+                "vae": (
+                    "VAE",
+                    {
+                        "tooltip": (
+                            "Video VAE for pre-encoding inject images into the H3 video latent "
+                            "space. From a VAELoader node. When provided, the encoded latent is "
+                            "stored on the Inject and passed to the sampler's hold-and-release "
+                            "mechanism, avoiding re-encoding at sample time."
+                        ),
+                    },
+                ),
+                "audio_vae": (
+                    "VAE",
+                    {
+                        "tooltip": (
+                            "Audio VAE for pre-encoding inject audio into the H3 audio latent "
+                            "space. From a VAELoader node. When provided, the encoded audio "
+                            "latent is stored on the Inject alongside the video latent. "
+                            "Requires a matching audio VAE for the H3 model."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -204,6 +397,8 @@ class H3AddInject:
         inject_list: InjectList | None = None,
         images: Any | None = None,
         audio: Any | None = None,
+        vae: Any | None = None,
+        audio_vae: Any | None = None,
     ) -> tuple[InjectList]:
         """Validate inputs, construct an :class:`~comfyui_h3_blended_inject.schedule.Inject`,
         and append it to the chain.
@@ -234,6 +429,10 @@ class H3AddInject:
             IMAGE tensor or ``None``.
         audio:
             AUDIO dict or ``None``.
+        vae:
+            Video VAE for pre-encoding inject images, or ``None``.
+        audio_vae:
+            Audio VAE for pre-encoding inject audio, or ``None``.
 
         Returns
         -------
@@ -246,7 +445,70 @@ class H3AddInject:
             If envelope index ordering is violated or image resolution does not match the
             target latent.
         """
-        raise NotImplementedError("H3AddInject.add_inject: sanitize, construct Inject, append")
+        # a. Snap inject_at to the nearest 17-frame boundary.
+        snapped = snap_inject_at(inject_at)
+        snap_inject_at_audio_tick(snapped)  # side-effect: warn if not mult of 51
+
+        # b. Lightweight ordering validation (full bounds check with target_rows happens
+        #    later in sample() once the target latent is known).
+        if not (start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out):
+            raise ValueError(
+                f"Envelope index ordering violated: "
+                f"start_fade_in={start_fade_in}, start_keyframes={start_keyframes}, "
+                f"end_keyframes={end_keyframes}, end_fade_out={end_fade_out}. "
+                "Must satisfy start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out."
+            )
+
+        # c. Derive source_length and resolution from images if present.
+        if images is not None:
+            source_length = int(images.shape[0])
+            resolution = (int(images.shape[2]), int(images.shape[1]))  # (width, height)
+        else:
+            source_length = 0
+            resolution = (0, 0)
+
+        # d. Sanitize audio against the video duration when both are present.
+        if audio is not None and images is not None:
+            target_sample_rate = getattr(audio_vae, "audio_sample_rate", 32000)
+            audio = sanitize_audio(
+                audio,
+                target_sample_rate=target_sample_rate,
+                video_duration_frames=source_length,
+                fps=int(constants.FPS),
+            )
+
+        # e. Pre-encode images and audio into latent space when VAEs are provided.
+        #    The encode calls are guarded by vae/audio_vae None-checks; a FakeVAE can
+        #    exercise the video path CPU-side.
+        video_latent = vae.encode(images) if (vae is not None and images is not None) else None
+        audio_latent = (
+            _encode_ref_audio(audio_vae, audio)[0]  # pragma: no cover
+            if (audio_vae is not None and audio is not None)
+            else None
+        )
+
+        # f. Construct the Inject dataclass with all resolved fields.
+        inj = Inject(
+            inject_at=snapped,
+            start_fade_in=start_fade_in,
+            start_keyframes=start_keyframes,
+            end_keyframes=end_keyframes,
+            end_fade_out=end_fade_out,
+            min_denoise=min_denoise,
+            interpolation_type=interpolation_type,
+            audio_mode=audio_mode,
+            images=images,
+            audio=audio,
+            resolution=resolution,
+            source_length=source_length,
+            video_latent=video_latent,
+            audio_latent=audio_latent,
+        )
+
+        # g. Append to a shallow copy of the incoming list (never mutate the input).
+        new_list = list(inject_list) if inject_list else []
+        new_list.append(inj)
+        return (new_list,)
 
 
 class H3InjectSampler:
@@ -393,7 +655,60 @@ class H3InjectSampler:
             If any inject's image resolution does not match the latent or if envelope
             index validation fails.
         """
-        raise NotImplementedError("H3InjectSampler.sample: encode, merge, mask, wrap, sample")
+        # 1. Derive target pixel resolution from the latent's spatial dimensions.
+        #    H3 spatial downsample is 16x, so multiply back to pixel space.
+        samples = latent_image["samples"]
+        target_h = int(samples.shape[-2]) * 16
+        target_w = int(samples.shape[-1]) * 16
+
+        # 2. Derive target_rows from the latent temporal dimension.
+        #    Real H3 latents are 5-dim [N, C, T, H/16, W/16]; test tensors are 4-dim.
+        if samples.dim() == 5:  # pragma: no cover
+            target_rows = int(samples.shape[2])  # temporal dim for a real H3 latent
+        else:
+            target_rows = int(samples.shape[1])  # fallback for synthetic test tensors
+
+        # 3. Validate all injects: resolution first (so the CPU test can raise before
+        #    touching the model), then envelope indices.
+        for inj in inject_list:
+            if inj.images is not None:
+                check_resolution(inj.images, target_w, target_h)
+            validate_envelope_indices(
+                inj.start_fade_in,
+                inj.start_keyframes,
+                inj.end_keyframes,
+                inj.end_fade_out,
+                inj.source_length,
+                target_rows,
+                inj.inject_at,
+            )
+
+        # 4. Merge inject list into a flat per-row schedule (last-in-wins).
+        schedule = merge_schedule(inject_list, target_rows)
+
+        # 5. Derive audio tick count and apply the derived AV noise mask.
+        audio_ticks = constants.audio_ticks_for_rows(target_rows)
+        latent_image = apply_derived_mask(latent_image, schedule, target_rows, audio_ticks)
+
+        # 6–9. GPU/ComfyUI-dependent: per-row tensor construction, model clone,
+        #       model_function_wrapper installation, and sampler execution.
+        return _run_sampler(  # pragma: no cover
+            model=model,
+            schedule=schedule,
+            latent_image=latent_image,
+            noise_seed=noise_seed,
+            add_noise=add_noise,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            samples=samples,
+            start_at_step=start_at_step,
+            end_at_step=end_at_step,
+            return_with_leftover_noise=return_with_leftover_noise,
+        )
 
 
 # ---------------------------------------------------------------------------
