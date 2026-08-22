@@ -15,13 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from comfyui_h3_blended_inject.envelope import evaluate_envelope
+
 # Type alias for the list of injects that flows between H3AddInject nodes and into
 # H3InjectSampler.  Defined here for use by callers; the ComfyUI type *string* is defined
 # separately in nodes.py as INJECT_LIST = "INJECT_LIST".
 InjectList = list["Inject"]
 
 
-@dataclass
+@dataclass(eq=False)
 class Inject:
     """All parameters needed to schedule and apply one inject into the target latent.
 
@@ -139,4 +141,29 @@ def merge_schedule(
     The caller (``H3InjectSampler``) is responsible for iterating over uncovered rows (no
     entry in the result) and treating them as ``d = 1.0`` / pure generation.
     """
-    raise NotImplementedError("merge_schedule: evaluate each inject, apply last-in-wins per row")
+    row_map: dict[int, tuple[Inject, float]] = {}
+    for inj in inject_list:
+        denoise_values = evaluate_envelope(
+            inj.start_fade_in,
+            inj.start_keyframes,
+            inj.end_keyframes,
+            inj.end_fade_out,
+            inj.min_denoise,
+            inj.interpolation_type,
+            inj.source_length,
+            target_rows,
+            inj.inject_at,
+        )
+        for i, d in enumerate(denoise_values):
+            row_idx = inj.inject_at + i
+            if 0 <= row_idx < target_rows:
+                row_map[row_idx] = (inj, d)  # last writer wins
+    return [
+        RowSchedule(
+            row_idx=row_idx,
+            denoise=d,
+            inject=inj,
+            audio_frozen=(inj.audio_mode == "frozen"),
+        )
+        for row_idx, (inj, d) in sorted(row_map.items())
+    ]
