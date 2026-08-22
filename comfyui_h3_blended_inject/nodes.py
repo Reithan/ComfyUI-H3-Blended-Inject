@@ -79,7 +79,7 @@ def _run_sampler(  # pragma: no cover
     sampler_name: str,
     scheduler: str,
     positive: Any,
-    negative: Any,
+    negative: Any | None,
     samples: Any,
     start_at_step: int,
     end_at_step: int,
@@ -169,6 +169,16 @@ def _run_sampler(  # pragma: no cover
     if not disable_noise:
         noise = comfy.sample.prepare_noise(samples, noise_seed, noise_mask=None)
 
+    # H3 is CFG-distilled: when no negative is provided, pass an empty list so
+    # ComfyUI's sampling_function skips the uncond evaluation pass entirely.
+    # (comfy.sample.sample expects a list; passing None would crash.)
+    # When the user supplies a negative, forward it verbatim for CFG / NRS guidance.
+    # Note: we do NOT override the user's cfg value — the empty-list mechanism
+    # suppresses the uncond pass independently of cfg scale.
+    # Residual uncertainty: needs GPU verification against a live H3 model to confirm
+    # the empty-list path produces the expected single-cond forward pass behavior.
+    effective_negative: list | Any = [] if negative is None else negative
+
     out_samples = comfy.sample.sample(
         m,
         noise,
@@ -177,7 +187,7 @@ def _run_sampler(  # pragma: no cover
         sampler_name,
         scheduler,
         positive,
-        negative,
+        effective_negative,
         latent_image["samples"],
         denoise=1.0,
         disable_noise=disable_noise,
