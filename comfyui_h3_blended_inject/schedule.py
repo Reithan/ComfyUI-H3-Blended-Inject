@@ -67,6 +67,13 @@ class Inject:
         (width, height) in pixels.  Must be a multiple of 32 and match the target latent.
     source_length:
         Number of source frames in the inject content (used to validate envelope indices).
+    video_latent:
+        Pre-encoded video latent tensor (from the video VAE), or ``None`` if no VAE was
+        supplied to ``H3AddInject``.  Used by ``H3InjectSampler`` to populate the per-row
+        ``original`` tensors for hold-and-release without re-encoding during sampling.
+    audio_latent:
+        Pre-encoded audio latent tensor (from the audio VAE), or ``None`` if no audio VAE
+        was supplied.  Used analogously to ``video_latent`` for the audio stream.
     """
 
     inject_at: int
@@ -81,6 +88,8 @@ class Inject:
     audio: Any | None
     resolution: tuple[int, int]
     source_length: int
+    video_latent: Any | None = None
+    audio_latent: Any | None = None
 
 
 @dataclass
