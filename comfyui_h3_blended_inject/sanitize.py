@@ -284,7 +284,7 @@ def validate_envelope_indices(
 
     Bounds constraints:
     - All indices must be >= 0.
-    - ``end_fade_out`` must be < ``source_length``.
+    - ``end_fade_out`` must be <= ``source_length`` (exclusive upper bound: frame back at 1.0).
     - The last latent frame the envelope touches is ``inject_at + end_fade_out``; the row
       containing that latent frame (``frame_to_row(inject_at + end_fade_out)``) must be
       ``< target_rows``.
@@ -348,10 +348,10 @@ def validate_envelope_indices(
             f"end_fade_out={end_fade_out}. {indices_str}"
         )
 
-    # Check end_fade_out < source_length.
-    if end_fade_out >= source_length:
+    # Check end_fade_out <= source_length (half-open model: efo is exclusive upper bound).
+    if end_fade_out > source_length:
         raise ValueError(
-            f"end_fade_out={end_fade_out} must be < source_length={source_length}. {indices_str}"
+            f"end_fade_out={end_fade_out} must be <= source_length={source_length}. {indices_str}"
         )
 
     # Check that the last row the envelope touches fits within target_rows.
