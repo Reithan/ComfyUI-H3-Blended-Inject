@@ -489,8 +489,8 @@ class TestValidateEnvelopeIndices:
         # All equal - valid degenerate envelope
         assert validate_envelope_indices(5, 5, 5, 5, 10, 30, 0) is None
 
-    def test_valid_with_inject_at_row_offset(self):
-        # inject_at_row=2, end_fade_out=5: span ends at row 7 < target_rows=30
+    def test_valid_with_inject_at_frame_offset(self):
+        # inject_at=2 (FRAME), end_fade_out=5: last row = frame_to_row(2+5)=frame_to_row(7)=2 < 30
         assert validate_envelope_indices(0, 2, 4, 5, 10, 30, 2) is None
 
     def test_valid_end_fade_out_just_inside_source(self):
@@ -533,9 +533,15 @@ class TestValidateEnvelopeIndices:
             validate_envelope_indices(0, 5, 10, 25, 20, 30, 0)
 
     def test_row_span_exceeds_target_rows_raises(self):
-        # inject_at_row=25, end_fade_out=10; span extends past target_rows=30
+        # inject_at=0 (FRAME), end_fade_out=20, target_rows=5.
+        # frame_to_row(0 + 20) = frame_to_row(20) = 1 + 19//4 = 5 >= target_rows=5 → raises.
         with pytest.raises(ValueError):
-            validate_envelope_indices(0, 2, 5, 10, 20, 30, 25)
+            validate_envelope_indices(0, 5, 10, 20, 25, 5, 0)
+
+    def test_row_span_just_fits_passes(self):
+        # inject_at=0, end_fade_out=16, target_rows=5.
+        # frame_to_row(0 + 16) = 1 + 15//4 = 4 < 5 → passes.
+        assert validate_envelope_indices(0, 5, 10, 16, 20, 5, 0) is None
 
     # -- Error message includes the values that violated the constraint ---------
 

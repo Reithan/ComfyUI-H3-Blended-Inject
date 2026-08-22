@@ -2,18 +2,10 @@
 
 Contract source: docstrings in comfyui_h3_blended_inject/schedule.py and envelope.py.
 
-Tests are written so they:
-  - PASS once merge_schedule and evaluate_envelope are implemented.
-  - FAIL now with NotImplementedError (not tautologies).
-
-The independent expected-winner computation in this module mirrors the documented merge
-semantics (last-in-wins per row) by calling evaluate_envelope directly and applying its
-own accumulation loop.  This gives a reference implementation that can diverge from
-merge_schedule if the latter is buggy.
-
-Row-index assumption: the i-th element returned by evaluate_envelope corresponds to
-target row inject_at_row + i.  This is the most natural interpretation of "in row order"
-given inject_at_row is the starting position of the inject in the target.
+After the frame-space rework, evaluate_envelope returns list[tuple[int, float]] where
+each pair is (absolute_latent_row_idx, denoise).  inject_at is a LATENT FRAME index;
+the fade indices are CLIP frame indices.  The _reference_merge implementation here uses
+the (row_idx, d) pairs from evaluate_envelope directly, mirroring merge_schedule exactly.
 """
 
 from __future__ import annotations
@@ -126,12 +118,13 @@ def _reference_merge(inject_list: list[Inject], target_rows: int) -> list[RowSch
     """Independent last-in-wins merge for comparison against merge_schedule.
 
     Calls evaluate_envelope for each inject in list order; later writes overwrite
-    earlier ones on each row.  Returns the same sparse, sorted structure that
-    merge_schedule must return.
+    earlier ones on each row.  evaluate_envelope returns (row_idx, denoise) pairs
+    so no offset arithmetic is needed here.  Returns the same sparse, sorted structure
+    that merge_schedule must return.
     """
     row_map: dict[int, tuple[Inject, float]] = {}
     for inj in inject_list:
-        denoise_values = evaluate_envelope(
+        for row_idx, d in evaluate_envelope(
             inj.start_fade_in,
             inj.start_keyframes,
             inj.end_keyframes,
@@ -141,9 +134,7 @@ def _reference_merge(inject_list: list[Inject], target_rows: int) -> list[RowSch
             inj.source_length,
             target_rows,
             inj.inject_at,
-        )
-        for i, d in enumerate(denoise_values):
-            row_idx = inj.inject_at + i
+        ):
             if 0 <= row_idx < target_rows:
                 row_map[row_idx] = (inj, d)  # last writer wins
     return [
@@ -266,11 +257,15 @@ class TestMergeScheduleSingleInject:
             assert rs.inject is inj
 
     def test_single_inject_denoise_matches_evaluate_envelope(self) -> None:
-        """Each row's denoise must match evaluate_envelope output for that inject."""
+        """Each row's denoise must match evaluate_envelope output for that inject.
+
+        evaluate_envelope now returns (row_idx, denoise) pairs; we verify both the
+        row_idx and the denoise value match.
+        """
         inj = make_inject()
         target_rows = 30
         result = merge_schedule([inj], target_rows=target_rows)
-        expected_denoise = evaluate_envelope(
+        expected_pairs = evaluate_envelope(
             inj.start_fade_in,
             inj.start_keyframes,
             inj.end_keyframes,
@@ -281,8 +276,11 @@ class TestMergeScheduleSingleInject:
             target_rows,
             inj.inject_at,
         )
-        assert len(result) == len(expected_denoise)
-        for rs, expected_d in zip(result, expected_denoise, strict=True):
+        assert len(result) == len(expected_pairs)
+        for rs, (expected_row, expected_d) in zip(result, expected_pairs, strict=True):
+            assert (
+                rs.row_idx == expected_row
+            ), f"row index mismatch: got {rs.row_idx}, want {expected_row}"
             assert (
                 abs(rs.denoise - expected_d) < 1e-9
             ), f"row {rs.row_idx}: got denoise {rs.denoise}, want {expected_d}"
