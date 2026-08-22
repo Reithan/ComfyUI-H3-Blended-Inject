@@ -41,13 +41,14 @@ class Inject:
         **clip frame indices** — positions within this inject's own source content.
         Clip frame ``k`` maps to latent frame ``inject_at + k``.
     start_fade_in:
-        Source clip frame index where the fade-in begins.  Denoise = 1.0 here.
+        First source clip frame below 1.0.  The 1.0 anchor is at ``start_fade_in - 1``.
     start_keyframes:
         Source clip frame index where the hold at ``min_denoise`` begins.
     end_keyframes:
         Source clip frame index where the hold at ``min_denoise`` ends (inclusive).
     end_fade_out:
-        Source clip frame index where the fade-out ends.  Denoise = 1.0 here.
+        EXCLUSIVE upper bound: denoise returns to 1.0 here.  The last content frame is
+        ``end_fade_out - 1``.
     min_denoise:
         Denoise floor during the hold region, in [0.0, 1.0].  For still-inject (degenerate
         envelope), this is the single frame's denoise value.

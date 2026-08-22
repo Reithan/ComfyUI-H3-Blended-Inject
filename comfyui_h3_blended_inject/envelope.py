@@ -96,17 +96,17 @@ def _denoise_at_frame_time(
 ) -> float:
     """Return the denoise value at continuous source frame time ``t``.
 
-    Returns 1.0 for times outside the envelope [start_fade_in, end_fade_out].
+    Returns 1.0 for times outside the half-open envelope [start_fade_in - 1, end_fade_out].
+    The 1.0 anchor lives at start_fade_in - 1; start_fade_in is the first frame below 1.0.
     """
-    if t < start_fade_in or t > end_fade_out:
+    anchor = start_fade_in - 1
+    if t < anchor or t > end_fade_out:
         return 1.0
 
     if t <= start_keyframes:
-        # Fade-in region: 1.0 at start_fade_in → min_denoise at start_keyframes.
-        if start_keyframes == start_fade_in:
-            # Zero-length fade-in; treat this time as the hold value.
-            return min_denoise
-        fade_t = (t - start_fade_in) / (start_keyframes - start_fade_in)
+        # Fade-in region: 1.0 at anchor (sfi-1) → min_denoise at start_keyframes.
+        # Denominator is always >= 1 since start_keyframes >= start_fade_in > anchor.
+        fade_t = (t - anchor) / (start_keyframes - anchor)
         w = evaluate_curve(fade_t, interpolation_type)
         return 1.0 - w * (1.0 - min_denoise)
 
@@ -147,9 +147,9 @@ def evaluate_envelope(
     time, then averaged across the row.
 
     A row is included in the result **only if** at least one of its clip-frame centers falls
-    within ``[start_fade_in, end_fade_out]``.  Rows whose every center is outside the
-    envelope evaluate to 1.0 (pure generation) and are **omitted** — they must not claim a
-    row under last-in-wins semantics.
+    within ``[start_fade_in - 1, end_fade_out]`` (the anchor-inclusive range).  Rows whose
+    every center is outside this range evaluate to 1.0 (pure generation) and are **omitted**
+    — they must not claim a row under last-in-wins semantics.
 
     A row's final denoise is exactly 0.0 iff ``min_denoise == 0.0`` and **every** clip-frame
     center for that row lies within the hold region ``[start_keyframes, end_keyframes]``
@@ -162,13 +162,15 @@ def evaluate_envelope(
     Parameters
     ----------
     start_fade_in:
-        Clip frame index where fade-in begins (inclusive).  Denoise = 1.0 here.
+        First clip frame below 1.0.  The 1.0 anchor lives at ``start_fade_in - 1``
+        (one virtual frame before this).
     start_keyframes:
         Clip frame index where hold at ``min_denoise`` begins (inclusive).
     end_keyframes:
         Clip frame index where hold ends (inclusive).
     end_fade_out:
-        Clip frame index where fade-out ends (inclusive).  Denoise = 1.0 here.
+        EXCLUSIVE upper bound (half-open model): denoise returns to 1.0 here.
+        The last content frame is ``end_fade_out - 1``.
     min_denoise:
         Denoise floor during the hold region.  In [0.0, 1.0].
     interpolation_type:
@@ -210,17 +212,19 @@ def evaluate_envelope(
         return [(r, min_denoise)]
 
     # Compute the latent-frame span the envelope touches.
-    first_latent = inject_at + start_fade_in
+    # Anchor is at start_fade_in - 1; the first included row may start before sfi.
+    first_latent = inject_at + start_fade_in - 1
     last_latent = inject_at + end_fade_out
 
     result: list[tuple[int, float]] = []
-    for r in range(frame_to_row(first_latent), frame_to_row(last_latent) + 1):
+    row_start = frame_to_row(first_latent) if first_latent >= 0 else 0
+    for r in range(row_start, frame_to_row(last_latent) + 1):
         if r >= target_rows:
             break
         centers_latent = row_center_times(r)
         clip_centers = [c - inject_at for c in centers_latent]
-        # Inclusion rule: include only if at least one clip center is within the envelope.
-        if not any(start_fade_in <= cc <= end_fade_out for cc in clip_centers):
+        # Inclusion rule: include if any clip center falls in the anchor-inclusive range.
+        if not any((start_fade_in - 1) <= cc <= end_fade_out for cc in clip_centers):
             continue
         values = [
             _denoise_at_frame_time(
