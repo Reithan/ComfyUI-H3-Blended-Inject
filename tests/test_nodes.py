@@ -145,7 +145,6 @@ class TestH3InjectSamplerInputTypes:
             "sampler_name",
             "scheduler",
             "positive",
-            "negative",
             "latent_image",
             "start_at_step",
             "end_at_step",
@@ -153,6 +152,20 @@ class TestH3InjectSamplerInputTypes:
             "inject_list",
         }
         assert expected <= required
+
+    def test_negative_is_optional_input(self):
+        """H3 is CFG-distilled: negative must be optional, not required."""
+        types = H3InjectSampler.INPUT_TYPES()
+        required = set(types["required"].keys())
+        optional = types.get("optional", {})
+        assert "negative" not in required, "'negative' must not be in required"
+        assert "negative" in optional, "'negative' must be in optional"
+        # Type spec first element must be "CONDITIONING"
+        assert optional["negative"][0] == "CONDITIONING"
+
+    def test_optional_keys(self):
+        optional = set(H3InjectSampler.INPUT_TYPES().get("optional", {}).keys())
+        assert "negative" in optional
 
     def test_return_types(self):
         assert H3InjectSampler.RETURN_TYPES == ("LATENT",)
@@ -532,3 +545,93 @@ class TestH3InjectSamplerBehavior:
                 return_with_leftover_noise="disable",
                 inject_list=[valid_inject],
             )
+
+    def _make_valid_inject_and_latent(self):
+        """Return a (valid_inject, latent_image) pair usable in sampler stub tests."""
+        import torch
+
+        inj = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.5,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=1,
+        )
+        latent_image: dict[str, Any] = {"samples": torch.zeros(1, 5, 8, 8)}
+        return inj, latent_image
+
+    def test_sample_accepts_none_negative_and_forwards_it(self, monkeypatch):
+        """Regression: negative must be optional — sample() must accept no negative kwarg
+        and must forward negative=None to _run_sampler unchanged.
+        """
+        import comfyui_h3_blended_inject.nodes as nodes_mod
+
+        calls: list[dict] = []
+
+        def stub_run_sampler(**kwargs):
+            calls.append(kwargs)
+            return ({"samples": None},)
+
+        monkeypatch.setattr(nodes_mod, "_run_sampler", stub_run_sampler)
+
+        inj, latent_image = self._make_valid_inject_and_latent()
+        node = H3InjectSampler()
+        # Do NOT pass negative — it must default to None.
+        node.sample(
+            model=object(),
+            add_noise="enable",
+            noise_seed=0,
+            steps=20,
+            cfg=7.0,
+            sampler_name="euler",
+            scheduler="normal",
+            positive=object(),
+            latent_image=latent_image,
+            start_at_step=0,
+            end_at_step=20,
+            return_with_leftover_noise="disable",
+            inject_list=[inj],
+        )
+        assert len(calls) == 1
+        assert calls[0]["negative"] is None
+
+    def test_sample_forwards_explicit_negative_verbatim(self, monkeypatch):
+        """When a negative is provided, sample() must forward it verbatim to _run_sampler."""
+        import comfyui_h3_blended_inject.nodes as nodes_mod
+
+        calls: list[dict] = []
+
+        def stub_run_sampler(**kwargs):
+            calls.append(kwargs)
+            return ({"samples": None},)
+
+        monkeypatch.setattr(nodes_mod, "_run_sampler", stub_run_sampler)
+
+        sentinel_negative = object()
+        inj, latent_image = self._make_valid_inject_and_latent()
+        node = H3InjectSampler()
+        node.sample(
+            model=object(),
+            add_noise="enable",
+            noise_seed=0,
+            steps=20,
+            cfg=7.0,
+            sampler_name="euler",
+            scheduler="normal",
+            positive=object(),
+            latent_image=latent_image,
+            start_at_step=0,
+            end_at_step=20,
+            return_with_leftover_noise="disable",
+            inject_list=[inj],
+            negative=sentinel_negative,
+        )
+        assert len(calls) == 1
+        assert calls[0]["negative"] is sentinel_negative
