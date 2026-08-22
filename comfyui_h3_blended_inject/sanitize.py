@@ -14,7 +14,12 @@ Audio and image tensors are typed as ``Any`` to avoid runtime dependencies.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
+
+# H3 audio constants (matches nodes.py from the motion-context reference).
+_FPS: int = 24
+_AUDIO_HZ: float = 40.0
 
 
 def snap_inject_at(inject_at: int) -> int:
@@ -46,7 +51,20 @@ def snap_inject_at(inject_at: int) -> int:
     ValueError
         If ``inject_at`` is negative.
     """
-    raise NotImplementedError("snap_inject_at: floor-snap to 17n, warn on change")
+    if inject_at < 0:
+        raise ValueError(f"inject_at must be non-negative, got {inject_at}")
+
+    remainder = inject_at % 17
+    if remainder == 0:
+        return inject_at
+
+    snapped = inject_at - remainder
+    warnings.warn(
+        f"inject_at={inject_at} is not a multiple of 17; snapped down to {snapped}.",
+        UserWarning,
+        stacklevel=2,
+    )
+    return snapped
 
 
 def snap_inject_at_audio_tick(inject_at: int) -> int:
@@ -78,7 +96,24 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
         If ``inject_at`` is not a multiple of 51.  Message includes the millisecond error
         between the requested position and the nearest audio tick (max ~12.5 ms).
     """
-    raise NotImplementedError("snap_inject_at_audio_tick: warn if inject_at % 51 != 0")
+    if inject_at % 51 == 0:
+        return inject_at
+
+    # Compute the ms error between inject_at and the nearest audio tick.
+    position_s = inject_at / _FPS
+    position_ticks = position_s * _AUDIO_HZ
+    nearest_tick = round(position_ticks)
+    nearest_tick_s = nearest_tick / _AUDIO_HZ
+    error_ms = abs(position_s - nearest_tick_s) * 1000.0
+
+    warnings.warn(
+        f"inject_at={inject_at} is not a multiple of 51; audio insert start lands "
+        f"{error_ms:.2f} ms from the nearest audio tick (tick {nearest_tick}). "
+        "Use a multiple of 51 for exact audio-tick alignment.",
+        UserWarning,
+        stacklevel=2,
+    )
+    return inject_at
 
 
 def check_resolution(
@@ -117,7 +152,19 @@ def check_resolution(
         do not exactly match ``(target_width, target_height)``.  The message includes the
         actual vs expected dimensions.
     """
-    raise NotImplementedError("check_resolution: validate multiple-of-32 and exact match")
+    height = images.shape[1]
+    width = images.shape[2]
+
+    if width % 32 != 0 or height % 32 != 0:
+        raise ValueError(
+            f"Image dimensions must be multiples of 32; got width={width}, height={height}."
+        )
+
+    if width != target_width or height != target_height:
+        raise ValueError(
+            f"Image dimensions {width}x{height} do not match target "
+            f"{target_width}x{target_height}. Rescaling is not supported."
+        )
 
 
 def sanitize_audio(
@@ -165,7 +212,58 @@ def sanitize_audio(
     TypeError
         If ``audio`` is not a dict with the expected keys.
     """
-    raise NotImplementedError("sanitize_audio: resample then trim/pad, warn on mismatch")
+    if not isinstance(audio, dict) or "waveform" not in audio or "sample_rate" not in audio:
+        raise TypeError(
+            "audio must be a dict with 'waveform' and 'sample_rate' keys; "
+            f"got {type(audio).__name__}."
+        )
+
+    import torch
+
+    waveform = audio["waveform"]
+    orig_sr = audio["sample_rate"]
+
+    # Resample first, then compare lengths.
+    if orig_sr != target_sample_rate:
+        new_len = round(waveform.shape[-1] * target_sample_rate / orig_sr)
+        # interpolate expects (N, C, L); waveform is (C, L).
+        x = waveform.unsqueeze(0).float()
+        resampled = torch.nn.functional.interpolate(
+            x, size=new_len, mode="linear", align_corners=False
+        )
+        waveform = resampled.squeeze(0)
+    else:
+        waveform = waveform.clone()
+
+    # Target length in samples after resampling.
+    target_samples = round(video_duration_frames / fps * target_sample_rate)
+    current_samples = waveform.shape[-1]
+
+    if current_samples > target_samples:
+        diff = current_samples - target_samples
+        diff_s = diff / target_sample_rate
+        warnings.warn(
+            f"Audio is {diff} samples ({diff_s:.4f} s) longer than the video duration; "
+            "trimming trailing samples.",
+            UserWarning,
+            stacklevel=2,
+        )
+        waveform = waveform[..., :target_samples]
+    elif current_samples < target_samples:
+        diff = target_samples - current_samples
+        diff_s = diff / target_sample_rate
+        warnings.warn(
+            f"Audio is {diff} samples ({diff_s:.4f} s) shorter than the video duration; "
+            "silence-padding.",
+            UserWarning,
+            stacklevel=2,
+        )
+        pad_shape = list(waveform.shape)
+        pad_shape[-1] = diff
+        silence = torch.zeros(pad_shape, dtype=waveform.dtype, device=waveform.device)
+        waveform = torch.cat([waveform, silence], dim=-1)
+
+    return {"waveform": waveform, "sample_rate": target_sample_rate}
 
 
 def validate_envelope_indices(
@@ -215,7 +313,49 @@ def validate_envelope_indices(
         If any ordering or bounds constraint is violated.  The message includes all four
         index values and the specific constraint that failed.
     """
-    raise NotImplementedError(
-        "validate_envelope_indices: check ordering start_fade_in<=start_keyframes<=end_keyframes"
-        "<=end_fade_out and bounds vs source_length / target_rows"
+    indices_str = (
+        f"(start_fade_in={start_fade_in}, start_keyframes={start_keyframes}, "
+        f"end_keyframes={end_keyframes}, end_fade_out={end_fade_out})"
     )
+
+    # Check non-negative bounds first.
+    if start_fade_in < 0:
+        raise ValueError(f"start_fade_in={start_fade_in} must be >= 0. {indices_str}")
+    if start_keyframes < 0:
+        raise ValueError(f"start_keyframes={start_keyframes} must be >= 0. {indices_str}")
+    if end_keyframes < 0:
+        raise ValueError(f"end_keyframes={end_keyframes} must be >= 0. {indices_str}")
+    if end_fade_out < 0:
+        raise ValueError(f"end_fade_out={end_fade_out} must be >= 0. {indices_str}")
+
+    # Check ordering: start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out.
+    if start_fade_in > start_keyframes:
+        raise ValueError(
+            f"Ordering violated: start_fade_in={start_fade_in} > "
+            f"start_keyframes={start_keyframes}. {indices_str}"
+        )
+    if start_keyframes > end_keyframes:
+        raise ValueError(
+            f"Ordering violated: start_keyframes={start_keyframes} > "
+            f"end_keyframes={end_keyframes}. {indices_str}"
+        )
+    if end_keyframes > end_fade_out:
+        raise ValueError(
+            f"Ordering violated: end_keyframes={end_keyframes} > "
+            f"end_fade_out={end_fade_out}. {indices_str}"
+        )
+
+    # Check end_fade_out < source_length.
+    if end_fade_out >= source_length:
+        raise ValueError(
+            f"end_fade_out={end_fade_out} must be < source_length={source_length}. {indices_str}"
+        )
+
+    # Check row span fits within target_rows.
+    span_end = inject_at_row + end_fade_out
+    if span_end >= target_rows:
+        raise ValueError(
+            f"Row span exceeds target: inject_at_row={inject_at_row} + "
+            f"end_fade_out={end_fade_out} = {span_end} >= target_rows={target_rows}. "
+            f"{indices_str}"
+        )
