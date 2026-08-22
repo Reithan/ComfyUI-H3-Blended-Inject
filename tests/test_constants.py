@@ -245,3 +245,53 @@ def test_time_shift_sigma_monotone_non_decreasing(sigma_a, sigma_b):
     """time_shift_sigma is monotone non-decreasing over [0, 1]."""
     lo, hi = min(sigma_a, sigma_b), max(sigma_a, sigma_b)
     assert time_shift_sigma(lo) <= time_shift_sigma(hi)
+
+
+class TestAudioTickRange:
+    """audio_tick_range: canonical tick range per video row, tiling [0, audio_ticks) exactly."""
+
+    def test_row_zero_starts_at_zero(self) -> None:
+        from comfyui_h3_blended_inject.constants import audio_tick_range
+
+        r = audio_tick_range(0, 5, 20)
+        assert r.start == 0
+
+    def test_final_row_extends_to_audio_ticks(self) -> None:
+        from comfyui_h3_blended_inject.constants import audio_tick_range
+
+        audio_ticks_total = 20
+        n_rows = 5
+        r = audio_tick_range(n_rows - 1, n_rows, audio_ticks_total)
+        assert r.stop == audio_ticks_total
+
+    def test_adjacent_rows_contiguous(self) -> None:
+        from comfyui_h3_blended_inject.constants import audio_tick_range
+
+        n_rows = 5
+        audio_ticks_total = audio_ticks_for_rows(n_rows)
+        for row_idx in range(n_rows - 1):
+            r_curr = audio_tick_range(row_idx, n_rows, audio_ticks_total)
+            r_next = audio_tick_range(row_idx + 1, n_rows, audio_ticks_total)
+            assert r_curr.stop == r_next.start, (
+                f"Rows {row_idx} and {row_idx + 1} not contiguous: {r_curr} vs {r_next}"
+            )
+
+    def test_tiles_exactly_no_overlap_no_gap(self) -> None:
+        from comfyui_h3_blended_inject.constants import audio_tick_range
+
+        n_rows = 5
+        audio_ticks_total = audio_ticks_for_rows(n_rows)
+        ticks_seen: set[int] = set()
+        for row_idx in range(n_rows):
+            for t in audio_tick_range(row_idx, n_rows, audio_ticks_total):
+                assert t not in ticks_seen, f"Tick {t} covered by row {row_idx} twice"
+                ticks_seen.add(t)
+        assert ticks_seen == set(range(audio_ticks_total)), (
+            f"Ranges do not tile [0, {audio_ticks_total}): covered={sorted(ticks_seen)}"
+        )
+
+    def test_negative_row_idx_raises(self) -> None:
+        from comfyui_h3_blended_inject.constants import audio_tick_range
+
+        with pytest.raises(ValueError):
+            audio_tick_range(-1, 5, 20)
