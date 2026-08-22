@@ -82,6 +82,13 @@ Pure-logic modules (envelope, schedule, sanitization, derived mask) are kept
 importable without a running ComfyUI so they can be tested CPU-side with a mock
 model.
 
+## Releasing
+
+Publishing to the Comfy Registry is not wired up yet. See
+[`RELEASING.md`](RELEASING.md) for the checklist to enable it (registry secret,
+icon, `[tool.comfy]`, and the publish workflow). Once active, releases are cut by
+bumping `version` in `pyproject.toml` and merging to `main`.
+
 ## License
 
 [GPL-3.0](LICENSE).
