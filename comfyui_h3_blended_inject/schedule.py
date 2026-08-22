@@ -45,7 +45,7 @@ class Inject:
     start_keyframes:
         Source clip frame index where the hold at ``min_denoise`` begins.
     end_keyframes:
-        Source clip frame index where the hold at ``min_denoise`` ends (inclusive).
+        EXCLUSIVE: first fade-out frame.  Last held frame is ``end_keyframes - 1``.
     end_fade_out:
         EXCLUSIVE upper bound: denoise returns to 1.0 here.  The last content frame is
         ``end_fade_out - 1``.

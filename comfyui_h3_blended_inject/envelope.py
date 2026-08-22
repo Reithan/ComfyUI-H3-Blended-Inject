@@ -110,15 +110,14 @@ def _denoise_at_frame_time(
         w = evaluate_curve(fade_t, interpolation_type)
         return 1.0 - w * (1.0 - min_denoise)
 
-    if t <= end_keyframes:
-        # Hold region.
+    hold_end = end_keyframes - 1
+    if t <= hold_end:
+        # Hold region: [start_keyframes, end_keyframes).  Last held frame = end_keyframes - 1.
         return min_denoise
 
-    # Fade-out region: min_denoise at end_keyframes → 1.0 at end_fade_out.
-    if end_fade_out == end_keyframes:
-        # Zero-length fade-out.
-        return min_denoise
-    fade_t = (t - end_keyframes) / (end_fade_out - end_keyframes)
+    # Fade-out region: min_denoise at end_keyframes - 1 → 1.0 at end_fade_out.
+    # Denominator = end_fade_out - (end_keyframes - 1) >= 1 always.
+    fade_t = (t - hold_end) / (end_fade_out - hold_end)
     w = evaluate_curve(fade_t, interpolation_type)
     return min_denoise + w * (1.0 - min_denoise)
 
@@ -152,7 +151,7 @@ def evaluate_envelope(
     — they must not claim a row under last-in-wins semantics.
 
     A row's final denoise is exactly 0.0 iff ``min_denoise == 0.0`` and **every** clip-frame
-    center for that row lies within the hold region ``[start_keyframes, end_keyframes]``
+    center for that row lies within the hold region ``[start_keyframes, end_keyframes - 1]``
     (see :func:`is_row_exactly_zero`).
 
     Still-inject degenerate envelope: when ``start_fade_in == start_keyframes == end_keyframes
@@ -167,7 +166,7 @@ def evaluate_envelope(
     start_keyframes:
         Clip frame index where hold at ``min_denoise`` begins (inclusive).
     end_keyframes:
-        Clip frame index where hold ends (inclusive).
+        EXCLUSIVE: first fade-out frame.  Last held frame is ``end_keyframes - 1``.
     end_fade_out:
         EXCLUSIVE upper bound (half-open model): denoise returns to 1.0 here.
         The last content frame is ``end_fade_out - 1``.
@@ -257,7 +256,7 @@ def is_row_exactly_zero(
 
     A row qualifies as ``d = 0`` (exact preserve, routed via the derived noise mask)
     iff ``min_denoise == 0.0`` *and* **every** clip-frame center of the row lies within
-    the hold region ``[start_keyframes, end_keyframes]``.
+    the hold region ``[start_keyframes, end_keyframes - 1]`` (exclusive upper bound).
 
     This is consistent with :func:`evaluate_envelope`: the averaged denoise for a row is
     exactly 0.0 iff this function returns True for the same inputs.
@@ -271,9 +270,9 @@ def is_row_exactly_zero(
     start_keyframes:
         Clip frame index where hold at ``min_denoise`` begins.
     end_keyframes:
-        Clip frame index where hold ends.
+        EXCLUSIVE: first fade-out frame.  Last held frame is ``end_keyframes - 1``.
     end_fade_out:
-        Clip frame index where fade-out ends.
+        EXCLUSIVE upper bound; denoise returns to 1.0 here.
     min_denoise:
         Envelope floor during the hold region.
     inject_at:
@@ -283,12 +282,12 @@ def is_row_exactly_zero(
     -------
     bool
         True iff ``min_denoise == 0.0`` and all clip-frame centers of ``row_idx`` fall
-        within ``[start_keyframes, end_keyframes]``.
+        within ``[start_keyframes, end_keyframes - 1]``.
     """
     if min_denoise != 0.0:
         return False
     clip_centers = [c - inject_at for c in row_center_times(row_idx)]
-    return all(start_keyframes <= cc <= end_keyframes for cc in clip_centers)
+    return all(start_keyframes <= cc <= end_keyframes - 1 for cc in clip_centers)
 
 
 def still_inject_denoise(min_denoise: float) -> list[float]:
