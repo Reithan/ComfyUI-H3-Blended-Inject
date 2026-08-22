@@ -132,33 +132,43 @@ def evaluate_envelope(
     interpolation_type: str,
     source_length: int,
     target_rows: int,
-    inject_at_row: int,
-) -> list[float]:
-    """Compute one denoise value per target latent row covered by this inject's envelope.
+    inject_at: int,
+) -> list[tuple[int, float]]:
+    """Compute one ``(absolute_latent_row_idx, denoise)`` pair per row covered by this envelope.
 
-    Denoise values are evaluated at each row's true center time(s) on the 1/4/4/4/4 grid
-    (via :func:`~comfyui_h3_blended_inject.constants.row_center_times`).  A row whose center
-    maps into the fade-in region gets the interpolated value; a row in the hold region gets
-    ``min_denoise``; a row in the fade-out region gets the mirror interpolated value; a row
-    outside all regions is not included in the result (callers treat it as ``d = 1.0``).
+    ALL fade indices (start_fade_in, start_keyframes, end_keyframes, end_fade_out) are
+    **clip frame indices** — positions within the injected clip's own content.  ``inject_at``
+    is a **latent frame index** (FRAME-space position in the target latent where the clip
+    begins).  Clip frame ``k`` corresponds to latent frame ``inject_at + k``.
 
-    A row is marked ``d = 0.0`` only when the envelope is *exactly* 0.0 across *all* source
-    frames the row covers (see :func:`is_row_exactly_zero`).  This is distinct from
-    ``min_denoise == 0.0`` — the condition is frame-coverage-aware.
+    Row denoise values are evaluated in continuous clip-frame time at each latent row's true
+    center times on the 1/4/4/4/4 grid (via
+    :func:`~comfyui_h3_blended_inject.constants.row_center_times`), converted to clip-frame
+    time, then averaged across the row.
+
+    A row is included in the result **only if** at least one of its clip-frame centers falls
+    within ``[start_fade_in, end_fade_out]``.  Rows whose every center is outside the
+    envelope evaluate to 1.0 (pure generation) and are **omitted** — they must not claim a
+    row under last-in-wins semantics.
+
+    A row's final denoise is exactly 0.0 iff ``min_denoise == 0.0`` and **every** clip-frame
+    center for that row lies within the hold region ``[start_keyframes, end_keyframes]``
+    (see :func:`is_row_exactly_zero`).
 
     Still-inject degenerate envelope: when ``start_fade_in == start_keyframes == end_keyframes
-    == end_fade_out``, the result is a single row with ``d = min_denoise``.
+    == end_fade_out``, the result is a single ``(row, min_denoise)`` entry at
+    ``frame_to_row(inject_at + start_fade_in)``, or ``[]`` if that row is out of bounds.
 
     Parameters
     ----------
     start_fade_in:
-        Source frame index where fade-in begins (inclusive).  Denoise starts at 1.0 here.
+        Clip frame index where fade-in begins (inclusive).  Denoise = 1.0 here.
     start_keyframes:
-        Source frame index where hold at ``min_denoise`` begins (inclusive).
+        Clip frame index where hold at ``min_denoise`` begins (inclusive).
     end_keyframes:
-        Source frame index where hold ends (inclusive).
+        Clip frame index where hold ends (inclusive).
     end_fade_out:
-        Source frame index where fade-out ends (inclusive).  Denoise returns to 1.0 here.
+        Clip frame index where fade-out ends (inclusive).  Denoise = 1.0 here.
     min_denoise:
         Denoise floor during the hold region.  In [0.0, 1.0].
     interpolation_type:
@@ -167,16 +177,17 @@ def evaluate_envelope(
         Total number of source frames in the inject content.
     target_rows:
         Total number of latent rows in the target (output) latent.
-    inject_at_row:
-        Row index in the target latent where this inject starts (must be a multiple of 17,
-        already snapped by :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`).
+    inject_at:
+        Latent FRAME index in the target latent where this inject begins.  Must be a
+        multiple of 17 frames, already snapped by
+        :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`.
 
     Returns
     -------
-    list[float]
-        Denoise value for each target row covered by the envelope, in row order.
-        Length equals the number of target rows that fall within the envelope span.
-        Rows outside the envelope span are omitted.
+    list[tuple[int, float]]
+        ``(absolute_latent_row_idx, denoise)`` pairs for each target row covered by the
+        envelope, sorted by row index ascending.  Rows outside the envelope or out of
+        ``[0, target_rows)`` are omitted.
 
     Raises
     ------
@@ -193,20 +204,27 @@ def evaluate_envelope(
 
     # Degenerate still-inject: all four indices equal → single row at min_denoise.
     if start_fade_in == start_keyframes == end_keyframes == end_fade_out:
-        return [min_denoise]
+        r = frame_to_row(inject_at + start_fade_in)
+        if r >= target_rows:
+            return []
+        return [(r, min_denoise)]
 
-    start_local_row = frame_to_row(start_fade_in)
-    end_local_row = frame_to_row(end_fade_out)
+    # Compute the latent-frame span the envelope touches.
+    first_latent = inject_at + start_fade_in
+    last_latent = inject_at + end_fade_out
 
-    result = []
-    for local_row in range(start_local_row, end_local_row + 1):
-        target_row = inject_at_row + local_row
-        if target_row >= target_rows:
+    result: list[tuple[int, float]] = []
+    for r in range(frame_to_row(first_latent), frame_to_row(last_latent) + 1):
+        if r >= target_rows:
             break
-        centers = row_center_times(local_row)
+        centers_latent = row_center_times(r)
+        clip_centers = [c - inject_at for c in centers_latent]
+        # Inclusion rule: include only if at least one clip center is within the envelope.
+        if not any(start_fade_in <= cc <= end_fade_out for cc in clip_centers):
+            continue
         values = [
             _denoise_at_frame_time(
-                c,
+                cc,
                 start_fade_in,
                 start_keyframes,
                 end_keyframes,
@@ -214,9 +232,10 @@ def evaluate_envelope(
                 min_denoise,
                 interpolation_type,
             )
-            for c in centers
+            for cc in clip_centers
         ]
-        result.append(sum(values) / len(values))
+        denoise = sum(values) / len(values)
+        result.append((r, denoise))
 
     return result
 
@@ -228,49 +247,44 @@ def is_row_exactly_zero(
     end_keyframes: int,
     end_fade_out: int,
     min_denoise: float,
-    inject_at_row: int,
+    inject_at: int,
 ) -> bool:
-    """Return True only if the envelope is exactly 0.0 across *all* frames the row covers.
+    """Return True only if the row's averaged denoise is exactly 0.0.
 
-    A row qualifies as ``d = 0`` and routes to the derived noise mask (exact preservation)
-    iff ``min_denoise == 0.0`` *and* every source frame covered by the row lies within the
-    hold region [start_keyframes, end_keyframes].  Fractional coverage of a boundary frame
-    means the row is not exactly zero.
+    A row qualifies as ``d = 0`` (exact preserve, routed via the derived noise mask)
+    iff ``min_denoise == 0.0`` *and* **every** clip-frame center of the row lies within
+    the hold region ``[start_keyframes, end_keyframes]``.
+
+    This is consistent with :func:`evaluate_envelope`: the averaged denoise for a row is
+    exactly 0.0 iff this function returns True for the same inputs.
 
     Parameters
     ----------
     row_idx:
         Absolute target latent row index to test.
     start_fade_in:
-        Envelope start-fade-in source frame index.
+        Clip frame index where fade-in begins.
     start_keyframes:
-        Envelope hold-start source frame index.
+        Clip frame index where hold at ``min_denoise`` begins.
     end_keyframes:
-        Envelope hold-end source frame index.
+        Clip frame index where hold ends.
     end_fade_out:
-        Envelope end-fade-out source frame index.
+        Clip frame index where fade-out ends.
     min_denoise:
         Envelope floor during the hold region.
-    inject_at_row:
-        Row offset in the target latent where this inject is placed.
+    inject_at:
+        Latent FRAME index in the target latent where this inject begins.
 
     Returns
     -------
     bool
-        True iff all frames covered by ``row_idx`` are within the hold region and
-        ``min_denoise == 0.0``.
+        True iff ``min_denoise == 0.0`` and all clip-frame centers of ``row_idx`` fall
+        within ``[start_keyframes, end_keyframes]``.
     """
     if min_denoise != 0.0:
         return False
-    local_row = row_idx - inject_at_row
-    # Source frames covered by local_row (inclusive on both ends).
-    if local_row == 0:
-        first_frame = 0
-        last_frame = 0
-    else:
-        first_frame = 1 + (local_row - 1) * 4
-        last_frame = first_frame + 3
-    return first_frame >= start_keyframes and last_frame <= end_keyframes
+    clip_centers = [c - inject_at for c in row_center_times(row_idx)]
+    return all(start_keyframes <= cc <= end_keyframes for cc in clip_centers)
 
 
 def still_inject_denoise(min_denoise: float) -> list[float]:
