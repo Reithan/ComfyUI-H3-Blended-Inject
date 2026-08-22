@@ -65,6 +65,19 @@ Managed with [pre-commit](https://pre-commit.com/). After `uv run pre-commit ins
 - **pre-push** — blocks direct pushes on `main`, then runs the full test suite
   (the same checks CI runs).
 
+### Coverage gate
+
+CI enforces **≥ 90% branch coverage on changed code only** (via
+[diff-cover](https://github.com/Bachmann1234/diff_cover)) — new and modified
+lines must have both arms of their branches exercised. It is branch coverage, not
+line/statement coverage, and it applies only to the diff, so existing gaps do not
+block unrelated PRs. To reproduce the gate locally on a feature branch:
+
+```bash
+uv run pytest --cov=. --cov-branch --cov-report=xml
+uv run diff-cover coverage.xml --compare-branch=origin/main --branch-coverage --fail-under=90
+```
+
 Pure-logic modules (envelope, schedule, sanitization, derived mask) are kept
 importable without a running ComfyUI so they can be tested CPU-side with a mock
 model.
