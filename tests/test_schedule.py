@@ -278,12 +278,12 @@ class TestMergeScheduleSingleInject:
         )
         assert len(result) == len(expected_pairs)
         for rs, (expected_row, expected_d) in zip(result, expected_pairs, strict=True):
-            assert (
-                rs.row_idx == expected_row
-            ), f"row index mismatch: got {rs.row_idx}, want {expected_row}"
-            assert (
-                abs(rs.denoise - expected_d) < 1e-9
-            ), f"row {rs.row_idx}: got denoise {rs.denoise}, want {expected_d}"
+            assert rs.row_idx == expected_row, (
+                f"row index mismatch: got {rs.row_idx}, want {expected_row}"
+            )
+            assert abs(rs.denoise - expected_d) < 1e-9, (
+                f"row {rs.row_idx}: got denoise {rs.denoise}, want {expected_d}"
+            )
 
     def test_single_inject_claimed_row_set_matches_envelope_coverage(self) -> None:
         """The set of claimed rows must exactly equal the rows envelope covers."""
@@ -337,18 +337,18 @@ class TestMergeScheduleLastInWins:
         *,
         label: str = "",
     ) -> None:
-        assert len(result) == len(
-            expected
-        ), f"{label} length mismatch: got {len(result)}, want {len(expected)}"
+        assert len(result) == len(expected), (
+            f"{label} length mismatch: got {len(result)}, want {len(expected)}"
+        )
         for rs, es in zip(result, expected, strict=True):
             assert rs.row_idx == es.row_idx, f"{label} row_idx mismatch"
             assert rs.inject is es.inject, f"{label} row {rs.row_idx}: inject mismatch"
-            assert (
-                abs(rs.denoise - es.denoise) < 1e-9
-            ), f"{label} row {rs.row_idx}: denoise got {rs.denoise} want {es.denoise}"
-            assert (
-                rs.audio_frozen == es.audio_frozen
-            ), f"{label} row {rs.row_idx}: audio_frozen mismatch"
+            assert abs(rs.denoise - es.denoise) < 1e-9, (
+                f"{label} row {rs.row_idx}: denoise got {rs.denoise} want {es.denoise}"
+            )
+            assert rs.audio_frozen == es.audio_frozen, (
+                f"{label} row {rs.row_idx}: audio_frozen mismatch"
+            )
 
     def test_b_wins_all_rows_it_claims(self) -> None:
         """Every row B claims has entry.inject is B; B entirely overwrites A on its rows."""
@@ -428,9 +428,9 @@ class TestMergeScheduleLastInWins:
         expected = _reference_merge([inj_a, inj_b], target_rows=target_rows)
         exp_by_row = {e.row_idx: e.denoise for e in expected}
         for rs in result:
-            assert (
-                abs(rs.denoise - exp_by_row[rs.row_idx]) < 1e-9
-            ), f"row {rs.row_idx}: denoise should be exactly winner's value, not a blend"
+            assert abs(rs.denoise - exp_by_row[rs.row_idx]) < 1e-9, (
+                f"row {rs.row_idx}: denoise should be exactly winner's value, not a blend"
+            )
 
     def test_non_overlapping_injects_both_present(self) -> None:
         """Two non-overlapping injects: both appear in output, gap rows are absent."""
@@ -497,9 +497,9 @@ class TestMergeScheduleLastInWins:
         # On every row, C (last) must win
         for rs in result:
             winner_d = rs.inject.min_denoise if rs.inject else None
-            assert (
-                rs.inject is inj_c
-            ), f"row {rs.row_idx}: expected C to win, got inject with min_denoise={winner_d}"
+            assert rs.inject is inj_c, (
+                f"row {rs.row_idx}: expected C to win, got inject with min_denoise={winner_d}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -591,19 +591,19 @@ class TestMergeScheduleProperties:
         result = merge_schedule(inject_list, target_rows=target_rows)
         expected = _reference_merge(inject_list, target_rows=target_rows)
 
-        assert len(result) == len(
-            expected
-        ), f"length mismatch: got {len(result)}, want {len(expected)}"
+        assert len(result) == len(expected), (
+            f"length mismatch: got {len(result)}, want {len(expected)}"
+        )
         result_by_row = {r.row_idx: r for r in result}
         for es in expected:
             rs = result_by_row.get(es.row_idx)
             assert rs is not None, f"row {es.row_idx} missing from result"
-            assert (
-                rs.inject is es.inject
-            ), f"row {es.row_idx}: inject mismatch — expected last inject that covers row"
-            assert (
-                abs(rs.denoise - es.denoise) < 1e-9
-            ), f"row {es.row_idx}: denoise mismatch got {rs.denoise} want {es.denoise}"
+            assert rs.inject is es.inject, (
+                f"row {es.row_idx}: inject mismatch — expected last inject that covers row"
+            )
+            assert abs(rs.denoise - es.denoise) < 1e-9, (
+                f"row {es.row_idx}: denoise mismatch got {rs.denoise} want {es.denoise}"
+            )
             expected_frozen = es.inject.audio_mode == "frozen"
             assert rs.audio_frozen == expected_frozen, f"row {es.row_idx}: audio_frozen mismatch"
 
@@ -638,9 +638,9 @@ class TestMergeScheduleProperties:
         """All row_idx values in the result must be in [0, target_rows)."""
         result = merge_schedule(inject_list, target_rows=target_rows)
         for rs in result:
-            assert (
-                0 <= rs.row_idx < target_rows
-            ), f"row_idx {rs.row_idx} out of bounds [0, {target_rows})"
+            assert 0 <= rs.row_idx < target_rows, (
+                f"row_idx {rs.row_idx} out of bounds [0, {target_rows})"
+            )
 
     @given(
         inject_list=st.lists(
@@ -657,9 +657,9 @@ class TestMergeScheduleProperties:
         """Every RowSchedule in the sparse result must have a non-None inject (it is claimed)."""
         result = merge_schedule(inject_list, target_rows=target_rows)
         for rs in result:
-            assert (
-                rs.inject is not None
-            ), f"row {rs.row_idx} has inject=None but only claimed rows are returned"
+            assert rs.inject is not None, (
+                f"row {rs.row_idx} has inject=None but only claimed rows are returned"
+            )
 
     @given(
         inject_list=st.lists(

@@ -449,9 +449,9 @@ class TestSanitizeAudio:
             warnings.simplefilter("always")
             result = sanitize_audio(audio, target_sr, frames, fps)
 
-        assert not any(
-            issubclass(x.category, UserWarning) for x in w
-        ), "Audio matching video duration after resampling must not emit a mismatch warning"
+        assert not any(issubclass(x.category, UserWarning) for x in w), (
+            "Audio matching video duration after resampling must not emit a mismatch warning"
+        )
         assert result["sample_rate"] == target_sr
         assert result["waveform"].shape[-1] == expected
 

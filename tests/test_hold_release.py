@@ -172,9 +172,9 @@ class TestAudioInternalScale:
         v2 = 2.0 * v1
         r1 = audio_internal_scale(v1, sigma, asf)
         r2 = audio_internal_scale(v2, sigma, asf)
-        assert torch.allclose(
-            r2, 2.0 * r1, atol=1e-6
-        ), "audio_internal_scale must be linear in value"
+        assert torch.allclose(r2, 2.0 * r1, atol=1e-6), (
+            "audio_internal_scale must be linear in value"
+        )
 
     def test_output_shape_matches_input(self) -> None:
         value = torch.randn(3, 5)
@@ -340,9 +340,9 @@ class TestBuildModelFunctionWrapper:
         for i, row_s in enumerate(schedule):
             if is_held(sigma, row_s.denoise):
                 expected = hold_value(per_row_original[i], per_row_noise[i], sigma)
-                assert torch.allclose(
-                    video_in[i], expected, atol=1e-6
-                ), f"Held video row {i}: apply_model input must equal hold_value at sigma={sigma}"
+                assert torch.allclose(video_in[i], expected, atol=1e-6), (
+                    f"Held video row {i}: apply_model input must equal hold_value at sigma={sigma}"
+                )
 
     def test_non_held_video_rows_untouched_in_input(self, fake_comfy: types.ModuleType) -> None:
         """Non-held rows (sigma <= d): apply_model receives the unmodified input rows."""
@@ -377,9 +377,9 @@ class TestBuildModelFunctionWrapper:
         original_video = packed_input[:_N_VIDEO]
 
         for i in range(_N_VIDEO):
-            assert torch.allclose(
-                video_in[i], original_video[i], atol=1e-7
-            ), f"Non-held video row {i} must be unchanged in apply_model input"
+            assert torch.allclose(video_in[i], original_video[i], atol=1e-7), (
+                f"Non-held video row {i} must be unchanged in apply_model input"
+            )
 
     def test_held_video_rows_prediction_overwritten_with_original(
         self, fake_comfy: types.ModuleType
@@ -414,9 +414,9 @@ class TestBuildModelFunctionWrapper:
         result_video = result[:_N_VIDEO]
         for i, row_s in enumerate(schedule):
             if is_held(sigma, row_s.denoise):
-                assert torch.allclose(
-                    result_video[i], per_row_original[i], atol=1e-7
-                ), f"Held video row {i}: wrapper must overwrite prediction with per_row_original"
+                assert torch.allclose(result_video[i], per_row_original[i], atol=1e-7), (
+                    f"Held video row {i}: wrapper must overwrite prediction with per_row_original"
+                )
 
     def test_audio_held_ticks_use_shifted_sigma_and_internal_scale(
         self, fake_comfy: types.ModuleType
@@ -510,9 +510,9 @@ class TestBuildModelFunctionWrapper:
             _args_dict(packed_input, sigma),
         )
 
-        assert torch.equal(
-            packed_input, snapshot
-        ), "Wrapper must not mutate the caller's input tensor in place"
+        assert torch.equal(packed_input, snapshot), (
+            "Wrapper must not mutate the caller's input tensor in place"
+        )
 
 
 # ---------------------------------------------------------------------------

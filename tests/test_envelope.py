@@ -414,9 +414,9 @@ def test_evaluate_envelope_matches_reference_implementation(
         sfi, skf, ekf, efo, min_denoise, itype, source_length, target_rows, inject_at
     )
 
-    assert len(result) == len(
-        reference
-    ), f"length mismatch: got {len(result)}, want {len(reference)}"
+    assert len(result) == len(reference), (
+        f"length mismatch: got {len(result)}, want {len(reference)}"
+    )
     for (r_row, r_d), (e_row, e_d) in zip(result, reference, strict=True):
         assert r_row == e_row, f"row mismatch: got {r_row}, want {e_row}"
         assert abs(r_d - e_d) < 1e-12, f"denoise mismatch at row {r_row}: got {r_d}, want {e_d}"
