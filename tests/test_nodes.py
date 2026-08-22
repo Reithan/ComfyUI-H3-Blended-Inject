@@ -91,7 +91,7 @@ class TestH3AddInjectInputTypes:
 
     def test_optional_keys(self):
         optional = set(H3AddInject.INPUT_TYPES()["optional"].keys())
-        assert optional == {"inject_list", "images", "audio"}
+        assert optional == {"inject_list", "images", "audio", "vae", "audio_vae"}
 
     def test_interpolation_type_combo(self):
         combo = H3AddInject.INPUT_TYPES()["required"]["interpolation_type"][0]
@@ -240,12 +240,20 @@ class TestH3AddInjectBehavior:
     def test_chaining_appends_second_inject_preserving_order(self):
         node = H3AddInject()
 
+        # Use valid ordering: 0 <= 0 <= 4 <= 4 with end_fade_out=4 < source_length=16.
         (list_1,) = node.add_inject(
-            **_make_add_inject_args(inject_at=17, start_fade_in=0, end_fade_out=4)
+            **_make_add_inject_args(
+                inject_at=17, start_fade_in=0, start_keyframes=0, end_keyframes=4, end_fade_out=4
+            )
         )
         (list_2,) = node.add_inject(
             **_make_add_inject_args(
-                inject_at=34, start_fade_in=0, end_fade_out=4, inject_list=list_1
+                inject_at=34,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=4,
+                end_fade_out=4,
+                inject_list=list_1,
             )
         )
 
@@ -275,15 +283,68 @@ class TestH3AddInjectBehavior:
         assert inj.audio_mode == audio_mode
 
 
+class TestH3AddInjectBehaviorExtra:
+    """Additional behavioral tests for H3AddInject.add_inject covering edge-case branches."""
+
+    def test_ordering_violation_raises_value_error(self):
+        """start_fade_in > start_keyframes must raise ValueError before constructing Inject."""
+        node = H3AddInject()
+        with pytest.raises(ValueError, match="ordering violated"):
+            node.add_inject(**_make_add_inject_args(start_fade_in=10, start_keyframes=5))
+
+    def test_add_inject_without_images_sets_source_length_zero(self):
+        """images=None → source_length=0 and resolution=(0, 0) on the produced Inject."""
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(**_make_add_inject_args(images=None, audio=None))
+        inj = inject_list[0]
+        assert inj.source_length == 0
+        assert inj.resolution == (0, 0)
+        assert inj.video_latent is None
+        assert inj.images is None
+
+    def test_add_inject_with_audio_and_images_sanitizes_audio(self):
+        """When both audio and images are supplied, sanitize_audio is called (needs torch)."""
+        import torch
+
+        # 16 kHz waveform; sanitize_audio will resample to 32 kHz and trim/pad.
+        audio = {"waveform": torch.zeros(1, 16000), "sample_rate": 16000}
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(**_make_add_inject_args(audio=audio))
+        inj = inject_list[0]
+        assert inj.audio is not None
+        # After resampling the sample_rate should be updated to the target.
+        assert inj.audio["sample_rate"] == 32000
+
+    def test_add_inject_encodes_images_with_fake_vae(self):
+        """FakeVAE.encode() result is stored as video_latent on the produced Inject."""
+        import torch
+
+        class FakeVAE:
+            sentinel = torch.zeros(1)
+
+            def encode(self, x: Any) -> Any:
+                return self.sentinel
+
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(**_make_add_inject_args(vae=FakeVAE()))
+        assert inject_list[0].video_latent is FakeVAE.sentinel
+
+    def test_audio_latent_is_none_when_no_audio_vae(self):
+        """audio_vae=None → audio_latent=None even when images and audio are present."""
+        import torch
+
+        audio = {"waveform": torch.zeros(1, 8000), "sample_rate": 16000}
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(**_make_add_inject_args(audio=audio, audio_vae=None))
+        assert inject_list[0].audio_latent is None
+
+
 class TestH3InjectSamplerBehavior:
     """Behavioral contract for H3InjectSampler.sample.
 
     Deeper sampler mechanics (hold/release math, mask derivation, schedule merge) are
     covered by the dedicated modules: test_hold_release.py, test_mask.py, test_schedule.py.
     This file tests only the node's public validation contract.
-
-    All tests here FAIL NOW (sample raises NotImplementedError).
-    They will PASS once the validation-before-sample path is implemented.
     """
 
     def test_resolution_mismatch_raises_value_error(self):
@@ -332,4 +393,89 @@ class TestH3InjectSamplerBehavior:
                 end_at_step=20,
                 return_with_leftover_noise="disable",
                 inject_list=[mismatched_inject],
+            )
+
+    def test_envelope_violation_raises_when_no_images(self):
+        """Inject with no images skips check_resolution but hits validate_envelope_indices."""
+        import torch
+
+        # start_fade_in=10 > start_keyframes=0 violates ordering.
+        invalid_inject = Inject(
+            inject_at=0,
+            start_fade_in=10,
+            start_keyframes=0,
+            end_keyframes=5,
+            end_fade_out=9,
+            min_denoise=0.5,
+            interpolation_type="linear",
+            audio_mode="match",
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=20,
+        )
+        latent_image: dict[str, Any] = {"samples": torch.zeros(1, 100, 8, 8)}
+
+        node = H3InjectSampler()
+        with pytest.raises(ValueError):
+            node.sample(
+                model=object(),
+                add_noise="enable",
+                noise_seed=0,
+                steps=20,
+                cfg=7.0,
+                sampler_name="euler",
+                scheduler="normal",
+                positive=object(),
+                negative=object(),
+                latent_image=latent_image,
+                start_at_step=0,
+                end_at_step=20,
+                return_with_leftover_noise="disable",
+                inject_list=[invalid_inject],
+            )
+
+    def test_sample_calls_merge_and_mask_before_gpu(self):
+        """Valid inject (no images) passes both checks; merge_schedule and apply_derived_mask run.
+
+        After the CPU-testable steps succeed, the call hits the GPU-only _run_sampler helper
+        which tries model.clone() on a plain object() and raises AttributeError.
+        """
+        import torch
+
+        # Degenerate still-inject with no images; envelope is valid.
+        valid_inject = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.5,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=1,
+        )
+        # 4-dim fake tensor; target_rows = shape[1] = 5.
+        latent_image: dict[str, Any] = {"samples": torch.zeros(1, 5, 8, 8)}
+
+        node = H3InjectSampler()
+        with pytest.raises(AttributeError):
+            node.sample(
+                model=object(),
+                add_noise="enable",
+                noise_seed=0,
+                steps=20,
+                cfg=7.0,
+                sampler_name="euler",
+                scheduler="normal",
+                positive=object(),
+                negative=object(),
+                latent_image=latent_image,
+                start_at_step=0,
+                end_at_step=20,
+                return_with_leftover_noise="disable",
+                inject_list=[valid_inject],
             )
