@@ -273,13 +273,21 @@ def test_property_video_mask_all_nonzero_positions_are_one(schedule):
 @given(schedule=row_schedule_list(max_row_idx=9))
 @settings(max_examples=60)
 def test_property_audio_mask_zero_set_equals_frozen_ticks(schedule):
-    """audio_mask zero positions == ticks corresponding to audio_frozen rows."""
+    """audio_mask zero positions == full canonical tick range for audio_frozen rows."""
     video_rows = 10
     audio_ticks = 64
     result = derive_mask(schedule, video_rows=video_rows, audio_ticks=audio_ticks)
     audio_mask = result["audio_mask"][0]
 
-    expected_zero_ticks = {video_row_to_audio_tick(r.row_idx) for r in schedule if r.audio_frozen}
+    expected_zero_ticks: set[int] = set()
+    for r in schedule:
+        if r.audio_frozen:
+            start_tick = video_row_to_audio_tick(r.row_idx)
+            if r.row_idx < video_rows - 1:
+                end_tick = min(video_row_to_audio_tick(r.row_idx + 1), audio_ticks)
+            else:
+                end_tick = audio_ticks
+            expected_zero_ticks.update(range(max(0, start_tick), end_tick))
     actual_zero_ticks = {i for i in range(audio_ticks) if audio_mask[i].item() == 0.0}
     assert actual_zero_ticks == expected_zero_ticks
 
@@ -545,3 +553,51 @@ class TestApplyDerivedMaskNestedPath:
         latent = {"samples": torch.zeros(1, 4, 10, 10)}
         result = apply_derived_mask(latent, [], video_rows=5, audio_ticks=8)
         assert isinstance(result["noise_mask"], dict)
+
+
+class TestDeriveMaskAudioFullTickRange:
+    """derive_mask: frozen row zeros ALL ticks in its canonical range, not just the start tick.
+
+    Row 1 with video_rows=5, audio_ticks=7:
+      video_row_to_audio_tick(1) = 2, video_row_to_audio_tick(2) = 8 -> clamped to 7.
+      Full range = ticks 2, 3, 4, 5, 6 (5 ticks).
+    Old implementation only zeroed tick 2.  These tests FAIL before the fix.
+    """
+
+    def test_dict_path_frozen_mid_row_zeros_full_range(self) -> None:
+        """Dict path: ALL ticks in row 1's range must be 0 after fix.
+
+        Fails before fix: only tick 2 is zeroed; ticks 3-6 remain 1.
+        """
+        schedule = [RowSchedule(row_idx=1, denoise=1.0, inject=None, audio_frozen=True)]
+        result = derive_mask(schedule, video_rows=5, audio_ticks=7)
+        audio_mask = result["audio_mask"][0]
+        zero_count = int((audio_mask == 0.0).sum().item())
+        assert zero_count > 1, (
+            f"Row 1 owns 5 audio ticks; expected > 1 zero in dict path, got {zero_count}"
+        )
+        for tick in range(2, 7):
+            assert audio_mask[tick].item() == 0.0, (
+                f"Dict path: tick {tick} should be 0 (row 1 owns range [2, 7)), "
+                f"got {audio_mask[tick].item()}"
+            )
+
+    def test_nested_path_frozen_mid_row_zeros_full_range(self) -> None:
+        """Nested path: ALL ticks in row 1's range [2, 7) must be 0 across all channels.
+
+        Fails before fix: only tick 2 is zeroed.
+        """
+        schedule = [RowSchedule(row_idx=1, denoise=1.0, inject=None, audio_frozen=True)]
+        result = derive_mask(
+            schedule,
+            video_rows=_VIDEO_ROWS,
+            audio_ticks=_AUDIO_TICKS,
+            video_component_shape=_V_SHAPE,
+            audio_component_shape=_A_SHAPE,
+            nested_factory=_fake_nested_factory,
+        )
+        am = result.tensors[1]  # [1, 32, 2, 7]
+        for tick in range(2, 7):
+            assert torch.all(am[:, :, :, tick] == 0.0), (
+                f"Nested path: tick {tick} should be 0 (row 1 owns [2, 7))"
+            )
