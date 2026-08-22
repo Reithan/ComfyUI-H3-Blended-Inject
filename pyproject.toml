@@ -1,0 +1,41 @@
+[project]
+name = "comfyui-h3-blended-inject"
+description = "ComfyUI node pack for injecting video, image, and audio content into MiniMax H3 generation with per-row scheduled denoise blends."
+version = "0.0.1"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Reithan/ComfyUI-H3-Blended-Inject"
+
+# ComfyUI Registry metadata (https://docs.comfy.org/registry/overview).
+# PublisherId and Icon are filled in when the pack is first published.
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-H3-Blended-Inject"
+Icon = ""
+
+# Dev tooling is managed with uv (https://docs.astral.sh/uv/).
+# Install with: uv sync --group dev
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pre-commit>=3.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+# The pack is loaded from ComfyUI/custom_nodes, not pip-installed, so put the
+# repo root on sys.path to make the package importable in tests.
+pythonpath = ["."]
