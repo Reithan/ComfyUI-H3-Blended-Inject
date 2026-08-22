@@ -356,15 +356,18 @@ def _reference_evaluate_envelope(
             return []
         return [(r, float(min_denoise))]
 
-    first_latent = inject_at + start_fade_in
+    # Half-open anchor: the 1.0 point is at start_fade_in - 1 (one frame before sfi).
+    first_latent = inject_at + start_fade_in - 1
     last_latent = inject_at + end_fade_out
     result = []
-    for r in range(frame_to_row(first_latent), frame_to_row(last_latent) + 1):
+    row_start = frame_to_row(first_latent) if first_latent >= 0 else 0
+    for r in range(row_start, frame_to_row(last_latent) + 1):
         if r >= target_rows:
             break
         centers_latent = row_center_times(r)
         clip_centers = [c - inject_at for c in centers_latent]
-        if not any(start_fade_in <= cc <= end_fade_out for cc in clip_centers):
+        # New inclusion rule: center >= anchor (sfi - 1).
+        if not any((start_fade_in - 1) <= cc <= end_fade_out for cc in clip_centers):
             continue
         values = [
             _denoise_at_frame_time(
@@ -787,3 +790,103 @@ def test_still_inject_denoise_returns_single_element_list(min_denoise):
     """still_inject_denoise(m) == [m] for any m in [0, 1]."""
     result = still_inject_denoise(min_denoise)
     assert result == [min_denoise]
+
+
+# ---------------------------------------------------------------------------
+# Half-open anchor regression tests — FAIL before the anchor fix, PASS after
+# ---------------------------------------------------------------------------
+
+
+class TestHalfOpenEnvelopeAnchorRegression:
+    """Regression tests for the half-open [start_fade_in, end_fade_out) anchor model.
+
+    start_fade_in is the FIRST frame below 1.0; the 1.0 anchor lives at
+    start_fade_in - 1.  end_fade_out is the EXCLUSIVE upper bound (denoise
+    returns to 1.0 here).
+
+    Every test in this class FAILS with the old closed-interval model and
+    PASSES after the anchor fix.
+    """
+
+    def test_denoise_at_start_fade_in_is_below_one_not_one(self):
+        """At t = start_fade_in exactly, the new anchor shifts the ramp so denoise < 1.0.
+
+        OLD: anchor at sfi → fade_t = (sfi - sfi) / (skf - sfi) = 0 → denoise = 1.0
+        NEW: anchor at sfi-1 → fade_t = 1 / (skf - sfi + 1) > 0 → denoise < 1.0
+
+        FAILS before fix: old returns exactly 1.0.
+        """
+        sfi, skf, ekf, efo = 3, 7, 10, 14
+        d = _denoise_at_frame_time(
+            float(sfi), sfi, skf, ekf, efo, min_denoise=0.3, interpolation_type="linear"
+        )
+        assert d < 1.0, f"Expected denoise < 1.0 at t=sfi under new anchor, got {d}"
+
+    def test_evaluate_envelope_pulls_in_row_with_center_before_sfi(self):
+        """Row whose center falls in [sfi-1, sfi) is excluded by old model but included by new.
+
+        With sfi=1, inject_at=0: row 0 has a single center at 0.5.
+        OLD: row_start = frame_to_row(inject_at + sfi) = 1 → row 0 absent.
+        NEW: anchor=0; row_start = frame_to_row(0) = 0; inclusion 0 <= 0.5 → row 0 present.
+
+        FAILS before fix: 0 not in result.
+        """
+        result = evaluate_envelope(
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=9,
+            end_fade_out=13,
+            min_denoise=0.3,
+            interpolation_type="linear",
+            source_length=20,
+            target_rows=10,
+            inject_at=0,
+        )
+        row_map = {r: d for r, d in result}
+        assert 0 in row_map, "Row 0 (center 0.5) should be claimed under new anchor (sfi-1=0)"
+        assert row_map[0] < 1.0, f"Row 0 denoise should be < 1.0, got {row_map[0]}"
+
+    def test_one_frame_fade_in_ramps_not_instant_min_at_anchor_row(self):
+        """With sfi=skf (zero-length fade-in under old model), the anchor row gets a ramp value.
+
+        OLD: row 0 center 0.5 < sfi=1 → excluded entirely.
+        NEW: anchor=0; 0 <= 0.5 → included; fade_t = 0.5 → denoise strictly between 1.0 and min.
+
+        FAILS before fix: row 0 absent from result.
+        """
+        min_d = 0.3
+        result = evaluate_envelope(
+            start_fade_in=1,
+            start_keyframes=1,
+            end_keyframes=5,
+            end_fade_out=9,
+            min_denoise=min_d,
+            interpolation_type="linear",
+            source_length=15,
+            target_rows=10,
+            inject_at=0,
+        )
+        row_map = {r: d for r, d in result}
+        assert 0 in row_map, "Row 0 (center 0.5) should be included under new anchor"
+        assert row_map[0] > min_d, f"Row 0 should be above min_denoise={min_d}, got {row_map[0]}"
+        assert row_map[0] < 1.0, f"Row 0 should be below 1.0, got {row_map[0]}"
+
+    def test_whole_clip_sfi_zero_efo_source_length_all_rows_below_one(self):
+        """sfi=0, efo=source_length (valid after COMMIT 1) → all rows claimed with denoise < 1.0.
+
+        The anchor at -1 ensures even row 0 (center 0.5) is in the fade-in ramp.
+        This test is a sanity confirmation; it may also pass with the old model for sfi=0.
+        """
+        result = evaluate_envelope(
+            start_fade_in=0,
+            start_keyframes=3,
+            end_keyframes=7,
+            end_fade_out=13,
+            min_denoise=0.3,
+            interpolation_type="linear",
+            source_length=13,
+            target_rows=10,
+            inject_at=0,
+        )
+        assert len(result) > 0, "Should have at least one row"
+        assert all(d < 1.0 for _, d in result), "All rows should have denoise < 1.0"
