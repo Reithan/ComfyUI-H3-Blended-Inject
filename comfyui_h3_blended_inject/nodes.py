@@ -329,12 +329,12 @@ class H3AddInject:
                     },
                 ),
                 "audio_mode": (
-                    ["match", "drop", "frozen"],
+                    ["fade", "drop", "keep"],
                     {
                         "tooltip": (
-                            "match: audio envelope follows the video denoise schedule. "
+                            "fade: audio envelope follows the video denoise schedule. "
                             "drop: no audio inject (audio is generated normally). "
-                            "frozen: audio inject at d=0 via the derived noise mask "
+                            "keep: audio inject at d=0 via the derived noise mask "
                             "(exact preservation)."
                         ),
                     },
@@ -432,7 +432,7 @@ class H3AddInject:
             Curve name: one of ``"ease_in"``, ``"ease_out"``, ``"ease_in_out"``,
             ``"linear"``, ``"none"``.
         audio_mode:
-            One of ``"match"``, ``"drop"``, ``"frozen"``.
+            One of ``"fade"``, ``"drop"``, ``"keep"``.
         inject_list:
             Existing chain to append to, or ``None`` to start a new list.
         images:

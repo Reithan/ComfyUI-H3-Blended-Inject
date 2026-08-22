@@ -56,9 +56,9 @@ class Inject:
         "ease_in_out", "linear", "none".
     audio_mode:
         How the audio stream is handled for this inject.  One of:
-        - "match": audio envelope follows the video denoise schedule.
+        - "fade": audio envelope follows the video denoise schedule.
         - "drop": no audio inject; audio rows from this inject are left as generation.
-        - "frozen": audio inject at d=0 via the derived noise mask (exact preservation).
+        - "keep": audio inject at d=0 via the derived noise mask (exact preservation).
     images:
         IMAGE tensor batch ([batch, H, W, C] float32) or None if no video/image inject.
     audio:
@@ -109,7 +109,7 @@ class RowSchedule:
     inject:
         The winning :class:`Inject` for this row, or ``None`` if no inject covers it.
     audio_frozen:
-        True iff the winning inject has ``audio_mode == "frozen"``.  When True, the derived
+        True iff the winning inject has ``audio_mode == "keep"``.  When True, the derived
         mask sets the audio ticks corresponding to this row to 0 (exact preserve).
     """
 
@@ -174,7 +174,7 @@ def merge_schedule(
             row_idx=row_idx,
             denoise=d,
             inject=inj,
-            audio_frozen=(inj.audio_mode == "frozen"),
+            audio_frozen=(inj.audio_mode == "keep"),  # "keep" mode freezes audio at d=0
         )
         for row_idx, (inj, d) in sorted(row_map.items())
     ]

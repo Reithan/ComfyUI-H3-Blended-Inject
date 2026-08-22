@@ -37,7 +37,7 @@ from comfyui_h3_blended_inject.schedule import Inject
 # ---------------------------------------------------------------------------
 
 INTERPOLATION_TYPES = ["ease_in", "ease_out", "ease_in_out", "linear", "none"]
-AUDIO_MODES = ["match", "drop", "frozen"]
+AUDIO_MODES = ["fade", "drop", "keep"]
 
 
 class FakeImages:
@@ -62,7 +62,7 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
         "end_fade_out": 15,
         "min_denoise": 0.4,
         "interpolation_type": "linear",
-        "audio_mode": "match",
+        "audio_mode": "fade",
         "inject_list": None,
         "images": FakeImages(16, 64, 64),
         "audio": None,
@@ -102,7 +102,7 @@ class TestH3AddInjectInputTypes:
 
     def test_audio_mode_combo(self):
         combo = H3AddInject.INPUT_TYPES()["required"]["audio_mode"][0]
-        assert combo == ["match", "drop", "frozen"]
+        assert combo == ["fade", "drop", "keep"]
 
     def test_inject_list_optional_type_is_inject_list_string(self):
         inject_list_spec = H3AddInject.INPUT_TYPES()["optional"]["inject_list"]
@@ -432,7 +432,7 @@ class TestH3InjectSamplerBehavior:
             end_fade_out=3,
             min_denoise=0.5,
             interpolation_type="linear",
-            audio_mode="match",
+            audio_mode="fade",
             images=FakeImages(4, 64, 64),  # 64x64
             audio=None,
             resolution=(64, 64),
@@ -474,7 +474,7 @@ class TestH3InjectSamplerBehavior:
             end_fade_out=9,
             min_denoise=0.5,
             interpolation_type="linear",
-            audio_mode="match",
+            audio_mode="fade",
             images=None,
             audio=None,
             resolution=(0, 0),

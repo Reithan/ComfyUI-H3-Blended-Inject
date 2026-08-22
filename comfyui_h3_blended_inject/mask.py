@@ -1,7 +1,7 @@
 """Derived nested AV noise mask construction.
 
 The derived mask encodes *only* the exact ``d = 0`` spans (fully-preserved rows via the
-trained preservation path) and ``audio_mode = "frozen"`` audio ticks.  Fractional-denoise
+trained preservation path) and ``audio_mode = "keep"`` audio ticks.  Fractional-denoise
 rows are handled entirely by hold-and-release and are set to 1 (generate) in this mask.
 
 Mask convention:

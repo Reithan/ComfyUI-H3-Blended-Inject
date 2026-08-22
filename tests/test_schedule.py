@@ -34,7 +34,7 @@ def make_inject(
     end_fade_out: int = 24,
     min_denoise: float = 0.5,
     interpolation_type: str = "linear",
-    audio_mode: str = "match",
+    audio_mode: str = "fade",
     images: object = None,
     audio: object = None,
     resolution: tuple[int, int] = (64, 64),
@@ -92,7 +92,7 @@ def inject_strategy(
         st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)
     )
     interp = draw(st.sampled_from(["ease_in", "ease_out", "ease_in_out", "linear", "none"]))
-    audio_mode = draw(st.sampled_from(["match", "drop", "frozen"]))
+    audio_mode = draw(st.sampled_from(["fade", "drop", "keep"]))
     return Inject(
         inject_at=inject_at,
         start_fade_in=sfi,
@@ -142,7 +142,7 @@ def _reference_merge(inject_list: list[Inject], target_rows: int) -> list[RowSch
             row_idx=row_idx,
             denoise=d,
             inject=inj,
-            audio_frozen=(inj.audio_mode == "frozen"),
+            audio_frozen=(inj.audio_mode == "keep"),
         )
         for row_idx, (inj, d) in sorted(row_map.items())
     ]
@@ -176,14 +176,14 @@ class TestDataclasses:
             inject_at=17,
             min_denoise=0.3,
             interpolation_type="ease_out",
-            audio_mode="frozen",
+            audio_mode="keep",
             resolution=(128, 96),
             source_length=45,
         )
         assert inj.inject_at == 17
         assert inj.min_denoise == 0.3
         assert inj.interpolation_type == "ease_out"
-        assert inj.audio_mode == "frozen"
+        assert inj.audio_mode == "keep"
         assert inj.resolution == (128, 96)
         assert inj.source_length == 45
 
@@ -361,7 +361,7 @@ class TestMergeScheduleLastInWins:
             end_keyframes=40,
             end_fade_out=44,
             source_length=50,
-            audio_mode="match",
+            audio_mode="fade",
         )
         # B: starts at row 17 (one H3 block later), shorter envelope
         inj_b = make_inject(
@@ -371,7 +371,7 @@ class TestMergeScheduleLastInWins:
             end_keyframes=20,
             end_fade_out=24,
             source_length=30,
-            audio_mode="match",
+            audio_mode="fade",
         )
         result = merge_schedule([inj_a, inj_b], target_rows=target_rows)
         expected = _reference_merge([inj_a, inj_b], target_rows=target_rows)
@@ -511,13 +511,13 @@ class TestAudioFrozen:
     """audio_frozen on a RowSchedule row is True iff the winning inject has audio_mode=='frozen'."""
 
     def test_frozen_inject_sets_audio_frozen_true(self) -> None:
-        inj = make_inject(audio_mode="frozen")
+        inj = make_inject(audio_mode="keep")
         result = merge_schedule([inj], target_rows=30)
         for rs in result:
             assert rs.audio_frozen is True, f"row {rs.row_idx}: expected audio_frozen=True"
 
     def test_match_inject_sets_audio_frozen_false(self) -> None:
-        inj = make_inject(audio_mode="match")
+        inj = make_inject(audio_mode="fade")
         result = merge_schedule([inj], target_rows=30)
         for rs in result:
             assert rs.audio_frozen is False, f"row {rs.row_idx}: expected audio_frozen=False"
@@ -538,7 +538,7 @@ class TestAudioFrozen:
             end_keyframes=40,
             end_fade_out=44,
             source_length=50,
-            audio_mode="match",
+            audio_mode="fade",
         )
         inj_b = make_inject(
             inject_at=17,
@@ -547,21 +547,21 @@ class TestAudioFrozen:
             end_keyframes=20,
             end_fade_out=24,
             source_length=30,
-            audio_mode="frozen",
+            audio_mode="keep",
         )
         result = merge_schedule([inj_a, inj_b], target_rows=target_rows)
         expected = _reference_merge([inj_a, inj_b], target_rows=target_rows)
         result_by_row = {r.row_idx: r for r in result}
         for es in expected:
             rs = result_by_row[es.row_idx]
-            expected_frozen = es.inject.audio_mode == "frozen"
+            expected_frozen = es.inject.audio_mode == "keep"
             assert rs.audio_frozen == expected_frozen, (
                 f"row {rs.row_idx}: audio_frozen should be {expected_frozen} "
                 f"(winner audio_mode={es.inject.audio_mode})"
             )
 
     def test_audio_frozen_is_bool_not_string(self) -> None:
-        inj = make_inject(audio_mode="frozen")
+        inj = make_inject(audio_mode="keep")
         result = merge_schedule([inj], target_rows=30)
         for rs in result:
             assert isinstance(rs.audio_frozen, bool)
@@ -604,7 +604,7 @@ class TestMergeScheduleProperties:
             assert abs(rs.denoise - es.denoise) < 1e-9, (
                 f"row {es.row_idx}: denoise mismatch got {rs.denoise} want {es.denoise}"
             )
-            expected_frozen = es.inject.audio_mode == "frozen"
+            expected_frozen = es.inject.audio_mode == "keep"
             assert rs.audio_frozen == expected_frozen, f"row {es.row_idx}: audio_frozen mismatch"
 
     @given(
@@ -677,7 +677,7 @@ class TestMergeScheduleProperties:
         result = merge_schedule(inject_list, target_rows=target_rows)
         for rs in result:
             assert rs.inject is not None  # precondition
-            assert rs.audio_frozen == (rs.inject.audio_mode == "frozen"), (
+            assert rs.audio_frozen == (rs.inject.audio_mode == "keep"), (
                 f"row {rs.row_idx}: audio_frozen={rs.audio_frozen} but "
                 f"inject.audio_mode={rs.inject.audio_mode}"
             )
