@@ -25,7 +25,9 @@ from comfyui_h3_blended_inject.sanitize import (
     sanitize_audio,
     snap_inject_at,
     snap_inject_at_audio_tick,
+    snap_length_down,
     validate_envelope_indices,
+    warn_audio_tail_alignment,
 )
 from comfyui_h3_blended_inject.schedule import Inject, InjectList, merge_schedule
 
@@ -573,9 +575,37 @@ class H3AddInject:
             )
 
         # c. Derive source_length and resolution from images if present.
+        #    Snap source content length down to the largest valid H3 clip length (17n+5)
+        #    that fits within the source.  Raises ValueError when source_length < 5 (the
+        #    minimum valid H3 clip length).  Warns and trims when source_length is not
+        #    already a valid 17n+5 value.
         if images is not None:
-            source_length = int(images.shape[0])
+            _raw_length = int(images.shape[0])
+            source_length = snap_length_down(_raw_length)  # raises if < 5; warns on trim
+            if source_length < _raw_length:
+                images = images[:source_length]  # trim trailing frames from image batch
             resolution = (int(images.shape[2]), int(images.shape[1]))  # (width, height)
+
+            # Validate fade indices against the POST-TRIM snapped length.
+            # end_fade_out is EXCLUSIVE (half-open): efo == source_length is valid.
+            # This is an early check; the full target-row bounds check runs at sample() time.
+            if end_fade_out > source_length:
+                raise ValueError(
+                    f"end_fade_out={end_fade_out} exceeds the post-trim source_length="
+                    f"{source_length} (snapped from {_raw_length} frames). "
+                    "Fade indices must not reference frames beyond the trimmed content."
+                )
+            if start_fade_in >= source_length:
+                raise ValueError(
+                    f"start_fade_in={start_fade_in} >= post-trim source_length={source_length}. "
+                    "start_fade_in must be a valid frame index (< source_length)."
+                )
+
+            # Warn when the snapped length is not audio-sync-aligned (51k+39) and the clip
+            # end is exposed without a fade-out ramp that reaches the tail.
+            warn_audio_tail_alignment(
+                source_length, audio_mode, end_keyframes, end_fade_out, audio is not None
+            )
         else:
             source_length = 0
             resolution = (0, 0)
