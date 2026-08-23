@@ -320,6 +320,92 @@ def audio_ticks_for_rows(n_rows: int) -> int:
     return round(row_start_frame(n_rows) * AUDIO_HZ / FPS)
 
 
+def inject_row_map(inject_at: int, n_clip_rows: int, target_rows: int) -> list[tuple[int, int]]:
+    """Return ``(target_row, clip_row)`` pairs for the valid clip↔target row overlap.
+
+    For each clip row index in ``[0, n_clip_rows)``, the corresponding target row is
+    ``frame_to_row(inject_at) + clip_row``.  Only pairs where both indices are in-bounds
+    are returned — clip rows that map to target rows outside ``[0, target_rows)`` are
+    silently dropped.
+
+    This helper encapsulates the clip↔target mapping used by both the hold-and-release
+    loop and the d==0 composite in ``_run_sampler``.
+
+    Because ``inject_at`` is always a multiple of 17 (enforced by
+    :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`), the result of
+    ``frame_to_row(inject_at)`` is always a chunk-boundary row (``5 * (inject_at // 17)``).
+    Clip row 0 therefore aligns exactly with the chunk boundary — no sub-row offset.
+
+    Parameters
+    ----------
+    inject_at:
+        Latent FRAME index in the target latent where the inject begins (multiple of 17).
+    n_clip_rows:
+        Number of rows in the inject clip's video latent (``video_latent.shape[2]``).
+    target_rows:
+        Total number of rows in the target latent.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        ``(target_row, clip_row)`` pairs in ascending ``clip_row`` order, with
+        ``0 <= clip_row < n_clip_rows`` and ``0 <= target_row < target_rows``.
+    """
+    inject_at_row = frame_to_row(inject_at)
+    return [
+        (inject_at_row + clip_row, clip_row)
+        for clip_row in range(n_clip_rows)
+        if 0 <= inject_at_row + clip_row < target_rows
+    ]
+
+
+def inject_audio_ticks_for_row(
+    row_idx: int,
+    inject_at: int,
+    n_clip_ticks: int,
+    target_rows: int,
+    audio_ticks: int,
+) -> list[tuple[int, int]]:
+    """Return ``(target_tick, clip_tick)`` pairs for the given target video row.
+
+    Uses :func:`audio_tick_range` to enumerate the target ticks owned by ``row_idx``,
+    then maps each tick to its clip offset via
+    ``inject_start_tick = video_row_to_audio_tick(frame_to_row(inject_at))``.  Only pairs
+    where ``clip_tick`` falls in ``[0, n_clip_ticks)`` are returned.
+
+    This mirrors the per-tick mapping in the hold-and-release audio loop inside
+    ``_run_sampler``, encapsulated here so both that loop and the d==0 composite
+    use identical bounds logic.
+
+    Parameters
+    ----------
+    row_idx:
+        Zero-based target video row index.
+    inject_at:
+        Latent FRAME index in the target latent where the inject begins (multiple of 17).
+    n_clip_ticks:
+        Number of audio ticks in the inject clip's audio latent
+        (``audio_latent.shape[-1]``).
+    target_rows:
+        Total number of rows in the target latent.
+    audio_ticks:
+        Total number of audio ticks in the target audio latent.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        ``(target_tick, clip_tick)`` pairs where ``0 <= clip_tick < n_clip_ticks``.
+    """
+    inject_at_row = frame_to_row(inject_at)
+    inject_start_tick = video_row_to_audio_tick(inject_at_row)
+    result = []
+    for tick in audio_tick_range(row_idx, target_rows, audio_ticks):
+        clip_tick = tick - inject_start_tick
+        if 0 <= clip_tick < n_clip_ticks:
+            result.append((tick, clip_tick))
+    return result
+
+
 def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
     """Return the shifted audio sigma for a given video sigma.
 

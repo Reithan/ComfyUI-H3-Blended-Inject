@@ -447,3 +447,117 @@ class TestPerChunkGridRegressions:
     def test_row_center_times_verified_table(self, row_idx, expected_centers):
         """Pinned row→center-times mapping including chunk-boundary resets."""
         assert row_center_times(row_idx) == pytest.approx(expected_centers)
+
+
+# ---------------------------------------------------------------------------
+# inject_row_map — clip↔target row correspondence
+# ---------------------------------------------------------------------------
+
+
+class TestInjectRowMap:
+    """inject_row_map: clip↔target row correspondence for hold-and-release + composite."""
+
+    def test_inject_at_0_identity(self):
+        """inject_at=0 → clip row j maps to target row j (frame_to_row(0)=0)."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        result = inject_row_map(0, 5, 10)
+        assert result == [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]
+
+    def test_inject_at_17_target_rows_start_at_5(self):
+        """inject_at=17 → target rows start at 5 (frame_to_row(17)=5)."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        result = inject_row_map(17, 3, 20)
+        assert result == [(5, 0), (6, 1), (7, 2)]
+
+    def test_inject_at_34_target_rows_start_at_10(self):
+        """inject_at=34 → target rows start at 10 (frame_to_row(34)=10)."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        result = inject_row_map(34, 3, 20)
+        assert result == [(10, 0), (11, 1), (12, 2)]
+
+    def test_out_of_range_clip_rows_dropped(self):
+        """Clip rows whose target_row >= target_rows are dropped."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        # inject_at=0, 10 clip rows, but only 3 target rows → clips 3-9 are out
+        result = inject_row_map(0, 10, 3)
+        assert result == [(0, 0), (1, 1), (2, 2)]
+
+    def test_target_rows_beyond_limit_dropped(self):
+        """inject_at=17 with partial overlap: only rows within target_rows kept."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        # inject_at_row=5; target_rows=7 → rows 5,6 fit; row 7 is out
+        result = inject_row_map(17, 20, 7)
+        assert result == [(5, 0), (6, 1)]
+
+    def test_no_overlap_returns_empty(self):
+        """inject_at=17 with target_rows=5 → inject_at_row=5 is out of [0,5)."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        result = inject_row_map(17, 3, 5)
+        assert result == []
+
+    def test_zero_clip_rows_returns_empty(self):
+        """n_clip_rows=0 → no iterations → empty list."""
+        from comfyui_h3_blended_inject.constants import inject_row_map
+
+        assert inject_row_map(0, 0, 10) == []
+
+
+# ---------------------------------------------------------------------------
+# inject_audio_ticks_for_row — per-row audio tick mapping
+# ---------------------------------------------------------------------------
+
+
+class TestInjectAudioTicksForRow:
+    """inject_audio_ticks_for_row: per-row audio tick mapping for hold-and-release + composite."""
+
+    def test_inject_at_0_row_0_maps_to_self(self):
+        """inject_at=0, row 0: inject_start_tick=0; target_tick == clip_tick for each tick."""
+        from comfyui_h3_blended_inject.constants import (
+            audio_tick_range,
+            audio_ticks_for_rows,
+            inject_audio_ticks_for_row,
+        )
+
+        n_rows = 5
+        n_ticks = audio_ticks_for_rows(n_rows)
+        row_ticks = list(audio_tick_range(0, n_rows, n_ticks))
+        result = inject_audio_ticks_for_row(0, 0, n_ticks, n_rows, n_ticks)
+        # inject_start_tick=0; clip_tick = tick - 0 = tick
+        assert result == [(t, t) for t in row_ticks]
+
+    def test_inject_at_17_row_5_clip_tick_starts_at_0(self):
+        """inject_at=17, row 5: inject_start_tick=video_row_to_audio_tick(5); clips start at 0."""
+        from comfyui_h3_blended_inject.constants import (
+            audio_tick_range,
+            audio_ticks_for_rows,
+            inject_audio_ticks_for_row,
+            video_row_to_audio_tick,
+        )
+
+        n_rows = 10
+        n_ticks = audio_ticks_for_rows(n_rows)
+        inject_at = 17  # frame_to_row(17) = 5
+        inject_start_tick = video_row_to_audio_tick(5)
+        row_ticks = list(audio_tick_range(5, n_rows, n_ticks))
+        result = inject_audio_ticks_for_row(5, inject_at, n_ticks, n_rows, n_ticks)
+        assert result == [(t, t - inject_start_tick) for t in row_ticks]
+
+    def test_out_of_range_clip_ticks_dropped(self):
+        """Ticks whose clip_tick >= n_clip_ticks are dropped."""
+        from comfyui_h3_blended_inject.constants import (
+            audio_ticks_for_rows,
+            inject_audio_ticks_for_row,
+        )
+
+        n_rows = 10
+        n_ticks = audio_ticks_for_rows(n_rows)
+        # Only allow 2 clip ticks from inject_at=0 (inject_start_tick=0)
+        result = inject_audio_ticks_for_row(0, 0, 2, n_rows, n_ticks)
+        assert all(0 <= clip_tick < 2 for _, clip_tick in result)
+        assert len(result) == 2  # row 0 owns exactly 2 ticks (range(0, 2))
