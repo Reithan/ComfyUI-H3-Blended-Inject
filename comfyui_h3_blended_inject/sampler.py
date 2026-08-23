@@ -114,6 +114,46 @@ def scale_packed_audio(
     return packed
 
 
+def quantize_denoise(m: torch.Tensor) -> torch.Tensor:
+    """Snap per-row denoise fractions to H3's native 1/256 mask grid (ceil).
+
+    H3's ``_token_grid_masks`` quantizes the pooled denoise mask with
+    ``ceil(mask * 256) / 256`` before it reaches the DiT, so the network's per-row
+    timestep labels live on a 1/256 grid.  Levers 1 and 3 (init lerp, denoised
+    correction) must use the *identical* per-row ``m`` or the lever-3 identity
+    ``corrected = x - m*sigma*v`` is off by up to 1/256 per row.  Quantizing ``m``
+    up front makes all three levers consistent: the native quantization becomes a
+    no-op on already-quantized values.  ``0`` and ``1`` are fixed points.
+    """
+    return torch.ceil(m * 256.0) / 256.0
+
+
+def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
+    """Return ``True`` iff ``fn`` is a genuinely stochastic sampler step function.
+
+    Detection is signature-based (no hardcoded sampler list): a sampler is stochastic
+    when it declares an ``eta`` parameter whose default is > 0 (ancestral/SDE families
+    inject fresh noise scaled by ``eta`` each step).  Deterministic samplers either omit
+    ``eta`` (euler, dpmpp_2m, res_multistep — whose public wrapper hardcodes ``eta=0.``
+    internally) or default it to 0.  Known blind spot: samplers that inject noise
+    unconditionally without an ``eta`` knob (ddpm, lcm, er_sde) are not detected —
+    acceptable for a warning heuristic; do not rely on this for a hard gate.
+    Stochastic samplers are unsupported by the per-row compression (Bug B): the RF
+    renoise sub-step is affine in sigma and not scale-invariant under ``sigma -> m*sigma``.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    eta = params.get("eta")
+    return (
+        eta is not None
+        and isinstance(eta.default, (int, float))
+        and not isinstance(eta.default, bool)
+        and eta.default > 0
+    )
+
+
 def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
     """Return ``True`` iff ``fn`` declares an explicit ``noise_sampler`` parameter.
 

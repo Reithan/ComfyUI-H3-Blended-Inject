@@ -24,7 +24,9 @@ from comfyui_h3_blended_inject.sampler import (
     build_per_row_sampler_function,
     make_per_row_noise_sampler,
     per_row_init_lerp,
+    quantize_denoise,
     sampler_accepts_noise_sampler,
+    sampler_is_stochastic,
     scale_packed_audio,
 )
 
@@ -428,3 +430,96 @@ class TestScalePackedAudio:
         original = packed.clone()
         out = scale_packed_audio(packed, 6, 4.0)
         assert torch.allclose(out, original)
+
+
+# ---------------------------------------------------------------------------
+# quantize_denoise
+# ---------------------------------------------------------------------------
+
+
+class TestQuantizeDenoise:
+    def test_zero_and_one_are_fixed_points(self):
+        m = torch.tensor([0.0, 1.0])
+        assert torch.equal(quantize_denoise(m), m)
+
+    def test_values_snap_up_to_next_256th(self):
+        # 0.5 = 128/256 exactly; 0.501 must snap UP to 129/256 (ceil semantics).
+        m = torch.tensor([0.5, 0.501])
+        out = quantize_denoise(m)
+        assert out[0].item() == 128.0 / 256.0
+        assert out[1].item() == 129.0 / 256.0
+
+    def test_idempotent(self):
+        m = torch.rand(64)
+        once = quantize_denoise(m)
+        assert torch.equal(quantize_denoise(once), once)
+
+    @given(frac_st)
+    def test_output_on_grid_and_never_below_input(self, v: float):
+        out = quantize_denoise(torch.tensor([v]))
+        assert out.item() >= v - 1e-7
+        assert abs(out.item() * 256.0 - round(out.item() * 256.0)) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# sampler_is_stochastic
+# ---------------------------------------------------------------------------
+
+
+class TestSamplerIsStochastic:
+    def test_eta_default_positive_detected(self):
+        # Mirrors sample_euler_ancestral's signature shape.
+        def fn(
+            model,
+            x,
+            sigmas,
+            extra_args=None,
+            callback=None,
+            disable=None,
+            eta=1.0,
+            s_noise=1.0,
+            noise_sampler=None,
+        ):
+            pass
+
+        assert sampler_is_stochastic(fn) is True
+
+    def test_no_eta_param_is_deterministic(self):
+        # Mirrors sample_euler / sample_dpmpp_2m: no eta parameter at all.
+        def fn(model, x, sigmas, extra_args=None, callback=None, disable=None):
+            pass
+
+        assert sampler_is_stochastic(fn) is False
+
+    def test_eta_default_zero_is_deterministic(self):
+        def fn(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=0.0):
+            pass
+
+        assert sampler_is_stochastic(fn) is False
+
+    def test_noise_sampler_without_eta_not_detected(self):
+        # res_multistep-shaped signature: has noise_sampler but no eta → NOT stochastic
+        # by this heuristic (documented blind spot for ddpm/lcm/er_sde).
+        def fn(
+            model,
+            x,
+            sigmas,
+            extra_args=None,
+            callback=None,
+            disable=None,
+            s_noise=1.0,
+            noise_sampler=None,
+        ):
+            pass
+
+        assert sampler_is_stochastic(fn) is False
+
+    def test_eta_default_non_numeric_is_deterministic(self):
+        def fn(model, x, sigmas, eta=None):
+            pass
+
+        assert sampler_is_stochastic(fn) is False
+
+    def test_unsignaturable_callable_is_deterministic(self):
+        # Builtins without introspectable signatures must not crash.
+        assert sampler_is_stochastic(max) is False
