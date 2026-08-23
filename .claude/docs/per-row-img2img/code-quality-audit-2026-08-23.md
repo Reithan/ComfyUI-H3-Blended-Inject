@@ -53,7 +53,7 @@ RELEASING.md PublisherId/Icon placeholder noted. See cleanup-audit-tail-tasks-49
 
 ## Project structure review (same date): A-
 
-Dependency graph is fully acyclic and cleanly layered: constants → {envelope, sanitize, guidance}
+Dependency graph is fully acyclic and cleanly layered: grid → {envelope, sanitize, guidance}
 → schedule → {mask, composite} + sampler (torch layer, no internal deps) → nodes. The lazy-import
 pattern inside `_run_sampler` is load-bearing — it's what keeps every module importable and
 CPU-testable without live ComfyUI. Well above ComfyUI-extension norm: registry-ready `[tool.comfy]`
