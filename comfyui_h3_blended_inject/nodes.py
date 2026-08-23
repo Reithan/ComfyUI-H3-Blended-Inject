@@ -710,6 +710,17 @@ class H3InjectSampler:
                         ),
                     },
                 ),
+                "crossfade": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "Off (default): fade-ramp rows use fractional hold-and-release "
+                            "(staggered release across the timeline). "
+                            "On: use the legacy persistent prediction-blend for ramp rows."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -734,6 +745,7 @@ class H3InjectSampler:
         return_with_leftover_noise: str,
         inject_list: InjectList,
         negative: Any | None = None,
+        crossfade: bool = False,
     ) -> tuple[dict[str, Any]]:
         """Run the H3 sampler with hold-and-release inject.
 
@@ -769,6 +781,10 @@ class H3InjectSampler:
             Optional negative conditioning.  ``None`` (the default) means "no uncond" —
             the H3 CFG-distilled default.  When provided, it is forwarded verbatim to the
             sampler for CFG / NRS-style guidance.
+        crossfade:
+            When ``False`` (default), fade-ramp rows use the ordinary fractional
+            hold-and-release path — staggered per-row release is the fade.  When ``True``,
+            ramp rows activate the legacy persistent prediction-blend path.
 
         Returns
         -------
@@ -832,7 +848,7 @@ class H3InjectSampler:
             )
 
         # 3. Merge inject list into a flat per-row schedule (last-in-wins).
-        schedule = merge_schedule(inject_list, target_rows)
+        schedule = merge_schedule(inject_list, target_rows, crossfade=crossfade)
 
         # 4. Derive audio tick count (real value from nested latent when available;
         #    computed from row count as fallback for plain-tensor paths).
