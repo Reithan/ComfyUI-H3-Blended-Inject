@@ -920,6 +920,87 @@ class TestSigmaRecovery:
                 f"Post-fix: sigma_video=0.5 → held."
             )
 
+    def test_audio_sigma_uses_transformer_options_shift(self, fake_comfy: types.ModuleType) -> None:
+        """Wrapper reads sigma shifts from transformer_options, not hardcoded defaults.
+
+        At sigma_video=0.5 and denoise=0.25:
+          - default shifts (12.0, 3.0): sigma_audio ≈ 0.200 < denoise=0.25 → NOT held
+          - override shift_v=8.0:       sigma_audio ≈ 0.273 > denoise=0.25 → IS held
+
+        The test asserts that WITH the transformer_options override, audio tick 0 is
+        held (its value differs from the background fill of 200.0).
+
+        FAILS against code that ignores transformer_options (hardcoded 12.0 keeps
+        sigma_audio ≈ 0.200, below denoise=0.25, so no audio tick is ever held).
+        PASSES once the wrapper reads the override key and calls time_shift_sigma with
+        shift_v=8.0, raising sigma_audio above the 0.25 threshold.
+        """
+        sigma_video = 0.5
+        denoise = 0.25  # audio held only when sigma_audio > 0.25
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+            # default_shift_video=12.0 (not overridden here; override comes from topts below)
+        )
+
+        # Build args_dict with the transformer_options override (shift_v=8.0).
+        args_with_override = {
+            "input": packed_input,
+            "timestep": torch.tensor([sigma_video]),
+            "c": {"transformer_options": {"minimax_h3_sigma_shift_video": 8.0}},
+            "cond_or_uncond": [0],
+        }
+        wrapper(mock_apply_model, args_with_override)
+
+        assert len(received) == 1
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        audio_in = unpacked_in[1]  # [B, C_a, 2, audio_t]
+
+        # Tick 0 should be held: its value must differ from the background fill (200.0).
+        tick0_value = audio_in[:, :, :, 0].mean().item()
+        assert tick0_value != 200.0, (
+            f"Audio tick 0 must be held when transformer_options sets shift_v=8.0 "
+            f"(sigma_audio ≈ 0.273 > denoise=0.25), but got fill value {tick0_value:.3f}. "
+            "Ensure the wrapper reads transformer_options['minimax_h3_sigma_shift_video']."
+        )
+
+        # Also confirm that WITHOUT the override (default shift 12.0, sigma_audio ≈ 0.200),
+        # the same tick is NOT held.
+        received.clear()
+        args_no_override = _args_dict(packed_input, sigma_video)  # "c": {}
+        wrapper(mock_apply_model, args_no_override)
+
+        unpacked_no = _fake_unpack_latents(received[0], latent_shapes)
+        audio_no = unpacked_no[1]
+        tick0_no = audio_no[:, :, :, 0].mean().item()
+        assert tick0_no == 200.0, (
+            f"Audio tick 0 must NOT be held with default shifts (sigma_audio ≈ 0.200 < "
+            f"denoise=0.25), but got {tick0_no:.3f}."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Trajectory identity — pure math on hold_value, no wrapper

@@ -247,6 +247,30 @@ def test_time_shift_sigma_monotone_non_decreasing(sigma_a, sigma_b):
     assert time_shift_sigma(lo) <= time_shift_sigma(hi)
 
 
+def test_time_shift_sigma_non_default_from_shift_changes_output():
+    """Changing from_shift from the default 12.0 must change the output at a midpoint.
+
+    This test FAILS if time_shift_sigma ignores its from_shift argument (e.g. still
+    uses a hardcoded 12.0 internally).
+    """
+    mid_default = time_shift_sigma(0.5)  # from_shift=12.0, to_shift=3.0
+    mid_custom = time_shift_sigma(0.5, from_shift=8.0, to_shift=3.0)
+    assert mid_default != mid_custom, (
+        "from_shift=8.0 must produce a different result from the default from_shift=12.0"
+    )
+
+
+def test_time_shift_sigma_endpoints_hold_for_non_default_shifts():
+    """f(0)=0 and f(1)=1 for a non-default shift pair.
+
+    The endpoint contract must hold regardless of the chosen shift values.
+    This test FAILS if the parametrization changes the formula structure in a way
+    that breaks the endpoint invariant.
+    """
+    assert time_shift_sigma(0.0, from_shift=8.0, to_shift=2.0) == 0.0
+    assert time_shift_sigma(1.0, from_shift=8.0, to_shift=2.0) == 1.0
+
+
 class TestAudioTickRange:
     """audio_tick_range: canonical tick range per video row, tiling [0, audio_ticks) exactly."""
 
