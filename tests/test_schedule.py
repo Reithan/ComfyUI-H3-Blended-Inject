@@ -760,6 +760,78 @@ class TestAudioPreserve:
 
 
 # ---------------------------------------------------------------------------
+# RowSchedule.audio_denoise property — per-row fractional audio schedule
+# ---------------------------------------------------------------------------
+
+
+class TestAudioDenoise:
+    """Truth-table for RowSchedule.audio_denoise (the fractional audio m_r).
+
+    Fractional generalization of audio_preserve for the per-row img2img sampler:
+      - keep mode (audio_frozen=True): 0.0 always (audio frozen/preserved everywhere)
+      - fade mode: follows the video envelope → equals this row's denoise
+      - drop mode / no inject: 1.0 (audio generated from scratch)
+
+    Consistency with audio_preserve: audio_preserve is True exactly when
+    audio_denoise == 0.0.
+    """
+
+    def _make_rs(self, audio_mode: str, denoise: float, audio_frozen: bool = False) -> RowSchedule:
+        inj = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=17,
+            end_fade_out=39,
+            min_denoise=0.0,
+            interpolation_type="linear",
+            audio_mode=audio_mode,
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=39,
+        )
+        return RowSchedule(row_idx=0, denoise=denoise, inject=inj, audio_frozen=audio_frozen)
+
+    def test_keep_mode_is_zero(self) -> None:
+        """keep mode (audio_frozen) → 0.0 regardless of denoise."""
+        rs = RowSchedule(row_idx=0, denoise=0.6, inject=None, audio_frozen=True)
+        assert rs.audio_denoise == 0.0
+
+    def test_fade_mode_follows_denoise(self) -> None:
+        """fade mode → audio_denoise equals the row's video denoise."""
+        rs = self._make_rs(audio_mode="fade", denoise=0.4)
+        assert rs.audio_denoise == 0.4
+
+    def test_fade_mode_denoise_zero_is_zero(self) -> None:
+        """fade mode + d==0 → 0.0 (preserve), matching audio_preserve."""
+        rs = self._make_rs(audio_mode="fade", denoise=0.0)
+        assert rs.audio_denoise == 0.0
+
+    def test_drop_mode_is_one(self) -> None:
+        """drop mode → 1.0 (generate) even at d==0."""
+        rs = self._make_rs(audio_mode="drop", denoise=0.0)
+        assert rs.audio_denoise == 1.0
+
+    def test_no_inject_is_one(self) -> None:
+        """inject=None, not frozen → 1.0 (generate)."""
+        rs = RowSchedule(row_idx=0, denoise=0.0, inject=None, audio_frozen=False)
+        assert rs.audio_denoise == 1.0
+
+    def test_consistent_with_audio_preserve(self) -> None:
+        """audio_preserve is True exactly when audio_denoise == 0.0."""
+        cases = [
+            self._make_rs("fade", 0.0),
+            self._make_rs("fade", 0.5),
+            self._make_rs("drop", 0.0),
+            RowSchedule(row_idx=0, denoise=0.3, inject=None, audio_frozen=True),
+            RowSchedule(row_idx=0, denoise=1.0, inject=None, audio_frozen=False),
+        ]
+        for rs in cases:
+            assert rs.audio_preserve == (rs.audio_denoise == 0.0)
+
+
+# ---------------------------------------------------------------------------
 # merge_schedule crossfade propagation (E1)
 # ---------------------------------------------------------------------------
 

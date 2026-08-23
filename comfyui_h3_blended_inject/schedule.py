@@ -146,6 +146,24 @@ class RowSchedule:
             return True
         return self.inject is not None and self.inject.audio_mode == "fade" and self.denoise == 0.0
 
+    @property
+    def audio_denoise(self) -> float:
+        """The per-row fractional audio denoise ``m_r`` for the per-row img2img sampler.
+
+        Fractional generalization of :attr:`audio_preserve`:
+
+        - **keep** mode (``audio_frozen``): ``0.0`` everywhere — audio is frozen/preserved.
+        - **fade** mode: follows the video envelope, so it equals this row's ``denoise``.
+        - **drop** mode / no inject: ``1.0`` — audio is generated from scratch.
+
+        Consistency: ``audio_preserve`` is ``True`` exactly when ``audio_denoise == 0.0``.
+        """
+        if self.audio_frozen:
+            return 0.0
+        if self.inject is not None and self.inject.audio_mode == "fade":
+            return self.denoise
+        return 1.0
+
 
 def merge_schedule(
     inject_list: InjectList,
