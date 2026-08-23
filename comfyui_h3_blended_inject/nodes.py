@@ -403,7 +403,10 @@ class H3AddInject:
                         "max": 10000,
                         "step": 1,
                         "tooltip": (
-                            "Source clip frame index where the fade-out ends. Denoise = 1.0 here."
+                            "EXCLUSIVE upper bound of the fade-out: denoise returns to 1.0 "
+                            "at this frame index; the last active clip frame is end_fade_out - 1.  "
+                            "Part of the half-open interval [start_fade_in, end_fade_out).  "
+                            "Set equal to source_length to fade out through the last frame."
                         ),
                     },
                 ),
@@ -753,8 +756,28 @@ class H3InjectSampler:
                     "FLOAT",
                     {"default": 7.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01},
                 ),
-                "sampler_name": (samplers,),
-                "scheduler": (schedulers,),
+                "sampler_name": (
+                    samplers,
+                    {
+                        "tooltip": (
+                            "Sampler algorithm.  Deterministic samplers (euler, res_multistep, "
+                            "dpmpp_2m) work correctly with per-row img2img.  Stochastic samplers "
+                            "(euler_ancestral, dpmpp_2s_ancestral, SDE variants) will print a "
+                            "warning at runtime: the per-row noise-magnitude shim is insufficient "
+                            "for H3's RF-ancestral path (Bug B) and results may be incorrect."
+                        ),
+                    },
+                ),
+                "scheduler": (
+                    schedulers,
+                    {
+                        "tooltip": (
+                            "Noise schedule.  Any ComfyUI scheduler works; 'simple' is the "
+                            "H3 default.  The per-row img2img compression is applied on top of "
+                            "whatever global schedule is chosen."
+                        ),
+                    },
+                ),
                 "positive": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
                 "inject_list": (INJECT_LIST,),
