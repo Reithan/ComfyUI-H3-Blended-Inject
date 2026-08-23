@@ -416,7 +416,10 @@ class H3AddInject:
                             "Denoise floor during the hold region. 0 = exact preserve "
                             "(routed via the derived noise mask). 1 = fully regenerated. "
                             "For a still inject (single image, all fade indices equal), "
-                            "this is the single frame's denoise value."
+                            "this is the single frame's denoise value. "
+                            "Follows img2img convention on H3's shift-12 schedule: "
+                            "d <= 0.3 retains most content; d >= 0.7 is heavy redraw. "
+                            "Values below ~1/steps never release due to step quantization."
                         ),
                     },
                 ),
