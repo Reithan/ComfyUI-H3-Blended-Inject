@@ -1018,9 +1018,15 @@ class TestClassifyRowRegion:
         assert result == "hold", f"Expected 'hold', got {result!r}"
 
     # --- fade-in ramp ---
+    # Updated (E1): ramp rows now return 'hold' by default (crossfade=False).
+    # The parked prediction-blend path is only active when crossfade=True.
 
-    def test_fade_in_ramp_row_classified_as_fade(self) -> None:
-        """Row 1 centers (1.5–4.5) all in fade-in span [1, 5) → 'fade'."""
+    def test_fade_in_ramp_row_classified_as_hold_by_default(self) -> None:
+        """Row 1 centers (1.5–4.5) all in fade-in span [1, 5) → 'hold' (default, crossfade=False).
+
+        E1 change: ramp rows use fractional hold-and-release by default; staggered
+        per-row release IS the fade. The old assertion was 'fade'; updated to 'hold'.
+        """
         result = classify_row_region(
             row_idx=1,
             inject_at=0,
@@ -1030,10 +1036,33 @@ class TestClassifyRowRegion:
             end_fade_out=17,
             min_denoise=0.3,
         )
-        assert result == "fade", f"Expected 'fade' (fade-in ramp), got {result!r}"
+        assert result == "hold", f"Expected 'hold' (fade-in ramp, default), got {result!r}"
 
-    def test_fade_in_ramp_row_classified_as_fade_min_denoise_zero(self) -> None:
-        """Fade-in ramp row with min_denoise=0 is still 'fade' (not 'preserve')."""
+    def test_fade_in_ramp_row_classified_as_fade_crossfade_true(self) -> None:
+        """Row 1 centers (1.5–4.5) in fade-in span [1, 5) → 'fade' when crossfade=True.
+
+        Companion to test_fade_in_ramp_row_classified_as_hold_by_default; verifies the
+        parked prediction-blend path is reachable via the crossfade flag.
+        """
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+            crossfade=True,
+        )
+        assert result == "fade", f"Expected 'fade' (fade-in ramp, crossfade=True), got {result!r}"
+
+    def test_fade_in_ramp_row_min_denoise_zero_classified_as_hold_by_default(self) -> None:
+        """Fade-in ramp row with min_denoise=0 → 'hold' by default (not 'preserve', not 'fade').
+
+        E1 change: ramp rows with min_denoise=0 used to return 'fade'; now return 'hold'
+        by default because classification uses integer clip-frame membership (ramp span),
+        not min_denoise. min_denoise=0 only yields 'preserve' inside the hold span.
+        """
         result = classify_row_region(
             row_idx=1,
             inject_at=0,
@@ -1043,12 +1072,34 @@ class TestClassifyRowRegion:
             end_fade_out=17,
             min_denoise=0.0,
         )
-        assert result == "fade", f"Expected 'fade' (fade-in ramp, d=0), got {result!r}"
+        assert result == "hold", f"Expected 'hold' (fade-in ramp, d=0, default), got {result!r}"
+
+    def test_fade_in_ramp_row_min_denoise_zero_classified_as_fade_crossfade_true(self) -> None:
+        """Fade-in ramp row with min_denoise=0 → 'fade' when crossfade=True (not 'preserve').
+
+        Companion to test_fade_in_ramp_row_min_denoise_zero_classified_as_hold_by_default.
+        """
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.0,
+            crossfade=True,
+        )
+        assert result == "fade", (
+            f"Expected 'fade' (fade-in ramp, d=0, crossfade=True), got {result!r}"
+        )
 
     # --- fade-out ramp ---
 
-    def test_fade_out_ramp_row_classified_as_fade(self) -> None:
-        """Row 3 centers (9.5–12.5) all in fade-out span [9, 14) → 'fade'."""
+    def test_fade_out_ramp_row_classified_as_hold_by_default(self) -> None:
+        """Row 3 centers (9.5–12.5) in fade-out span [9, 14) → 'hold' (default, crossfade=False).
+
+        E1 change: ramp rows now return 'hold' by default; old assertion was 'fade'.
+        """
         result = classify_row_region(
             row_idx=3,
             inject_at=0,
@@ -1058,7 +1109,24 @@ class TestClassifyRowRegion:
             end_fade_out=14,
             min_denoise=0.3,
         )
-        assert result == "fade", f"Expected 'fade' (fade-out ramp), got {result!r}"
+        assert result == "hold", f"Expected 'hold' (fade-out ramp, default), got {result!r}"
+
+    def test_fade_out_ramp_row_classified_as_fade_crossfade_true(self) -> None:
+        """Row 3 centers (9.5–12.5) in fade-out span [9, 14) → 'fade' when crossfade=True.
+
+        Companion to test_fade_out_ramp_row_classified_as_hold_by_default.
+        """
+        result = classify_row_region(
+            row_idx=3,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=9,
+            end_fade_out=14,
+            min_denoise=0.3,
+            crossfade=True,
+        )
+        assert result == "fade", f"Expected 'fade' (fade-out ramp, crossfade=True), got {result!r}"
 
     # --- free (row outside envelope) ---
 
@@ -1075,35 +1143,86 @@ class TestClassifyRowRegion:
         )
         assert result == "free", f"Expected 'free' (row outside envelope), got {result!r}"
 
-    # --- boundary: row spanning hold+fade → 'fade' ---
+    # --- boundary: row spanning hold+fade ---
+    # Updated (E1): these rows are now 'hold' by default; 'fade' only when crossfade=True.
 
-    def test_boundary_row_spanning_hold_and_fade_in_classified_as_fade(self) -> None:
+    def test_boundary_row_spanning_hold_and_fade_in_classified_as_hold_by_default(self) -> None:
         """Row 1 centers (1.5–4.5): 1.5 and 2.5 in fade-in [1,3), 3.5 and 4.5 in hold [3,10).
-        Not ALL in hold → 'fade'."""
+        Not ALL in hold → ramp row. Default (crossfade=False) → 'hold'.
+
+        E1 change: boundary ramp rows now return 'hold' by default; old assertion was 'fade'.
+        """
         result = classify_row_region(
             row_idx=1,
             inject_at=0,
             start_fade_in=1,
-            start_keyframes=3,  # skf=3; centers 1.5,2.5 in [1,3) → fade
+            start_keyframes=3,  # skf=3; centers 1.5,2.5 in [1,3) → ramp
             end_keyframes=10,
             end_fade_out=17,
             min_denoise=0.3,
         )
-        assert result == "fade", f"Expected 'fade' (spans hold+fade-in boundary), got {result!r}"
+        assert result == "hold", (
+            f"Expected 'hold' (spans hold+fade-in boundary, default), got {result!r}"
+        )
 
-    def test_boundary_row_spanning_hold_and_fade_out_classified_as_fade(self) -> None:
+    def test_boundary_row_spanning_hold_and_fade_in_classified_as_fade_crossfade_true(self) -> None:
+        """Row 1 spanning hold+fade-in boundary → 'fade' when crossfade=True.
+
+        Companion to test_boundary_row_spanning_hold_and_fade_in_classified_as_hold_by_default.
+        """
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=3,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+            crossfade=True,
+        )
+        assert result == "fade", (
+            f"Expected 'fade' (spans hold+fade-in, crossfade=True), got {result!r}"
+        )
+
+    def test_boundary_row_spanning_hold_and_fade_out_classified_as_hold_by_default(self) -> None:
         """Row 2 centers (5.5–8.5): some in hold [5,8), some in fade-out [8,14).
-        Not ALL in hold → 'fade'."""
+        Not ALL in hold → ramp row. Default (crossfade=False) → 'hold'.
+
+        E1 change: boundary ramp rows now return 'hold' by default; old assertion was 'fade'.
+        """
         result = classify_row_region(
             row_idx=2,
             inject_at=0,
             start_fade_in=0,
             start_keyframes=5,
-            end_keyframes=8,  # ekf=8; centers 8.5 in [8,14) → fade
+            end_keyframes=8,  # ekf=8; centers 8.5 in [8,14) → ramp
             end_fade_out=14,
             min_denoise=0.3,
         )
-        assert result == "fade", f"Expected 'fade' (spans hold+fade-out boundary), got {result!r}"
+        assert result == "hold", (
+            f"Expected 'hold' (spans hold+fade-out boundary, default), got {result!r}"
+        )
+
+    def test_boundary_row_spanning_hold_and_fade_out_classified_as_fade_crossfade_true(
+        self,
+    ) -> None:
+        """Row 2 spanning hold+fade-out boundary → 'fade' when crossfade=True.
+
+        Companion to test_boundary_row_spanning_hold_and_fade_out_classified_as_hold_by_default.
+        """
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=8,
+            end_fade_out=14,
+            min_denoise=0.3,
+            crossfade=True,
+        )
+        assert result == "fade", (
+            f"Expected 'fade' (spans hold+fade-out, crossfade=True), got {result!r}"
+        )
 
     # --- inject_at > 0 offset ---
 
@@ -1133,8 +1252,11 @@ class TestClassifyRowRegion:
         )
         assert result == "preserve", f"Expected 'preserve' with inject_at=17 offset, got {result!r}"
 
-    def test_inject_at_offset_fade_row(self) -> None:
-        """With inject_at=17, row 6 centers clip=(1.5,2.5,3.5,4.5) in fade-in [1,5) → 'fade'."""
+    def test_inject_at_offset_ramp_row_hold_by_default(self) -> None:
+        """Row 6 (inject_at=17) clip centers in fade-in [1,5) → 'hold' by default (crossfade=False).
+
+        E1 change: ramp rows return 'hold' by default; old assertion was 'fade'.
+        """
         result = classify_row_region(
             row_idx=6,
             inject_at=17,
@@ -1144,7 +1266,26 @@ class TestClassifyRowRegion:
             end_fade_out=17,
             min_denoise=0.3,
         )
-        assert result == "fade", f"Expected 'fade' with inject_at=17 offset, got {result!r}"
+        assert result == "hold", f"Expected 'hold' (ramp, inject_at=17, default), got {result!r}"
+
+    def test_inject_at_offset_ramp_row_fade_crossfade_true(self) -> None:
+        """Row 6 (inject_at=17) clip centers in fade-in [1,5) → 'fade' when crossfade=True.
+
+        Companion to test_inject_at_offset_ramp_row_hold_by_default.
+        """
+        result = classify_row_region(
+            row_idx=6,
+            inject_at=17,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+            crossfade=True,
+        )
+        assert result == "fade", (
+            f"Expected 'fade' (ramp, inject_at=17, crossfade=True), got {result!r}"
+        )
 
     # --- degenerate still-inject (all four markers equal) ---
 

@@ -166,6 +166,17 @@ class TestH3InjectSamplerInputTypes:
     def test_optional_keys(self):
         optional = set(H3InjectSampler.INPUT_TYPES().get("optional", {}).keys())
         assert "negative" in optional
+        assert "crossfade" in optional, "'crossfade' must be present as an optional widget"
+
+    def test_crossfade_widget_type_and_default(self):
+        """crossfade must be a BOOLEAN widget with default=False."""
+        optional = H3InjectSampler.INPUT_TYPES().get("optional", {})
+        assert "crossfade" in optional, "'crossfade' must be present"
+        spec = optional["crossfade"]
+        assert spec[0] == "BOOLEAN", f"crossfade type must be 'BOOLEAN', got {spec[0]!r}"
+        assert spec[1].get("default") is False, (
+            f"crossfade default must be False, got {spec[1].get('default')!r}"
+        )
 
     def test_return_types(self):
         assert H3InjectSampler.RETURN_TYPES == ("LATENT",)

@@ -757,3 +757,107 @@ class TestAudioPreserve:
         """inject=None + audio_frozen=False → audio_preserve is False."""
         rs = RowSchedule(row_idx=0, denoise=0.0, inject=None, audio_frozen=False)
         assert rs.audio_preserve is False
+
+
+# ---------------------------------------------------------------------------
+# merge_schedule crossfade propagation (E1)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeScheduleCrossfadePropagation:
+    """Verify that the crossfade flag is propagated through merge_schedule to
+    classify_row_region, and that ramp-row regions are 'hold' by default and
+    'fade' when crossfade=True.
+
+    Uses inject_at=0, start_fade_in=0, start_keyframes=5, end_keyframes=10,
+    end_fade_out=17.  Row 1 (centers 1.5–4.5) lies in the fade-in ramp [0,5).
+    Row 2 (centers 5.5–8.5) lies in the hold span [5,10).
+    """
+
+    def _make_fade_inject(self) -> Inject:
+        return make_inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+            audio_mode="drop",
+        )
+
+    def test_ramp_rows_have_region_hold_by_default(self) -> None:
+        """merge_schedule default (crossfade=False): ramp rows have region='hold'.
+
+        Fail-then-pass test (E1 new): before the E1 change, ramp rows returned 'fade'
+        unconditionally. Now they return 'hold' by default.
+        """
+        inj = self._make_fade_inject()
+        result = merge_schedule([inj], target_rows=30)
+        # row 1 (centers 1.5–4.5) is in the fade-in ramp [0,5) and should be 'hold'.
+        result_by_row = {rs.row_idx: rs for rs in result}
+        assert 1 in result_by_row, "row 1 should be claimed by the inject"
+        row1 = result_by_row[1]
+        assert row1.region == "hold", (
+            f"ramp row 1 (denoise={row1.denoise}): "
+            f"expected region='hold' by default, got {row1.region!r}"
+        )
+        assert 0.0 < row1.denoise < 1.0, (
+            f"ramp row should have fractional denoise, got {row1.denoise}"
+        )
+
+    def test_ramp_rows_have_region_fade_crossfade_true(self) -> None:
+        """merge_schedule with crossfade=True: ramp rows have region='fade'.
+
+        Verifies the crossfade flag is passed through to classify_row_region.
+        """
+        inj = self._make_fade_inject()
+        result = merge_schedule([inj], target_rows=30, crossfade=True)
+        result_by_row = {rs.row_idx: rs for rs in result}
+        assert 1 in result_by_row, "row 1 should be claimed by the inject"
+        row1 = result_by_row[1]
+        assert row1.region == "fade", (
+            f"ramp row 1 (denoise={row1.denoise}): "
+            f"expected region='fade' with crossfade=True, got {row1.region!r}"
+        )
+        assert 0.0 < row1.denoise < 1.0, (
+            f"ramp row should have fractional denoise, got {row1.denoise}"
+        )
+
+    def test_hold_rows_unaffected_by_crossfade(self) -> None:
+        """Hold-span rows (all centers in [skf, ekf)) are always 'hold' regardless of crossfade.
+
+        crossfade only changes the ramp rows; hold rows must remain 'hold'.
+        """
+        inj = self._make_fade_inject()
+        result_default = merge_schedule([inj], target_rows=30, crossfade=False)
+        result_crossfade = merge_schedule([inj], target_rows=30, crossfade=True)
+        by_row_default = {rs.row_idx: rs for rs in result_default}
+        by_row_crossfade = {rs.row_idx: rs for rs in result_crossfade}
+        # row 2 (centers 5.5–8.5) is in hold span [5,10); should be 'hold' in both
+        assert 2 in by_row_default, "row 2 should be claimed"
+        assert by_row_default[2].region == "hold", "hold row must be 'hold' with crossfade=False"
+        assert by_row_crossfade[2].region == "hold", "hold row must be 'hold' with crossfade=True"
+
+    def test_audio_mode_and_audio_frozen_unaffected_by_crossfade(self) -> None:
+        """crossfade flag must not alter audio_frozen or audio_preserve behavior.
+
+        audio_mode='fade' + denoise=0.0 → audio_preserve is True in both modes.
+        """
+        inj = make_inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=17,
+            end_fade_out=39,
+            min_denoise=0.0,
+            audio_mode="fade",
+        )
+        result_default = merge_schedule([inj], target_rows=30, crossfade=False)
+        result_crossfade = merge_schedule([inj], target_rows=30, crossfade=True)
+        for rs_d, rs_c in zip(result_default, result_crossfade, strict=True):
+            assert rs_d.audio_frozen == rs_c.audio_frozen, (
+                f"row {rs_d.row_idx}: audio_frozen differs by crossfade flag"
+            )
+            assert rs_d.audio_preserve == rs_c.audio_preserve, (
+                f"row {rs_d.row_idx}: audio_preserve differs by crossfade flag"
+            )
