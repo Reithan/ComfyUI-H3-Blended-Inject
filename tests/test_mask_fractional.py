@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import torch
 
-from comfyui_h3_blended_inject.constants import audio_tick_range, video_row_to_audio_tick
+from comfyui_h3_blended_inject.grid import audio_tick_range, video_row_to_audio_tick
 from comfyui_h3_blended_inject.mask import derive_fractional_mask
 from comfyui_h3_blended_inject.schedule import Inject, RowSchedule
 

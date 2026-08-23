@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from comfyui_h3_blended_inject import constants
+from comfyui_h3_blended_inject import grid
 from comfyui_h3_blended_inject.guidance import resolve_guidance
 from comfyui_h3_blended_inject.sanitize import (
     check_resolution,
@@ -653,7 +653,7 @@ class H3AddInject:
                 audio,
                 target_sample_rate=target_sample_rate,
                 video_duration_frames=source_length,
-                fps=int(constants.FPS),
+                fps=int(grid.FPS),
             )
 
         # e. Pre-encode images and audio into latent space when VAEs are provided.
@@ -882,7 +882,7 @@ class H3InjectSampler:
         if _audio_ticks_from_latent is not None:
             audio_ticks = _audio_ticks_from_latent
         else:
-            audio_ticks = constants.audio_ticks_for_rows(target_rows)
+            audio_ticks = grid.audio_ticks_for_rows(target_rows)
 
         # GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference
         # and fractional denoise mask, install the conditioning wrapper, wrap the base

@@ -374,3 +374,44 @@ def build_per_row_sampler_function(
         )
 
     return sampler_function
+
+
+# ---------------------------------------------------------------------------
+# Audio sigma shift — lives here (not grid.py) because it is a scheduling
+# formula used at sample time, not a grid geometry helper.
+# ---------------------------------------------------------------------------
+
+
+def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
+    """Return the shifted audio sigma for a given video sigma.
+
+    Mirrors ``time_shift_sigma`` from ``comfy/ldm/minimax/model.py``.  Audio rows release
+    against this shifted sigma, not the raw video sigma, to keep audio and video fades
+    temporally aligned.
+
+    Parameters
+    ----------
+    sigma:
+        Current video sigma value (scalar, in [0, 1] space).
+    from_shift:
+        Video sigma shift (``sigma_shift_video``).  Defaults to 12.0, the H3 DiT
+        constructor default.  In production, pass the runtime value from
+        ``transformer_options["minimax_h3_sigma_shift_video"]`` so audio timing stays
+        aligned when the user changes the video shift via the ``MiniMax H3 Sigma Shift``
+        node.
+    to_shift:
+        Audio sigma shift (``sigma_shift_audio``).  Defaults to 3.0, the H3 DiT
+        constructor default.  Pass the runtime value from
+        ``transformer_options["minimax_h3_sigma_shift_audio"]`` when available.
+
+    Returns
+    -------
+    float
+        Shifted sigma value appropriate for the audio stream.
+    """
+    # Two-step warp from comfy/ldm/minimax/model.py ~36-38: invert the video shift to
+    # recover the base grid, then re-apply the audio shift.
+    # Returns the raw warp value; ComfyUI applies `1.0 - warp` at the model
+    # boundary as the audio conditioning timestep.  Contract: f(0)=0, f(1)=1.
+    base = sigma / (from_shift + sigma * (1.0 - from_shift))
+    return float(to_shift * base / (1.0 + (to_shift - 1.0) * base))

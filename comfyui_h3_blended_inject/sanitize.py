@@ -18,9 +18,9 @@ import math as _math
 import warnings
 from typing import Any
 
-from comfyui_h3_blended_inject.constants import AUDIO_HZ as _AUDIO_HZ
-from comfyui_h3_blended_inject.constants import FPS as _FPS
-from comfyui_h3_blended_inject.constants import frame_to_row
+from comfyui_h3_blended_inject.grid import AUDIO_HZ as _AUDIO_HZ
+from comfyui_h3_blended_inject.grid import FPS as _FPS
+from comfyui_h3_blended_inject.grid import frame_to_row
 
 
 def snap_inject_at(inject_at: int) -> int:

@@ -6,7 +6,7 @@ ramps back to 1.0 at ``end_fade_out``.  Values outside the envelope are not retu
 are responsible for treating absent rows as ``d = 1.0``.
 
 Row d-values are evaluated at each latent row's *true center time* on the 1/4/4/4/4 grid (via
-:func:`~comfyui_h3_blended_inject.constants.row_center_times`), not at a uniform per-row grid
+:func:`~comfyui_h3_blended_inject.grid.row_center_times`), not at a uniform per-row grid
 point.  Only the fade indices (start_fade_in, start_keyframes, end_keyframes, end_fade_out) are
 evaluated in continuous frame time; no snapping is applied.
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from comfyui_h3_blended_inject.constants import frame_to_row, row_center_times
+from comfyui_h3_blended_inject.grid import frame_to_row, row_center_times
 
 
 class InterpolationType(str, Enum):
@@ -142,7 +142,7 @@ def evaluate_envelope(
 
     Row denoise values are evaluated in continuous clip-frame time at each latent row's true
     center times on the 1/4/4/4/4 grid (via
-    :func:`~comfyui_h3_blended_inject.constants.row_center_times`), converted to clip-frame
+    :func:`~comfyui_h3_blended_inject.grid.row_center_times`), converted to clip-frame
     time, then averaged across the row.
 
     A row is included in the result **only if** at least one of its clip-frame centers falls

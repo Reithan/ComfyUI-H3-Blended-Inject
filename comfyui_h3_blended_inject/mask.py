@@ -22,7 +22,7 @@ from typing import Any
 
 import torch
 
-from comfyui_h3_blended_inject.constants import audio_tick_range
+from comfyui_h3_blended_inject.grid import audio_tick_range
 from comfyui_h3_blended_inject.schedule import RowSchedule
 
 

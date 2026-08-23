@@ -983,36 +983,35 @@ class TestSanitizeConstantsTrackModule:
 
     def test_fps_tracks_constants(self):
         import comfyui_h3_blended_inject.sanitize as _sanitize
-        from comfyui_h3_blended_inject import constants
+        from comfyui_h3_blended_inject import grid
 
-        assert _sanitize._FPS is constants.FPS or _sanitize._FPS == constants.FPS, (
-            f"sanitize._FPS={_sanitize._FPS!r} does not match constants.FPS={constants.FPS!r}. "
-            "Import FPS from constants instead of redeclaring."
+        assert _sanitize._FPS is grid.FPS or _sanitize._FPS == grid.FPS, (
+            f"sanitize._FPS={_sanitize._FPS!r} does not match grid.FPS={grid.FPS!r}. "
+            "Import FPS from grid instead of redeclaring."
         )
 
     def test_audio_hz_tracks_constants(self):
         import comfyui_h3_blended_inject.sanitize as _sanitize
-        from comfyui_h3_blended_inject import constants
+        from comfyui_h3_blended_inject import grid
 
-        assert _sanitize._AUDIO_HZ == constants.AUDIO_HZ, (
+        assert _sanitize._AUDIO_HZ == grid.AUDIO_HZ, (
             f"sanitize._AUDIO_HZ={_sanitize._AUDIO_HZ!r} does not match "
-            f"constants.AUDIO_HZ={constants.AUDIO_HZ!r}. "
-            "Import AUDIO_HZ from constants instead of redeclaring."
+            f"grid.AUDIO_HZ={grid.AUDIO_HZ!r}. "
+            "Import AUDIO_HZ from grid instead of redeclaring."
         )
 
     def test_fps_value_unchanged(self):
-        """Catch drift: if constants.FPS changes, tests should surface it explicitly."""
-        from comfyui_h3_blended_inject import constants
+        """Catch drift: if grid.FPS changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import grid
 
-        assert constants.FPS == 24, (
-            f"constants.FPS changed to {constants.FPS!r}; update sanitize tests if intentional."
+        assert grid.FPS == 24, (
+            f"grid.FPS changed to {grid.FPS!r}; update sanitize tests if intentional."
         )
 
     def test_audio_hz_value_unchanged(self):
-        """Catch drift: if constants.AUDIO_HZ changes, tests should surface it explicitly."""
-        from comfyui_h3_blended_inject import constants
+        """Catch drift: if grid.AUDIO_HZ changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import grid
 
-        assert constants.AUDIO_HZ == 40.0, (
-            f"constants.AUDIO_HZ changed to {constants.AUDIO_HZ!r}; "
-            "update sanitize tests if intentional."
+        assert grid.AUDIO_HZ == 40.0, (
+            f"grid.AUDIO_HZ changed to {grid.AUDIO_HZ!r}; update sanitize tests if intentional."
         )

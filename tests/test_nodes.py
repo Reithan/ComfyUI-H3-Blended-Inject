@@ -1366,9 +1366,9 @@ class TestF1SingleFrameInject:
         """Verify total_rows(1) == 1 so F=1 inject maps to exactly one schedule row.
 
         Cross-module regression guard confirming the F=1 path of both
-        total_rows (constants.py) and snap_length_down (sanitize.py) are consistent.
+        total_rows (grid.py) and snap_length_down (sanitize.py) are consistent.
         """
-        from comfyui_h3_blended_inject.constants import total_rows
+        from comfyui_h3_blended_inject.grid import total_rows
 
         node = H3AddInject()
         (inject_list,) = node.add_inject(

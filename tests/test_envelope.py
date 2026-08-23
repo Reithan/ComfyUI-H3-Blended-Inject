@@ -14,7 +14,6 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from comfyui_h3_blended_inject.constants import frame_to_row, row_center_times
 from comfyui_h3_blended_inject.envelope import (
     INTERPOLATION_TYPES,
     InterpolationType,
@@ -25,6 +24,7 @@ from comfyui_h3_blended_inject.envelope import (
     is_row_exactly_zero,
     still_inject_denoise,
 )
+from comfyui_h3_blended_inject.grid import frame_to_row, row_center_times
 
 # ---------------------------------------------------------------------------
 # INTERPOLATION_TYPES tuple and InterpolationType enum

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import torch
 
-from comfyui_h3_blended_inject.constants import (
+from comfyui_h3_blended_inject.grid import (
     audio_tick_range,
     inject_audio_ticks_for_row,
     inject_row_map,
