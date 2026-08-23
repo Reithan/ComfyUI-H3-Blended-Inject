@@ -258,15 +258,17 @@ def build_model_function_wrapper(
     """
     from comfyui_h3_blended_inject import constants as _constants
 
-    # Pre-compute: audio tick -> denoise mapping.
+    # Pre-compute: audio tick -> (denoise, region) mapping.
     # Use audio_tick_range per row so the mapping is consistent with _run_sampler
     # and derive_mask (canonical range, not "next scheduled row" boundary).
     sorted_schedule = sorted(schedule, key=lambda s: s.row_idx)
 
     tick_denoise: dict[int, float] = {}
+    tick_region: dict[int, str] = {}
     for row_s in sorted_schedule:
         for tick in _constants.audio_tick_range(row_s.row_idx, target_rows, audio_ticks):
             tick_denoise[tick] = row_s.denoise
+            tick_region[tick] = row_s.region
 
     def wrapper(
         apply_model: Callable[..., Any],
@@ -298,16 +300,25 @@ def build_model_function_wrapper(
 
         # Step 3: Write hold_value into held VIDEO rows (temporal dim 2).
         # per_row_original[row_idx] has shape [1, C_v, 1, Hl, Wl]; broadcasts across B.
+        # Only 'hold' region rows receive the input write; 'fade' rows skip this step
+        # entirely (writing the input drains the sampler's noise budget and kills the fade).
+        # 'preserve' and 'free' rows are never touched.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
-            if row_idx in per_row_original and is_held(sigma_video, row_s.denoise):
+            if (
+                row_s.region == "hold"
+                and row_idx in per_row_original
+                and is_held(sigma_video, row_s.denoise)
+            ):
                 hv = hold_value(per_row_original[row_idx], per_row_noise[row_idx], sigma_video)
                 video_edit[:, :, row_idx : row_idx + 1, :, :] = hv
 
         # Step 4: Write held AUDIO ticks (audio_t dim 3).
         # audio_row_original[tick] has shape [1, C_a, 2, 1]; broadcasts across B.
+        # 'hold' ticks only; 'fade' ticks skip the input write.
         for tick, d in tick_denoise.items():
-            if tick in audio_row_original and is_held(sigma_audio, d):
+            r = tick_region[tick]
+            if r == "hold" and tick in audio_row_original and is_held(sigma_audio, d):
                 held_audio = hold_value(
                     audio_row_original[tick], audio_row_noise[tick], sigma_audio
                 )
@@ -320,24 +331,49 @@ def build_model_function_wrapper(
         packed_edit = comfy.utils.pack_latents([video_edit, audio_edit])[0]
         raw_prediction = apply_model(packed_edit, args_dict["timestep"], **args_dict["c"])
 
-        # Step 6: Unpack prediction and overwrite held rows.
+        # Step 6: Unpack prediction and apply per-region prediction edits.
         unpacked_pred = comfy.utils.unpack_latents(raw_prediction, latent_shapes)
         pred_video, pred_audio = unpacked_pred[0], unpacked_pred[1]
         pred_video_edit = pred_video.clone()
         pred_audio_edit = pred_audio.clone()
 
-        # Overwrite held video rows with their original content.
+        # Apply prediction edits per video row region:
+        #   'hold': overwrite prediction with original (binary hold — sigma-gated).
+        #   'fade': blend prediction permanently: (1-d)*original + d*model_pred.
+        #   'preserve'/'free': untouched.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
-            if row_idx in per_row_original and is_held(sigma_video, row_s.denoise):
+            if row_idx not in per_row_original:
+                continue
+            if row_s.region == "hold" and is_held(sigma_video, row_s.denoise):
                 pred_video_edit[:, :, row_idx : row_idx + 1, :, :] = per_row_original[row_idx]
+            elif row_s.region == "fade":
+                d = row_s.denoise
+                pred_row = pred_video[:, :, row_idx : row_idx + 1, :, :]
+                pred_video_edit[:, :, row_idx : row_idx + 1, :, :] = (1.0 - d) * per_row_original[
+                    row_idx
+                ] + d * pred_row
 
-        # Overwrite held audio ticks with original audio at internal scale.
+        # Apply prediction edits per audio tick region:
+        #   'hold': overwrite prediction with original at internal scale (sigma-gated).
+        #   'fade': blend prediction: (1-d)*original*scale + d*model_pred_tick.
+        #   'preserve'/'free': untouched.
         for tick, d in tick_denoise.items():
-            if tick in audio_row_original and is_held(sigma_audio, d):
+            r = tick_region[tick]
+            if tick not in audio_row_original:
+                continue
+            if r == "hold" and is_held(sigma_audio, d):
                 pred_audio_edit[:, :, :, tick : tick + 1] = audio_internal_scale(
                     audio_row_original[tick], sigma_audio, audio_scale_factor
                 )
+            elif r == "fade":
+                original_scaled = audio_internal_scale(
+                    audio_row_original[tick], sigma_audio, audio_scale_factor
+                )
+                pred_tick = pred_audio[:, :, :, tick : tick + 1]
+                pred_audio_edit[:, :, :, tick : tick + 1] = (
+                    1.0 - d
+                ) * original_scaled + d * pred_tick
 
         # Step 7: Repack and return the edited prediction.
         return comfy.utils.pack_latents([pred_video_edit, pred_audio_edit])[0]
