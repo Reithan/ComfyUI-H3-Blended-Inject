@@ -1,11 +1,18 @@
-"""Grid constants and helper stubs for the MiniMax H3 1/4/4/4/4 latent grid.
+"""Grid constants and helpers for the MiniMax H3 latent temporal grid.
 
-The H3 latent grid encodes video as rows where the first row covers 1 source frame and every
-subsequent row covers 4 source frames, giving a 17-frame repeating unit (1 + 4*4).  Audio is
-encoded at its own tick rate derived from AUDIO_HZ.
+The H3 VAE encodes video in independent 17-frame chunks (``CLIP_LENGTH = 17``).  Each chunk
+produces 5 latent rows (``TOKENS_PER_CHUNK``): local row 0 covers 1 source frame, local rows
+1-4 each cover 4 source frames (``FRAME_PER_TOKEN = (1, 4, 4, 4, 4)``).  After concatenating
+all chunks the last ``TOKEN_DROP = 3`` rows are dropped, so a clip of ``n_frames`` source
+frames yields ``5 * ceil(n_frames / 17) - 3`` latent rows.  Valid clip lengths (those whose
+last chunk produces exactly the dropped rows) are ``17k + 5``: 5, 22, 39, 56, …
 
-Constants that are plain literals are assigned directly; any value requiring computation is a
-stub function (``raise NotImplementedError``).
+The per-17-frame chunk reset means:
+- Row 0 covers frame 0;  local row 0 of chunk 1 covers frame 17;  etc.
+- Global row ``r`` belongs to chunk ``r // 5``; its local position within that chunk is
+  ``r % 5``.
+
+Audio is encoded at its own tick rate derived from ``AUDIO_HZ``.
 """
 
 from __future__ import annotations
@@ -16,8 +23,8 @@ import math
 # Plain literal constants — direct assignments allowed per task contract
 # ---------------------------------------------------------------------------
 
-#: Frames covered per latent row across the five temporal groups.
-#: Row 0 covers 1 frame; rows 1-4 each cover 4 frames (total 17 per token group).
+#: Frames covered per latent row across the five temporal groups in one chunk.
+#: Local row 0 covers 1 frame; local rows 1-4 each cover 4 frames (total 17 per chunk).
 FRAME_PER_TOKEN: tuple[int, ...] = (1, 4, 4, 4, 4)
 
 #: Native video frame rate assumed by all inject nodes.  No fps conversion is performed.
@@ -25,6 +32,27 @@ FPS: int = 24
 
 #: Audio tick rate in ticks-per-second used by the H3 audio latent stream.
 AUDIO_HZ: float = 40.0
+
+# ---------------------------------------------------------------------------
+# VAE temporal-grid parameters — sourced from comfy/ldm/minimax/vae.py
+# ---------------------------------------------------------------------------
+
+#: Number of source frames encoded per VAE chunk (``clip_length`` in MiniMaxVAE).
+CLIP_LENGTH: int = 17
+
+#: Number of global tail rows dropped after concatenating all chunks (``token_drop`` in
+#: MiniMaxVAE).  For a valid clip length these correspond to the padding rows of the last
+#: chunk.
+TOKEN_DROP: int = 3
+
+#: Temporal downsampling ratio: ``prod(time_down)`` from MiniMaxVAE defaults.
+#: Each chunk's ``CLIP_LENGTH`` source frames produce ``ceil(CLIP_LENGTH / VAE_RATIO_T) = 5``
+#: latent rows.
+VAE_RATIO_T: int = 4
+
+#: Latent rows produced by one 17-frame chunk before the global token_drop.
+#: Equal to ``ceil(CLIP_LENGTH / VAE_RATIO_T)``.
+TOKENS_PER_CHUNK: int = 5  # ceil(17 / 4)
 
 # ---------------------------------------------------------------------------
 # Timestep constants sourced from comfy/ldm/minimax/model.py
@@ -41,15 +69,47 @@ AUDIO_COND_TIMESTEP: float = 1.0  # sourced from comfy/ldm/minimax/model.py
 
 
 # ---------------------------------------------------------------------------
-# Grid helpers — computation required; bodies are stubs
+# Grid helpers
 # ---------------------------------------------------------------------------
+
+
+def row_start_frame(row_idx: int) -> int:
+    """Return the absolute source-frame index of the first frame covered by ``row_idx``.
+
+    The latent grid resets every ``CLIP_LENGTH`` (17) frames.  For global row ``r``:
+    - ``chunk = r // TOKENS_PER_CHUNK``
+    - ``local_row = r % TOKENS_PER_CHUNK``
+    - start = ``CLIP_LENGTH * chunk`` when ``local_row == 0`` (chunk boundary);
+      ``CLIP_LENGTH * chunk + 1 + (local_row - 1) * VAE_RATIO_T`` otherwise.
+
+    This helper is also used to compute the total source-frame count covered by ``n_rows``
+    latent rows: ``row_start_frame(n_rows)`` equals the frame index at which a hypothetical
+    next row would begin, which is the total source-frame extent for valid ``n_rows`` values.
+
+    Parameters
+    ----------
+    row_idx:
+        Zero-based latent row index.  May equal ``total_rows`` (used by
+        :func:`audio_ticks_for_rows`); must be non-negative.
+
+    Returns
+    -------
+    int
+        Absolute source-frame index of the first frame in the row.
+    """
+    chunk = row_idx // TOKENS_PER_CHUNK
+    local_row = row_idx % TOKENS_PER_CHUNK
+    if local_row == 0:
+        return CLIP_LENGTH * chunk
+    return CLIP_LENGTH * chunk + 1 + (local_row - 1) * VAE_RATIO_T
 
 
 def row_frame_count(row_idx: int) -> int:
     """Return the number of source frames covered by latent row ``row_idx``.
 
-    Row 0 covers 1 frame (the first element of FRAME_PER_TOKEN); all subsequent rows
-    cover 4 frames (the repeating elements).
+    The count resets with the per-17-frame chunk structure: the first local row of every
+    chunk (local row 0, i.e., global rows 0, 5, 10, 15, …) covers 1 source frame; all
+    other local rows cover ``VAE_RATIO_T`` (4) source frames.
 
     Parameters
     ----------
@@ -59,7 +119,8 @@ def row_frame_count(row_idx: int) -> int:
     Returns
     -------
     int
-        1 for row 0, 4 for all other rows.
+        1 for chunk-boundary rows (``row_idx % TOKENS_PER_CHUNK == 0``);
+        ``VAE_RATIO_T`` (4) for all other rows.
 
     Raises
     ------
@@ -68,13 +129,18 @@ def row_frame_count(row_idx: int) -> int:
     """
     if row_idx < 0:
         raise ValueError(f"row_idx must be non-negative, got {row_idx}")
-    return FRAME_PER_TOKEN[0] if row_idx == 0 else FRAME_PER_TOKEN[1]
+    return FRAME_PER_TOKEN[0] if row_idx % TOKENS_PER_CHUNK == 0 else FRAME_PER_TOKEN[1]
 
 
 def frame_to_row(frame_idx: int) -> int:
     """Return the latent row index that contains source frame ``frame_idx``.
 
-    Row 0 holds frame 0; frames 1-4 are in row 1; frames 5-8 in row 2; etc.
+    The mapping resets every ``CLIP_LENGTH`` (17) frames.  For global frame ``f``:
+    - ``chunk = f // CLIP_LENGTH``
+    - ``local = f % CLIP_LENGTH``
+    - ``local_row = 0`` when ``local == 0`` (first frame of chunk);
+      ``1 + (local - 1) // VAE_RATIO_T`` otherwise.
+    - result = ``TOKENS_PER_CHUNK * chunk + local_row``
 
     Parameters
     ----------
@@ -93,13 +159,21 @@ def frame_to_row(frame_idx: int) -> int:
     """
     if frame_idx < 0:
         raise ValueError(f"frame_idx must be non-negative, got {frame_idx}")
-    if frame_idx == 0:
-        return 0
-    return 1 + (frame_idx - 1) // 4
+    chunk = frame_idx // CLIP_LENGTH
+    local = frame_idx % CLIP_LENGTH
+    local_row = 0 if local == 0 else 1 + (local - 1) // VAE_RATIO_T
+    return TOKENS_PER_CHUNK * chunk + local_row
 
 
 def total_rows(n_frames: int) -> int:
     """Return the total number of latent rows for a clip with ``n_frames`` source frames.
+
+    Each 17-frame chunk encodes to ``TOKENS_PER_CHUNK`` (5) rows; after concatenating all
+    chunks the last ``TOKEN_DROP`` (3) rows are dropped.  The formula is:
+    ``5 * ceil(n_frames / 17) - 3``.
+
+    Valid clip lengths are ``17k + 5`` (5, 22, 39, 56, …) — these are the lengths for which
+    the dropped rows correspond exactly to padding-derived rows of the final chunk.
 
     Parameters
     ----------
@@ -109,7 +183,7 @@ def total_rows(n_frames: int) -> int:
     Returns
     -------
     int
-        Number of latent rows required.
+        Number of latent rows after the global token-drop.
 
     Raises
     ------
@@ -118,17 +192,18 @@ def total_rows(n_frames: int) -> int:
     """
     if n_frames < 1:
         raise ValueError(f"n_frames must be at least 1, got {n_frames}")
-    return 1 + math.ceil((n_frames - 1) / 4)
+    return TOKENS_PER_CHUNK * math.ceil(n_frames / CLIP_LENGTH) - TOKEN_DROP
 
 
 def row_center_times(row_idx: int) -> tuple[float, ...]:
     """Return the source-frame center times (fractional frame units) covered by ``row_idx``.
 
-    Uses the 1/4/4/4/4 FRAME_PER_TOKEN structure to determine which source frames the row
-    spans, then returns one center time per source frame in that span.
+    Uses the per-17-chunk grid structure to determine which source frames the row spans,
+    then returns one center time per source frame in that span.
 
-    Row 0 covers exactly 1 frame; rows 1+ each cover 4 frames.  The center time of each
-    frame within a row is computed from the row's absolute start frame position.
+    Chunk-boundary rows (``row_idx % TOKENS_PER_CHUNK == 0``, e.g. rows 0, 5, 10, …)
+    cover exactly 1 frame and return a 1-tuple.  All other rows cover 4 frames and return
+    a 4-tuple.
 
     Parameters
     ----------
@@ -139,7 +214,6 @@ def row_center_times(row_idx: int) -> tuple[float, ...]:
     -------
     tuple[float, ...]
         One fractional frame-time value per source frame covered by the row.
-        Row 0 returns a 1-tuple; rows 1+ return 4-tuples.
 
     Raises
     ------
@@ -148,20 +222,16 @@ def row_center_times(row_idx: int) -> tuple[float, ...]:
     """
     if row_idx < 0:
         raise ValueError(f"row_idx must be non-negative, got {row_idx}")
-    if row_idx == 0:
-        # Row 0 covers frame 0; its center is at 0.5.
-        return (0.5,)
-    # Rows 1+ each cover 4 frames.  Row r starts at frame 1 + (r - 1) * 4.
-    start_frame = 1 + (row_idx - 1) * 4
-    return tuple(float(start_frame + i) + 0.5 for i in range(4))
+    start = row_start_frame(row_idx)
+    count = row_frame_count(row_idx)
+    return tuple(float(start + i) + 0.5 for i in range(count))
 
 
 def video_row_to_audio_tick(row_idx: int) -> int:
     """Return the audio tick index aligned to the start of latent video row ``row_idx``.
 
-    Audio ticks are derived from the video row's absolute start frame position and AUDIO_HZ.
-    The audio tick is the tick whose center time is closest to the row's start frame time
-    (at FPS).
+    The audio tick is derived from the row's absolute start frame via
+    ``round(row_start_frame(row_idx) * AUDIO_HZ / FPS)``.
 
     Parameters
     ----------
@@ -180,8 +250,7 @@ def video_row_to_audio_tick(row_idx: int) -> int:
     """
     if row_idx < 0:
         raise ValueError(f"row_idx must be non-negative, got {row_idx}")
-    start_frame = 0 if row_idx == 0 else 1 + (row_idx - 1) * 4
-    return round(start_frame * AUDIO_HZ / FPS)
+    return round(row_start_frame(row_idx) * AUDIO_HZ / FPS)
 
 
 def audio_tick_range(row_idx: int, total_rows: int, audio_ticks: int) -> range:
@@ -232,6 +301,10 @@ def audio_tick_range(row_idx: int, total_rows: int, audio_ticks: int) -> range:
 def audio_ticks_for_rows(n_rows: int) -> int:
     """Return the number of audio ticks in the audio latent for a clip with ``n_rows`` video rows.
 
+    Uses ``row_start_frame(n_rows)`` to compute the total source-frame extent for the given
+    number of rows, then converts to audio ticks via
+    ``round(row_start_frame(n_rows) * AUDIO_HZ / FPS)``.
+
     Parameters
     ----------
     n_rows:
@@ -244,10 +317,7 @@ def audio_ticks_for_rows(n_rows: int) -> int:
     """
     if n_rows == 0:
         return 0
-    # Total source frames for n_rows equals the start frame of the hypothetical next row,
-    # which is the same formula used by video_row_to_audio_tick(n_rows).
-    start_frame = 1 + (n_rows - 1) * 4
-    return round(start_frame * AUDIO_HZ / FPS)
+    return round(row_start_frame(n_rows) * AUDIO_HZ / FPS)
 
 
 def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
