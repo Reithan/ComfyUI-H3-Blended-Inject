@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from comfyui_h3_blended_inject import constants
+from comfyui_h3_blended_inject.guidance import resolve_guidance
 from comfyui_h3_blended_inject.mask import apply_derived_mask
 from comfyui_h3_blended_inject.sanitize import (
     check_resolution,
@@ -214,21 +215,24 @@ def _run_sampler(  # pragma: no cover
     if not disable_noise:
         noise = comfy.sample.prepare_noise(samples, noise_seed)
 
-    # H3 is CFG-distilled: when no negative is provided, pass an empty list so
-    # ComfyUI's sampling_function skips the uncond evaluation pass entirely.
-    # (comfy.sample.sample expects a list; passing None would crash.)
-    # When the user supplies a negative, forward it verbatim for CFG / NRS guidance.
-    # Note: we do NOT override the user's cfg value — the empty-list mechanism
-    # suppresses the uncond pass independently of cfg scale.
-    # Residual uncertainty: needs GPU verification against a live H3 model to confirm
-    # the empty-list path produces the expected single-cond forward pass behavior.
-    effective_negative: list | Any = [] if negative is None else negative
+    # Resolve optional-negative guidance per the H3 NRS-agnostic rule:
+    #   - negative wired → forward it; set disable_cfg1_optimization so the uncond
+    #     pass runs even at cfg==1.0 (required for cfg-independent hooks like NRS).
+    #   - negative None + sampler_cfg_function present → warn (hook runs without a
+    #     real uncond); pass [] and leave cfg and model_options unchanged.
+    #   - negative None + no hook → force effective_cfg=1.0 (avoids silent cond*cfg
+    #     gain); warn if the user's cfg was not already 1.0.
+    # See comfyui_h3_blended_inject/guidance.py for the full rule and samplers.py
+    # line references.
+    effective_negative, effective_cfg, m.model_options = resolve_guidance(
+        negative, cfg, m.model_options
+    )
 
     out_samples = comfy.sample.sample(
         m,
         noise,
         steps,
-        cfg,
+        effective_cfg,
         sampler_name,
         scheduler,
         positive,
