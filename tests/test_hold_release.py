@@ -279,6 +279,7 @@ _AUDIO_SHAPE: tuple[int, ...] = (_B, _C_A, 2, _AUDIO_T)
 def _make_wrapper_fixtures(
     denoise: float = 0.3,
     batch: int = 1,
+    region: str = "hold",
 ) -> tuple[
     list[RowSchedule],
     dict[int, torch.Tensor],
@@ -298,8 +299,14 @@ def _make_wrapper_fixtures(
     The packed tensor is built via _fake_pack_latents so the geometry matches the
     real comfy.utils.pack_latents contract.  batch controls the batch dim B of the
     PACKED input (simulates cond-batch; per_row_original stays at B=1).
+
+    ``region`` sets the RowSchedule.region field for every row in the returned
+    schedule.  Defaults to "hold" so existing hold-region tests work without
+    modification; pass "fade" when constructing fixtures for fade-regime tests.
     """
-    schedule = [RowSchedule(row_idx=i, denoise=denoise, inject=None) for i in range(_T)]
+    schedule = [
+        RowSchedule(row_idx=i, denoise=denoise, inject=None, region=region) for i in range(_T)
+    ]
 
     # Per-row originals/noise: shape [1, C_v, 1, Hl, Wl] (single temporal row).
     per_row_original = {i: torch.full((1, _C_V, 1, _HL, _WL), float(i + 1)) for i in range(_T)}
@@ -1046,3 +1053,723 @@ class TestTrajectoryIdentity:
             f"Euler step at sigma={sigma} -> sigma_next={sigma_next} must equal "
             f"hold_value(..., sigma_next)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Two-regime fade-row tests
+# FAIL on the old wrapper (which applied hold logic to all rows); PASS after
+# the region-aware wrapper is implemented.
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperFadeRow:
+    """'fade' region rows: prediction is ALWAYS blended; model INPUT is NEVER modified.
+
+    The permanent prediction blend ``(1 - d) * original + d * model_pred`` is applied
+    on every model call regardless of sigma — no is_held gate.  The model INPUT passes
+    through unchanged (writing it would drain the sampler's noise budget).
+    """
+
+    def test_fade_row_prediction_blended_when_sigma_above_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """sigma > d: fade prediction == (1-d)*original + d*model_pred.
+
+        FAILS on old code (hold logic would overwrite prediction with original).
+        PASSES after fade regime is implemented (blend is applied).
+        """
+        denoise = 0.4
+        sigma = 0.7  # sigma > d
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]  # [B, C_v, T, Hl, Wl]
+        # model_pred is 999.0 per the sentinel; original is fill(i+1)
+        model_pred_row_val = 999.0
+        for i, row_s in enumerate(schedule):
+            d = row_s.denoise
+            orig_val = float(i + 1)
+            expected_val = (1.0 - d) * orig_val + d * model_pred_row_val
+            actual = result_video[:, :, i : i + 1, :, :].mean().item()
+            assert abs(actual - expected_val) < 1e-4, (
+                f"Fade row {i} (sigma={sigma}>d={d}): expected blend {expected_val:.4f}, "
+                f"got {actual:.4f}"
+            )
+
+    def test_fade_row_prediction_blended_when_sigma_below_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """sigma < d: fade prediction == (1-d)*original + d*model_pred — NOT released.
+
+        This is the critical case: the old hold logic would release the row (no change)
+        when sigma <= d, but the fade regime must keep blending at ALL sigmas.
+
+        FAILS on old code (no blend applied when sigma < d).
+        PASSES after fade regime (permanent blend regardless of sigma).
+        """
+        denoise = 0.4
+        sigma = 0.2  # sigma < d — would be "released" by old hold logic
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        model_pred_row_val = 999.0
+        for i, row_s in enumerate(schedule):
+            d = row_s.denoise
+            orig_val = float(i + 1)
+            expected_val = (1.0 - d) * orig_val + d * model_pred_row_val
+            actual = result_video[:, :, i : i + 1, :, :].mean().item()
+            assert abs(actual - expected_val) < 1e-4, (
+                f"Fade row {i} (sigma={sigma}<d={d}): MUST still blend — "
+                f"expected {expected_val:.4f}, got {actual:.4f}.  "
+                f"Old hold logic would NOT blend (released), causing this to fail."
+            )
+
+    def test_fade_row_input_not_modified(self, fake_comfy: types.ModuleType) -> None:
+        """Fade row: apply_model receives the UNMODIFIED sampler input.
+
+        The hold regime writes hold_value to the input; the fade regime must NOT touch
+        the input at all (writing it drains the sampler's noise budget).
+
+        FAILS on old code (hold_value written to input at sigma > d).
+        PASSES after fade regime (input untouched).
+        """
+        denoise = 0.4
+        sigma = 0.7  # sigma > d → old code WOULD write hold_value to input
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        assert len(received) == 1
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_video = unpacked_orig[0]
+
+        for i in range(_T):
+            assert torch.allclose(
+                video_in[:, :, i, :, :], original_video[:, :, i, :, :], atol=1e-7
+            ), (
+                f"Fade row {i}: apply_model input must be UNCHANGED — "
+                f"fade regime must NOT write hold_value to the input."
+            )
+
+    @pytest.mark.parametrize("sigma", [0.1, 0.35, 0.4, 0.6, 0.9])
+    def test_fade_row_prediction_blended_at_multiple_sigmas(
+        self, sigma: float, fake_comfy: types.ModuleType
+    ) -> None:
+        """Fade prediction blend applies at every sigma, including sigma==d and sigma<d.
+
+        Parameterized over sigmas spanning below, at, and above d=0.4 to confirm the
+        blend has no sigma-dependent gate.
+        """
+        denoise = 0.4
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 888.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 888.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        model_pred_val = 888.0
+        for i, row_s in enumerate(schedule):
+            d = row_s.denoise
+            orig_val = float(i + 1)
+            expected_val = (1.0 - d) * orig_val + d * model_pred_val
+            actual = result_video[:, :, i : i + 1, :, :].mean().item()
+            assert abs(actual - expected_val) < 1e-4, (
+                f"Fade row {i} at sigma={sigma}: expected {expected_val:.4f}, got {actual:.4f}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Hold-row region: existing binary behavior is UNCHANGED
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperHoldRowRegion:
+    """Hold-row region: binary is-held gate is IDENTICAL to pre-change behavior.
+
+    These tests confirm that the region='hold' path is equivalent to the old
+    unconditional hold logic (which applied to all rows regardless of region).
+    """
+
+    def test_hold_row_input_written_when_sigma_above_d(self, fake_comfy: types.ModuleType) -> None:
+        """Hold row at sigma > d: apply_model receives hold_value in the input."""
+        denoise = 0.3
+        sigma = 0.7
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        for i in range(_T):
+            expected = hold_value(per_row_original[i], per_row_noise[i], sigma)
+            actual = video_in[:, :, i : i + 1, :, :]
+            assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
+                f"Hold row {i}: input must equal hold_value at sigma={sigma}"
+            )
+
+    def test_hold_row_input_not_written_when_sigma_below_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Hold row at sigma < d: apply_model receives unmodified input (released)."""
+        denoise = 0.9
+        sigma = 0.5  # sigma < denoise → released
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_video = unpacked_orig[0]
+        for i in range(_T):
+            assert torch.allclose(
+                video_in[:, :, i, :, :], original_video[:, :, i, :, :], atol=1e-7
+            ), f"Hold row {i} released at sigma={sigma} < d={denoise}: input must be unchanged"
+
+    def test_hold_row_prediction_overwritten_with_original_when_sigma_above_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Hold row at sigma > d: prediction row is overwritten with original."""
+        denoise = 0.3
+        sigma = 0.7
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        for i in range(_T):
+            expected = per_row_original[i]
+            actual = result_video[:, :, i : i + 1, :, :]
+            assert torch.allclose(actual, expected.expand_as(actual), atol=1e-7), (
+                f"Hold row {i} at sigma={sigma}: prediction must equal original"
+            )
+
+    def test_hold_row_prediction_not_overwritten_when_sigma_below_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Hold row released at sigma < d: prediction passes through unchanged."""
+        denoise = 0.9
+        sigma = 0.5
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        sentinel_val = 777.0
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), sentinel_val),
+                torch.full((1, _C_A, 2, _AUDIO_T), sentinel_val),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        for i in range(_T):
+            actual = result_video[:, :, i, :, :].mean().item()
+            assert abs(actual - sentinel_val) < 1e-6, (
+                f"Hold row {i} released at sigma={sigma} < d={denoise}: "
+                f"prediction must be unchanged sentinel {sentinel_val}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Audio fade-tick tests
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperAudioFadeTick:
+    """Audio 'fade' ticks: prediction ALWAYS blended; INPUT never modified.
+
+    Mirrors TestWrapperFadeRow for the audio stream.  The blend uses
+    audio_internal_scale(original, sigma_audio, asf) for the original term.
+    """
+
+    def test_audio_fade_tick_prediction_blended(self, fake_comfy: types.ModuleType) -> None:
+        """Audio fade tick: prediction = (1-d)*original*scale + d*model_pred_tick."""
+        denoise = 0.4
+        sigma = 0.7
+        audio_scale = 2.0
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 999.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 999.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=audio_scale,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        sigma_audio = constants.time_shift_sigma(sigma)
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_audio = unpacked_result[1]  # [B, C_a, 2, audio_t]
+
+        model_pred_tick_val = 999.0
+        for j in range(_AUDIO_T):
+            orig_val = float(j + 10)
+            original_scaled_val = orig_val * audio_scale  # audio_internal_scale
+            expected_val = (1.0 - denoise) * original_scaled_val + denoise * model_pred_tick_val
+            actual = result_audio[:, :, :, j : j + 1].mean().item()
+            assert abs(actual - expected_val) < 1e-4, (
+                f"Audio fade tick {j}: expected blend {expected_val:.4f}, got {actual:.4f}. "
+                f"sigma_audio={sigma_audio:.4f}, scale={audio_scale}"
+            )
+
+    def test_audio_fade_tick_input_not_modified(self, fake_comfy: types.ModuleType) -> None:
+        """Audio fade ticks: apply_model input is NOT modified (no hold_value write)."""
+        denoise = 0.4
+        sigma = 0.7
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        audio_in = unpacked_in[1]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_audio = unpacked_orig[1]
+
+        for j in range(_AUDIO_T):
+            assert torch.allclose(audio_in[:, :, :, j], original_audio[:, :, :, j], atol=1e-7), (
+                f"Audio fade tick {j}: input must be UNCHANGED (no hold_value write for fade)"
+            )
+
+    def test_audio_fade_tick_prediction_blended_when_sigma_below_d(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Audio fade tick at sigma < d: prediction still blended (no is_held gate)."""
+        denoise = 0.4
+        sigma = 0.2  # sigma < d; audio sigma will also likely be < d
+        audio_scale = 1.5
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 555.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 555.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=audio_scale,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_audio = unpacked_result[1]
+
+        model_pred_tick_val = 555.0
+        for j in range(_AUDIO_T):
+            orig_val = float(j + 10)
+            original_scaled_val = orig_val * audio_scale
+            expected_val = (1.0 - denoise) * original_scaled_val + denoise * model_pred_tick_val
+            actual = result_audio[:, :, :, j : j + 1].mean().item()
+            assert abs(actual - expected_val) < 1e-4, (
+                f"Audio fade tick {j} at sigma={sigma} < d={denoise}: "
+                f"MUST still blend — expected {expected_val:.4f}, got {actual:.4f}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Fade/hold boundary continuity
+# ---------------------------------------------------------------------------
+
+
+class TestFadeHoldBoundary:
+    """At min_denoise: the fade blend weight is (1-min_denoise); hold releases to zero.
+
+    This confirms the two regimes are correctly separated and the boundary is
+    predictable — not a regression, but a designed discontinuity.
+    """
+
+    def test_fade_blend_weight_at_min_denoise(self, fake_comfy: types.ModuleType) -> None:
+        """Fade row with d==min_denoise: blend weight for original is (1-min_denoise)."""
+        min_denoise = 0.3
+        sigma = 0.1  # sigma < d; released under old hold logic
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=min_denoise, region="fade")
+
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), 888.0),
+                torch.full((1, _C_A, 2, _AUDIO_T), 888.0),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        for i in range(_T):
+            orig_val = float(i + 1)
+            model_val = 888.0
+            # (1 - min_denoise) * original + min_denoise * model_pred
+            expected = (1.0 - min_denoise) * orig_val + min_denoise * model_val
+            actual = result_video[:, :, i : i + 1, :, :].mean().item()
+            assert abs(actual - expected) < 1e-4, (
+                f"Fade row {i} at d=min_denoise={min_denoise}: "
+                f"blend weight must be (1-{min_denoise})={1 - min_denoise:.2f}. "
+                f"Expected {expected:.4f}, got {actual:.4f}"
+            )
+
+    def test_hold_row_releases_when_sigma_below_d(self, fake_comfy: types.ModuleType) -> None:
+        """Hold row at sigma < d: is_held is False, so prediction passes through unchanged.
+
+        Uses sigma = 0.25 < d = 0.3 (strictly below, not equal) to avoid float32
+        precision issues: torch.tensor([0.3]) encodes as 0.30000001... (float32),
+        which would make is_held True at the equality boundary.  The semantic being
+        tested — "hold releases when sigma no longer exceeds d" — is correctly captured
+        by sigma < d.
+        """
+        min_denoise = 0.3
+        sigma = 0.25  # clearly below d=0.3; is_held(0.25, 0.3) = False
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=min_denoise, region="hold")
+
+        sentinel_val = 456.0
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), sentinel_val),
+                torch.full((1, _C_A, 2, _AUDIO_T), sentinel_val),
+            ]
+        )
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        result = wrapper(
+            lambda *a, **kw: flat_sentinel.clone(),  # noqa: ARG005
+            _args_dict(packed_input, sigma),
+        )
+
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+        for i in range(_T):
+            actual = result_video[:, :, i, :, :].mean().item()
+            assert abs(actual - sentinel_val) < 1e-6, (
+                f"Hold row {i} at sigma={sigma} < d={min_denoise}: "
+                f"is_held is False → prediction must be sentinel {sentinel_val}, "
+                f"got {actual:.4f}"
+            )
