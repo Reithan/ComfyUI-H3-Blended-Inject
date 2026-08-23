@@ -17,11 +17,9 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
+from comfyui_h3_blended_inject.constants import AUDIO_HZ as _AUDIO_HZ
+from comfyui_h3_blended_inject.constants import FPS as _FPS
 from comfyui_h3_blended_inject.constants import frame_to_row
-
-# H3 audio constants (matches nodes.py from the motion-context reference).
-_FPS: int = 24
-_AUDIO_HZ: float = 40.0
 
 
 def snap_inject_at(inject_at: int) -> int:

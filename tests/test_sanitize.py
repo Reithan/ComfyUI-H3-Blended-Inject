@@ -978,3 +978,51 @@ class TestWarnAudioTailAlignment:
                 has_audio=True,
             )
         assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+
+# ---------------------------------------------------------------------------
+# Regression: sanitize._FPS / _AUDIO_HZ track constants, not hardcoded literals
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeConstantsTrackModule:
+    """Verify that sanitize uses FPS/AUDIO_HZ from constants, not redeclared literals.
+
+    These tests would fail if someone re-hardcoded drifted values in sanitize.py.
+    """
+
+    def test_fps_tracks_constants(self):
+        import comfyui_h3_blended_inject.sanitize as _sanitize
+        from comfyui_h3_blended_inject import constants
+
+        assert _sanitize._FPS is constants.FPS or _sanitize._FPS == constants.FPS, (
+            f"sanitize._FPS={_sanitize._FPS!r} does not match constants.FPS={constants.FPS!r}. "
+            "Import FPS from constants instead of redeclaring."
+        )
+
+    def test_audio_hz_tracks_constants(self):
+        import comfyui_h3_blended_inject.sanitize as _sanitize
+        from comfyui_h3_blended_inject import constants
+
+        assert _sanitize._AUDIO_HZ == constants.AUDIO_HZ, (
+            f"sanitize._AUDIO_HZ={_sanitize._AUDIO_HZ!r} does not match "
+            f"constants.AUDIO_HZ={constants.AUDIO_HZ!r}. "
+            "Import AUDIO_HZ from constants instead of redeclaring."
+        )
+
+    def test_fps_value_unchanged(self):
+        """Catch drift: if constants.FPS changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import constants
+
+        assert constants.FPS == 24, (
+            f"constants.FPS changed to {constants.FPS!r}; update sanitize tests if intentional."
+        )
+
+    def test_audio_hz_value_unchanged(self):
+        """Catch drift: if constants.AUDIO_HZ changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import constants
+
+        assert constants.AUDIO_HZ == 40.0, (
+            f"constants.AUDIO_HZ changed to {constants.AUDIO_HZ!r}; "
+            "update sanitize tests if intentional."
+        )
