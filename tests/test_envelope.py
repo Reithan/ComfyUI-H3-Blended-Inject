@@ -192,7 +192,7 @@ def test_evaluate_envelope_returns_list_of_tuples():
 def test_evaluate_envelope_rows_are_absolute_latent_indices():
     """Row indices in the result are absolute latent-row indices (not local/clip offsets)."""
     # inject_at=34 (2*17 frames), start_fade_in=0, end_fade_out=8
-    # first_latent = 34, frame_to_row(34) = 1 + 33//4 = 9
+    # anchor = inject_at + sfi - 1 = 33; frame_to_row(33) = 9 (chunk=1, local=16, local_row=4)
     result = evaluate_envelope(
         start_fade_in=0,
         start_keyframes=4,
@@ -205,9 +205,9 @@ def test_evaluate_envelope_rows_are_absolute_latent_indices():
         inject_at=34,
     )
     assert len(result) > 0
-    # All row indices must be >= frame_to_row(34) = 9
+    # All row indices must be >= frame_to_row(anchor=33) = 9
     for row_idx, _ in result:
-        assert row_idx >= 9, f"row {row_idx} is below inject_at frame 34 (row 9)"
+        assert row_idx >= 9, f"row {row_idx} is below anchor frame 33 (row 9)"
 
 
 def test_evaluate_envelope_rows_sorted_ascending_and_unique():
@@ -559,7 +559,7 @@ def test_evaluate_envelope_still_inject_out_of_bounds_returns_empty():
         min_denoise=0.5,
         interpolation_type="linear",
         source_length=200,
-        target_rows=5,  # row for frame 100 = 1 + 99//4 = 25; 25 >= 5 → empty
+        target_rows=5,  # row for frame 100 = chunk=5,local=15,local_row=4 → row 29; 29 >= 5 → empty
         inject_at=0,
     )
     assert result == []

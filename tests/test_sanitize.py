@@ -534,7 +534,7 @@ class TestValidateEnvelopeIndices:
 
     def test_row_span_exceeds_target_rows_raises(self):
         # inject_at=0 (FRAME), end_fade_out=20, target_rows=5.
-        # frame_to_row(0 + 20) = frame_to_row(20) = 1 + 19//4 = 5 >= target_rows=5 → raises.
+        # frame_to_row(20) = chunk=1,local=3,local_row=1 → row 6; 6 >= target_rows=5 → raises.
         with pytest.raises(ValueError):
             validate_envelope_indices(0, 5, 10, 20, 25, 5, 0)
 
