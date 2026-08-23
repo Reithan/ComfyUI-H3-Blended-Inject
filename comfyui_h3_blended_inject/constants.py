@@ -168,12 +168,17 @@ def frame_to_row(frame_idx: int) -> int:
 def total_rows(n_frames: int) -> int:
     """Return the total number of latent rows for a clip with ``n_frames`` source frames.
 
-    Each 17-frame chunk encodes to ``TOKENS_PER_CHUNK`` (5) rows; after concatenating all
-    chunks the last ``TOKEN_DROP`` (3) rows are dropped.  The formula is:
-    ``5 * ceil(n_frames / 17) - 3``.
+    **Special case — F=1:** The H3 VAE special-cases a single input frame
+    (``x.shape[2] == 1``) and returns exactly **1** latent row, bypassing the
+    17-frame chunked path and ``token_drop``.  So ``total_rows(1) == 1``.
 
-    Valid clip lengths are ``17k + 5`` (5, 22, 39, 56, …) — these are the lengths for which
-    the dropped rows correspond exactly to padding-derived rows of the final chunk.
+    For ``n_frames >= 2`` each 17-frame chunk encodes to ``TOKENS_PER_CHUNK`` (5) rows;
+    after concatenating all chunks the last ``TOKEN_DROP`` (3) rows are dropped.  The
+    formula is: ``5 * ceil(n_frames / 17) - 3``.
+
+    Valid clip lengths are ``{1} ∪ {17k + 5}`` (1, 5, 22, 39, 56, …) — the F=1
+    single-frame path and the multi-frame paths whose dropped rows correspond exactly
+    to padding-derived rows of the final chunk.
 
     Parameters
     ----------
@@ -192,6 +197,8 @@ def total_rows(n_frames: int) -> int:
     """
     if n_frames < 1:
         raise ValueError(f"n_frames must be at least 1, got {n_frames}")
+    if n_frames == 1:
+        return 1
     return TOKENS_PER_CHUNK * math.ceil(n_frames / CLIP_LENGTH) - TOKEN_DROP
 
 

@@ -127,9 +127,38 @@ def test_frame_to_row_cross_check_span(frame_idx):
 # ---------------------------------------------------------------------------
 
 
-@given(st.integers(min_value=1, max_value=10_000))
+def test_total_rows_single_frame_returns_1():
+    """H3 VAE single-frame path: n_frames=1 returns exactly 1 latent row.
+
+    The H3 VAE special-cases a single input frame and bypasses the 17-frame chunked
+    path, producing 1 latent row instead of the formula's 5*ceil(1/17)-3=2.
+    FAIL-THEN-PASS: Before the special case, total_rows(1) returns 2; after it returns 1.
+    """
+    assert total_rows(1) == 1
+
+
+def test_total_rows_n2_is_2():
+    """Regression guard: n_frames=2 still gives 2 rows (formula path unchanged)."""
+    assert total_rows(2) == 2
+
+
+def test_total_rows_n17_is_2():
+    """Regression guard: n_frames=17 still gives 2 rows (formula path unchanged)."""
+    assert total_rows(17) == 2
+
+
+def test_total_rows_n22_is_7():
+    """Regression guard: n_frames=22 still gives 7 rows (formula path unchanged)."""
+    assert total_rows(22) == 7
+
+
+@given(st.integers(min_value=2, max_value=10_000))
 def test_total_rows_formula(n_frames):
-    """total_rows uses the per-17-chunk formula: TOKENS_PER_CHUNK*ceil(n/CLIP_LENGTH)-TOKEN_DROP."""
+    """total_rows uses the per-17-chunk formula for n_frames >= 2.
+
+    The formula is TOKENS_PER_CHUNK*ceil(n/CLIP_LENGTH)-TOKEN_DROP.
+    n_frames=1 is a special case (H3 VAE single-frame path) handled separately.
+    """
     expected = TOKENS_PER_CHUNK * math.ceil(n_frames / CLIP_LENGTH) - TOKEN_DROP
     assert total_rows(n_frames) == expected
 
