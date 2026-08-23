@@ -70,6 +70,47 @@ def per_row_init_lerp(
     return m * x + (1.0 - m) * clean
 
 
+def scale_packed_audio(
+    packed: torch.Tensor,
+    video_element_count: int,
+    audio_scale: float,
+) -> torch.Tensor:
+    """Scale the audio tail of a packed AV latent in place to match ``process_latent_in``.
+
+    ComfyUI's :meth:`MiniMaxH3.process_latent_in` leaves the video slice untouched
+    (``scale_factor == 1.0``) but multiplies the AUDIO slice by ``audio_scale``
+    (``shift / audio_shift`` = 4.0), carrying the audio stream onto the video schedule.  The
+    sampler therefore holds ``x_global`` whose audio slice is already ``audio_scale``-scaled.
+    The per-row init lerp (:func:`per_row_init_lerp`) blends toward the clean reference in that
+    same space, so the lerp's clean term must carry the identical audio scale — otherwise
+    fractional-denoise (``0 < m < 1``) audio rows img2img *from* a mismatched reference and
+    decode as static.  ``m == 1`` rows drop the clean term and ``m == 0`` rows are restored
+    post-sampling, so only fractional audio is affected (matching the observed fade-region
+    garble under deterministic samplers).
+
+    ``packed`` is a flat ``[B, video_elems + audio_elems]`` latent; ``video_element_count`` is
+    ``prod(video_shape[1:])`` — the packed video-prefix length.  Modifies ``packed`` in place
+    and returns it.  A no-op when ``audio_scale == 1.0`` or there is no audio tail.
+
+    Parameters
+    ----------
+    packed:
+        The packed AV latent to scale in place.
+    video_element_count:
+        Number of packed elements belonging to the video stream (the prefix length).
+    audio_scale:
+        The audio carry scale (``MiniMaxH3.audio_scale()``); ``1.0`` is a no-op.
+
+    Returns
+    -------
+    torch.Tensor
+        ``packed`` (scaled in place).
+    """
+    if audio_scale != 1.0 and video_element_count < packed.shape[-1]:
+        packed[..., video_element_count:] *= audio_scale
+    return packed
+
+
 def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
     """Return ``True`` iff ``fn`` declares an explicit ``noise_sampler`` parameter.
 

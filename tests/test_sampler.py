@@ -25,6 +25,7 @@ from comfyui_h3_blended_inject.sampler import (
     make_per_row_noise_sampler,
     per_row_init_lerp,
     sampler_accepts_noise_sampler,
+    scale_packed_audio,
 )
 
 frac_st = st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)
@@ -391,3 +392,39 @@ class TestConditioningWrapperDenoisedCorrection:
         wrapper = build_conditioning_wrapper({}, m)
         out = wrapper(_ConstApplyModel(denoised), self._args(inp))
         assert out.dtype == torch.float16
+
+
+class TestScalePackedAudio:
+    """The lerp's clean term must carry the same audio scale comfy's process_latent_in applies.
+
+    Regression for the "video perfect, fade-region audio garbled/staticky under euler" bug:
+    MiniMaxH3.process_latent_in multiplies only the audio slice by audio_scale (=4.0), so
+    x_global's audio is 4x-scaled while the raw clean_packed audio was 1x — fractional-denoise
+    audio rows then img2img from a mismatched reference and decode as static.
+    """
+
+    def test_scales_only_audio_tail(self) -> None:
+        packed = torch.ones(1, 10)
+        # first 6 elements = video prefix, last 4 = audio tail
+        out = scale_packed_audio(packed, 6, 4.0)
+        assert torch.allclose(out[..., :6], torch.ones(1, 6))
+        assert torch.allclose(out[..., 6:], torch.full((1, 4), 4.0))
+
+    def test_scales_in_place_and_returns_same_tensor(self) -> None:
+        packed = torch.ones(1, 8)
+        out = scale_packed_audio(packed, 4, 4.0)
+        assert out is packed
+        assert torch.allclose(packed[..., 4:], torch.full((1, 4), 4.0))
+
+    def test_unit_scale_is_noop(self) -> None:
+        packed = torch.randn(1, 8)
+        original = packed.clone()
+        out = scale_packed_audio(packed, 4, 1.0)
+        assert torch.allclose(out, original)
+
+    def test_no_audio_tail_is_noop(self) -> None:
+        # video_element_count == packed width → nothing to scale (video-only latent)
+        packed = torch.randn(1, 6)
+        original = packed.clone()
+        out = scale_packed_audio(packed, 6, 4.0)
+        assert torch.allclose(out, original)

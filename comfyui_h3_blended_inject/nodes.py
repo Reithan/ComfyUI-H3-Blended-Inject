@@ -134,6 +134,7 @@ def _run_sampler(  # pragma: no cover
         build_conditioning_wrapper,
         build_per_row_sampler_function,
         sampler_accepts_noise_sampler,
+        scale_packed_audio,
     )
 
     # --- 1. Split the target latent into components (H3 FLOW_AV is NestedTensor). ---
@@ -156,11 +157,23 @@ def _run_sampler(  # pragma: no cover
     clean_components = (clean_video,) if clean_audio is None else (clean_video, clean_audio)
     clean_nested = NestedTensor(clean_components) if is_nested else clean_video
 
-    # Pack the clean reference — it is BOTH sample_custom's latent_image (noise_scaling
-    # blends toward it) AND the clean term for the per-row init lerp, so the two must match.
+    # The clean reference is used in TWO spaces that do NOT match:
+    #   - sample_custom's latent_image: passed RAW (clean_nested); comfy applies
+    #     MiniMaxH3.process_latent_in internally, which scales the AUDIO slice by audio_scale
+    #     (shift/audio_shift = 4.0; video scale_factor is 1.0) → x_global carries scaled audio.
+    #   - the per-row init lerp's clean term (clean_packed): must live in that SAME scaled
+    #     space, since the lerp blends x_global toward it. So scale clean_packed's audio slice
+    #     by audio_scale here (see sampler.scale_packed_audio). Skipping this left fractional
+    #     (0<m<1) audio rows img2img-ing from a 4x-mismatched reference → decoded static.
     import comfy.utils as _comfy_utils
 
     clean_packed, latent_shapes = _comfy_utils.pack_latents(clean_components)
+    if clean_audio is not None:
+        audio_scale = float(getattr(m.model.model_sampling, "audio_scale", 1.0))
+        n_video_elems = 1
+        for _dim in latent_shapes[0][1:]:
+            n_video_elems *= int(_dim)
+        clean_packed = scale_packed_audio(clean_packed, n_video_elems, audio_scale)
 
     # --- 3. Fractional per-row denoise mask, packed to the same flat layout. ---
     video_shape = tuple(int(d) for d in video.shape)
