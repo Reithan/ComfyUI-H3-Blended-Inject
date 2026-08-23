@@ -28,9 +28,9 @@ import torch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from comfyui_h3_blended_inject.constants import video_row_to_audio_tick
+from comfyui_h3_blended_inject.constants import audio_tick_range, video_row_to_audio_tick
 from comfyui_h3_blended_inject.mask import apply_derived_mask, derive_mask
-from comfyui_h3_blended_inject.schedule import RowSchedule
+from comfyui_h3_blended_inject.schedule import Inject, RowSchedule
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -600,4 +600,98 @@ class TestDeriveMaskAudioFullTickRange:
         for tick in range(2, 7):
             assert torch.all(am[:, :, :, tick] == 0.0), (
                 f"Nested path: tick {tick} should be 0 (row 1 owns [2, 7))"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Regression: fade-mode d==0 audio preserve (the bug case)
+# ---------------------------------------------------------------------------
+
+
+def _make_fade_inject(audio_mode: str = "fade") -> Inject:
+    """Build a minimal Inject with the given audio_mode for test use."""
+    return Inject(
+        inject_at=0,
+        start_fade_in=0,
+        start_keyframes=0,
+        end_keyframes=17,
+        end_fade_out=39,
+        min_denoise=0.0,
+        interpolation_type="linear",
+        audio_mode=audio_mode,
+        images=None,
+        audio=None,
+        resolution=(0, 0),
+        source_length=39,
+    )
+
+
+class TestFadeModeAudioPreserveInMask:
+    """Regression for the bug where fade-mode d==0 audio was left as generate (mask=1).
+
+    Before the fix, audio_frozen was used as the gate in derive_mask.  audio_frozen is
+    False for fade-mode, so audio ticks were never zeroed even on preserve rows.
+
+    After the fix, audio_preserve is used: it returns True for fade-mode rows with
+    denoise==0.0, causing the mask to zero those ticks just like video.
+
+    Pre-fix failure:
+        AssertionError: audio tick <N> for fade d=0 row must be 0.0 (preserve),
+        got 1.0 — the tick was not zeroed because audio_frozen was False.
+    """
+
+    _VIDEO_ROWS = 5
+    _AUDIO_TICKS = 8
+
+    def _make_preserve_rs(self, audio_mode: str = "fade") -> RowSchedule:
+        return RowSchedule(
+            row_idx=0,
+            denoise=0.0,
+            inject=_make_fade_inject(audio_mode=audio_mode),
+            audio_frozen=(audio_mode == "keep"),
+            region="preserve",
+        )
+
+    def test_fade_d0_preserve_row_zeros_audio_ticks(self) -> None:
+        """Fade-mode d=0 row must set all its owned audio ticks to 0 in the mask.
+
+        This is the primary regression: before the fix audio_mask stayed 1.0 for
+        fade-mode rows regardless of denoise value.
+        """
+        rs = self._make_preserve_rs(audio_mode="fade")
+        result = derive_mask([rs], video_rows=self._VIDEO_ROWS, audio_ticks=self._AUDIO_TICKS)
+        audio_mask = result["audio_mask"][0]
+        owned_ticks = list(audio_tick_range(rs.row_idx, self._VIDEO_ROWS, self._AUDIO_TICKS))
+        assert owned_ticks, "row 0 must own at least one audio tick"
+        for tick in owned_ticks:
+            assert audio_mask[tick].item() == 0.0, (
+                f"audio tick {tick} for fade d=0 row must be 0.0 (preserve), "
+                f"got {audio_mask[tick].item()}"
+            )
+
+    def test_fade_d0_video_also_zeroed(self) -> None:
+        """Sanity: the video mask for the same d=0 row is still 0 (unchanged by fix)."""
+        rs = self._make_preserve_rs(audio_mode="fade")
+        result = derive_mask([rs], video_rows=self._VIDEO_ROWS, audio_ticks=self._AUDIO_TICKS)
+        assert result["video_mask"][0, rs.row_idx].item() == 0.0
+
+    def test_fade_non_d0_row_does_not_freeze_audio(self) -> None:
+        """Guard against over-freezing: fade-mode rows with denoise != 0 must stay 1.
+
+        Only d=0 preserve rows trigger audio preservation in fade mode.
+        """
+        rs = RowSchedule(
+            row_idx=0,
+            denoise=0.7,
+            inject=_make_fade_inject(audio_mode="fade"),
+            audio_frozen=False,
+            region="fade",
+        )
+        result = derive_mask([rs], video_rows=self._VIDEO_ROWS, audio_ticks=self._AUDIO_TICKS)
+        audio_mask = result["audio_mask"][0]
+        owned_ticks = list(audio_tick_range(rs.row_idx, self._VIDEO_ROWS, self._AUDIO_TICKS))
+        for tick in owned_ticks:
+            assert audio_mask[tick].item() == 1.0, (
+                f"audio tick {tick} for fade d=0.7 row must be 1.0 (generate), "
+                f"got {audio_mask[tick].item()}"
             )

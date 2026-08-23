@@ -681,3 +681,79 @@ class TestMergeScheduleProperties:
                 f"row {rs.row_idx}: audio_frozen={rs.audio_frozen} but "
                 f"inject.audio_mode={rs.inject.audio_mode}"
             )
+
+
+# ---------------------------------------------------------------------------
+# RowSchedule.audio_preserve property — regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestAudioPreserve:
+    """Truth-table for RowSchedule.audio_preserve.
+
+    Regression for the bug where fade-mode d==0 audio was generated from scratch
+    instead of preserved.  audio_preserve must return True exactly for:
+      - keep mode (audio_frozen=True), any denoise value, and
+      - fade mode with denoise==0.0.
+    All other combinations must return False.
+
+    Pre-fix these tests fail with:
+      AttributeError: 'RowSchedule' object has no attribute 'audio_preserve'
+    """
+
+    def _make_rs(
+        self,
+        audio_mode: str,
+        denoise: float,
+        audio_frozen: bool = False,
+    ) -> RowSchedule:
+        inj = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=17,
+            end_fade_out=39,
+            min_denoise=0.0,
+            interpolation_type="linear",
+            audio_mode=audio_mode,
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=39,
+        )
+        return RowSchedule(
+            row_idx=0,
+            denoise=denoise,
+            inject=inj,
+            audio_frozen=audio_frozen,
+            region="preserve" if denoise == 0.0 else "hold",
+        )
+
+    def test_fade_denoise_zero_is_true(self) -> None:
+        """fade mode + denoise==0.0 → audio_preserve is True (the bug case)."""
+        rs = self._make_rs(audio_mode="fade", denoise=0.0)
+        assert rs.audio_preserve is True
+
+    def test_fade_denoise_fractional_is_false(self) -> None:
+        """fade mode + denoise==0.7 → audio_preserve is False (only d=0 is preserved)."""
+        rs = self._make_rs(audio_mode="fade", denoise=0.7)
+        assert rs.audio_preserve is False
+
+    def test_keep_any_denoise_is_true(self) -> None:
+        """keep mode (audio_frozen=True) + any denoise → audio_preserve is True."""
+        rs_zero = RowSchedule(
+            row_idx=0, denoise=0.0, inject=None, audio_frozen=True, region="preserve"
+        )
+        rs_frac = RowSchedule(row_idx=0, denoise=0.7, inject=None, audio_frozen=True, region="hold")
+        assert rs_zero.audio_preserve is True
+        assert rs_frac.audio_preserve is True
+
+    def test_drop_denoise_zero_is_false(self) -> None:
+        """drop mode + denoise==0.0 → audio_preserve is False (drop never preserves audio)."""
+        rs = self._make_rs(audio_mode="drop", denoise=0.0)
+        assert rs.audio_preserve is False
+
+    def test_inject_none_audio_frozen_false_is_false(self) -> None:
+        """inject=None + audio_frozen=False → audio_preserve is False."""
+        rs = RowSchedule(row_idx=0, denoise=0.0, inject=None, audio_frozen=False)
+        assert rs.audio_preserve is False
