@@ -21,10 +21,13 @@ img2img sampler for H3 blended injects (see the ``per-row-img2img-architecture``
 For deterministic samplers (euler, res_multistep, dpmpp_2m, ...) the per-step update is
 invariant under scaling all sigmas by ``m_r``, so running the global sampler on the global
 schedule with per-row-conditioned ``x0`` and per-row initial noise reproduces per-row
-img2img exactly — no sampler modification needed.  Only stochastic samplers
-(ancestral/SDE, euler s_churn>0) add a bare ``sigma_up`` of fresh noise per step; those
-need a per-row-scaling noise_sampler (:func:`make_per_row_noise_sampler`) so row ``r`` gets
-``m_r*sigma_up`` of noise.  See the ``per-row-sampler-scale-invariance`` note for the proof.
+img2img exactly — no sampler modification needed.  Stochastic samplers (ancestral/SDE,
+euler s_churn>0) add fresh noise per step; :func:`make_per_row_noise_sampler` scales that
+noise per-row, but this is INSUFFICIENT for H3's RF-ancestral path (Bug B): the
+``sample_euler_ancestral_RF`` renoise sub-step is affine (not linear) in sigma via its
+``alpha = 1 - sigma`` terms, so no noise-magnitude shim alone can make it scale-invariant.
+Stochastic samplers are unsupported/deferred; see ``bugs.md`` Bug B and
+``stochastic-recovery-theory.md``.
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.
 """
@@ -132,10 +135,15 @@ def make_per_row_noise_sampler(
 
     Stochastic samplers add ``noise_sampler(sigma, sigma_next) * s_noise * sigma_up`` each
     step, where ``sigma_up`` is a bare sigma.  Row ``r`` running at compressed schedule
-    ``m_r*sigma`` should receive ``m_r*sigma_up`` of noise, so pre-scaling the sampled noise
-    by ``m_r`` reproduces the correct per-row stochastic term.  ``get_ancestral_step`` is
-    homogeneous degree 1, so ``sigma_up`` already scales correctly with the deterministic
-    part; only the fresh-noise magnitude needs this correction.
+    ``m_r*sigma`` should receive ``m_r*sigma_up`` of noise, so this wrapper pre-scales the
+    sampled noise by ``m_r``.
+
+    CAVEAT (Bug B): this correctness argument only holds for Karras-style ancestral
+    (``get_ancestral_step`` is homogeneous degree 1).  H3's CONST model routes to
+    ``sample_euler_ancestral_RF``, which does NOT use ``get_ancestral_step`` — its renoise
+    coefficients are affine in sigma (``alpha = 1 - sigma``), so this magnitude shim is
+    insufficient there and stochastic samplers remain unsupported.  Kept as a dead shim;
+    see ``stochastic-recovery-theory.md`` for the proposed real fix.
 
     Parameters
     ----------
