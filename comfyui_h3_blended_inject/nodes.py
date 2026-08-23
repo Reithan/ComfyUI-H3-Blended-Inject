@@ -578,16 +578,33 @@ class H3AddInject:
             )
 
         # c. Derive source_length and resolution from images if present.
-        #    Snap source content length down to the largest valid H3 clip length (17n+5)
-        #    that fits within the source.  Raises ValueError when source_length < 5 (the
-        #    minimum valid H3 clip length).  Warns and trims when source_length is not
-        #    already a valid 17n+5 value.
+        #    Snap source content length down to the nearest valid H3 inject length.
+        #    Valid set: {1} ∪ {17n+5}.  Raises ValueError for lengths 2-4 or < 1;
+        #    warns and trims when source_length > 5 and is not already a valid 17n+5 value.
         if images is not None:
             _raw_length = int(images.shape[0])
-            source_length = snap_length_down(_raw_length)  # raises if < 5; warns on trim
+            source_length = snap_length_down(_raw_length)  # raises on invalid; warns on trim
             if source_length < _raw_length:
                 images = images[:source_length]  # trim trailing frames from image batch
             resolution = (int(images.shape[2]), int(images.shape[1]))  # (width, height)
+
+            # Single-frame (F=1) keyframe guards — must use the ORIGINAL inject_at (the
+            # user-requested value), NOT the post-snap value, so that a non-chunk-boundary
+            # request is clearly rejected rather than silently rewritten.
+            if source_length == 1:
+                if inject_at % 17 != 0:
+                    lo = 17 * (inject_at // 17)
+                    hi = lo + 17
+                    raise ValueError(
+                        f"Single-frame (keyframe) injects must be placed exactly on a chunk "
+                        f"boundary (inject_at a multiple of 17, a '1' edge); "
+                        f"got inject_at={inject_at}. Nearest edges: {lo} or {hi}."
+                    )
+                if audio is not None and audio_mode != "drop":
+                    raise ValueError(
+                        f"Single-frame (keyframe) injects require audio_mode='drop' or no "
+                        f"audio; got audio_mode={audio_mode!r} with audio present."
+                    )
 
             # Validate fade indices against the POST-TRIM snapped length.
             # end_fade_out is EXCLUSIVE (half-open): efo == source_length is valid.
