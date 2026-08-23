@@ -832,14 +832,16 @@ class TestAudioDenoise:
 
 
 # ---------------------------------------------------------------------------
-# merge_schedule crossfade propagation (E1)
+# merge_schedule ramp-row region classification
 # ---------------------------------------------------------------------------
 
 
-class TestMergeScheduleCrossfadePropagation:
-    """Verify that the crossfade flag is propagated through merge_schedule to
-    classify_row_region, and that ramp-row regions are 'hold' by default and
-    'fade' when crossfade=True.
+class TestMergeScheduleRampRegions:
+    """Verify merge_schedule classifies ramp rows as 'hold'.
+
+    The crossfade toggle was removed with the per-row img2img rework; ramp rows always
+    classify as 'hold' (the per-row img2img sampler drives the fade via each row's
+    fractional denoise, not via a distinct region).
 
     Uses inject_at=0, start_fade_in=0, start_keyframes=5, end_keyframes=10,
     end_fade_out=17.  Row 1 (centers 1.5–4.5) lies in the fade-in ramp [0,5).
@@ -857,12 +859,8 @@ class TestMergeScheduleCrossfadePropagation:
             audio_mode="drop",
         )
 
-    def test_ramp_rows_have_region_hold_by_default(self) -> None:
-        """merge_schedule default (crossfade=False): ramp rows have region='hold'.
-
-        Fail-then-pass test (E1 new): before the E1 change, ramp rows returned 'fade'
-        unconditionally. Now they return 'hold' by default.
-        """
+    def test_ramp_rows_have_region_hold(self) -> None:
+        """Ramp rows classify as 'hold' with fractional denoise."""
         inj = self._make_fade_inject()
         result = merge_schedule([inj], target_rows=30)
         # row 1 (centers 1.5–4.5) is in the fade-in ramp [0,5) and should be 'hold'.
@@ -870,51 +868,23 @@ class TestMergeScheduleCrossfadePropagation:
         assert 1 in result_by_row, "row 1 should be claimed by the inject"
         row1 = result_by_row[1]
         assert row1.region == "hold", (
-            f"ramp row 1 (denoise={row1.denoise}): "
-            f"expected region='hold' by default, got {row1.region!r}"
+            f"ramp row 1 (denoise={row1.denoise}): expected region='hold', got {row1.region!r}"
         )
         assert 0.0 < row1.denoise < 1.0, (
             f"ramp row should have fractional denoise, got {row1.denoise}"
         )
 
-    def test_ramp_rows_have_region_fade_crossfade_true(self) -> None:
-        """merge_schedule with crossfade=True: ramp rows have region='fade'.
-
-        Verifies the crossfade flag is passed through to classify_row_region.
-        """
+    def test_hold_rows_have_region_hold(self) -> None:
+        """Hold-span rows (all centers in [skf, ekf)) classify as 'hold'."""
         inj = self._make_fade_inject()
-        result = merge_schedule([inj], target_rows=30, crossfade=True)
-        result_by_row = {rs.row_idx: rs for rs in result}
-        assert 1 in result_by_row, "row 1 should be claimed by the inject"
-        row1 = result_by_row[1]
-        assert row1.region == "fade", (
-            f"ramp row 1 (denoise={row1.denoise}): "
-            f"expected region='fade' with crossfade=True, got {row1.region!r}"
-        )
-        assert 0.0 < row1.denoise < 1.0, (
-            f"ramp row should have fractional denoise, got {row1.denoise}"
-        )
+        result = merge_schedule([inj], target_rows=30)
+        by_row = {rs.row_idx: rs for rs in result}
+        # row 2 (centers 5.5–8.5) is in hold span [5,10); should be 'hold'.
+        assert 2 in by_row, "row 2 should be claimed"
+        assert by_row[2].region == "hold", "hold-span row must be 'hold'"
 
-    def test_hold_rows_unaffected_by_crossfade(self) -> None:
-        """Hold-span rows (all centers in [skf, ekf)) are always 'hold' regardless of crossfade.
-
-        crossfade only changes the ramp rows; hold rows must remain 'hold'.
-        """
-        inj = self._make_fade_inject()
-        result_default = merge_schedule([inj], target_rows=30, crossfade=False)
-        result_crossfade = merge_schedule([inj], target_rows=30, crossfade=True)
-        by_row_default = {rs.row_idx: rs for rs in result_default}
-        by_row_crossfade = {rs.row_idx: rs for rs in result_crossfade}
-        # row 2 (centers 5.5–8.5) is in hold span [5,10); should be 'hold' in both
-        assert 2 in by_row_default, "row 2 should be claimed"
-        assert by_row_default[2].region == "hold", "hold row must be 'hold' with crossfade=False"
-        assert by_row_crossfade[2].region == "hold", "hold row must be 'hold' with crossfade=True"
-
-    def test_audio_mode_and_audio_frozen_unaffected_by_crossfade(self) -> None:
-        """crossfade flag must not alter audio_frozen or audio_preserve behavior.
-
-        audio_mode='fade' + denoise=0.0 → audio_preserve is True in both modes.
-        """
+    def test_fade_mode_audio_preserve_at_d0(self) -> None:
+        """audio_mode='fade' + denoise=0.0 → audio_preserve is True."""
         inj = make_inject(
             inject_at=0,
             start_fade_in=0,
@@ -924,12 +894,9 @@ class TestMergeScheduleCrossfadePropagation:
             min_denoise=0.0,
             audio_mode="fade",
         )
-        result_default = merge_schedule([inj], target_rows=30, crossfade=False)
-        result_crossfade = merge_schedule([inj], target_rows=30, crossfade=True)
-        for rs_d, rs_c in zip(result_default, result_crossfade, strict=True):
-            assert rs_d.audio_frozen == rs_c.audio_frozen, (
-                f"row {rs_d.row_idx}: audio_frozen differs by crossfade flag"
-            )
-            assert rs_d.audio_preserve == rs_c.audio_preserve, (
-                f"row {rs_d.row_idx}: audio_preserve differs by crossfade flag"
+        result = merge_schedule([inj], target_rows=30)
+        for rs in result:
+            assert rs.audio_frozen is False, f"row {rs.row_idx}: fade mode must not freeze audio"
+            assert rs.audio_preserve == (rs.denoise == 0.0), (
+                f"row {rs.row_idx}: fade-mode audio_preserve must mirror denoise==0.0"
             )

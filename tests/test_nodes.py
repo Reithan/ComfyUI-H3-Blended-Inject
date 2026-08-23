@@ -177,17 +177,11 @@ class TestH3InjectSamplerInputTypes:
     def test_optional_keys(self):
         optional = set(H3InjectSampler.INPUT_TYPES().get("optional", {}).keys())
         assert "negative" in optional
-        assert "crossfade" in optional, "'crossfade' must be present as an optional widget"
 
-    def test_crossfade_widget_type_and_default(self):
-        """crossfade must be a BOOLEAN widget with default=False."""
+    def test_crossfade_widget_removed(self):
+        """The crossfade toggle was removed with the per-row img2img rework."""
         optional = H3InjectSampler.INPUT_TYPES().get("optional", {})
-        assert "crossfade" in optional, "'crossfade' must be present"
-        spec = optional["crossfade"]
-        assert spec[0] == "BOOLEAN", f"crossfade type must be 'BOOLEAN', got {spec[0]!r}"
-        assert spec[1].get("default") is False, (
-            f"crossfade default must be False, got {spec[1].get('default')!r}"
-        )
+        assert "crossfade" not in optional, "'crossfade' widget must no longer be present"
 
     def test_return_types(self):
         assert H3InjectSampler.RETURN_TYPES == ("LATENT",)
@@ -430,8 +424,9 @@ class TestH3AddInjectBehaviorExtra:
 class TestH3InjectSamplerBehavior:
     """Behavioral contract for H3InjectSampler.sample.
 
-    Deeper sampler mechanics (hold/release math, mask derivation, schedule merge) are
-    covered by the dedicated modules: test_hold_release.py, test_mask.py, test_schedule.py.
+    Deeper sampler mechanics (per-row img2img lerp, fractional mask, clean-reference
+    composite, schedule merge) are covered by the dedicated modules: test_sampler.py,
+    test_mask_fractional.py, test_composite.py, test_schedule.py.
     This file tests only the node's public validation contract.
     """
 
@@ -523,8 +518,8 @@ class TestH3InjectSamplerBehavior:
                 inject_list=[invalid_inject],
             )
 
-    def test_sample_calls_merge_and_mask_before_gpu(self):
-        """Valid inject (no images) passes both checks; merge_schedule and apply_derived_mask run.
+    def test_sample_calls_merge_before_gpu(self):
+        """Valid inject (no images) passes both checks; merge_schedule runs.
 
         After the CPU-testable steps succeed, the call hits the GPU-only _run_sampler helper
         which tries model.clone() on a plain object() and raises AttributeError.
@@ -678,8 +673,8 @@ class TestH3InjectSamplerBehavior:
             return ({"samples": None},)
 
         monkeypatch.setattr(nodes_mod, "_run_sampler", stub_run_sampler)
-        # Bypass mask creation so comfy is not needed on this CPU path.
-        monkeypatch.setattr(nodes_mod, "apply_derived_mask", lambda lat, *a, **kw: lat)
+        # The per-row img2img pipeline builds the clean reference + fractional mask inside
+        # _run_sampler (stubbed here), so sample() itself needs no comfy on this CPU path.
 
         # Fake NestedTensor that matches the H3 FLOW_AV structure.
         video = torch.zeros(1, 24, 5, 4, 4)  # [B=1, C=24, T=5, Hl=4, Wl=4]
