@@ -24,6 +24,9 @@ Once active, the release flow is: **bump `version` in `pyproject.toml`, merge to
    Icon = "https://raw.githubusercontent.com/Reithan/ComfyUI-H3-Blended-Inject/main/icon.png"
    ```
 
+   **IMPORTANT:** `PublisherId` and `Icon` in `[tool.comfy]` are currently empty strings in the
+   repository. They MUST be filled in with actual values before publishing to the ComfyUI registry.
+
    Optionally add authorship to `[project]`:
 
    ```toml
