@@ -562,7 +562,10 @@ class H3AddInject:
         """
         # a. Snap inject_at to the nearest 17-frame boundary.
         snapped = snap_inject_at(inject_at)
-        snap_inject_at_audio_tick(snapped)  # side-effect: warn if not mult of 51
+        # Only warn about non-51 audio-tick alignment when audio is actually being injected.
+        # The %51 position error is irrelevant for audio_mode='drop' (pure noise, no audio insert).
+        if audio is not None and audio_mode != "drop":
+            snap_inject_at_audio_tick(snapped)  # side-effect: warn if not mult of 51
 
         # b. Lightweight ordering validation (full bounds check with target_rows happens
         #    later in sample() once the target latent is known).

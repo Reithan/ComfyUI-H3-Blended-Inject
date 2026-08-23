@@ -1235,3 +1235,305 @@ class TestE8AudioTailAlignment:
             )
         tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
         assert not tail_warns
+
+
+# ---------------------------------------------------------------------------
+# F=1 single-frame (keyframe) inject constraints
+# ---------------------------------------------------------------------------
+
+
+class TestF1SingleFrameInject:
+    """F=1 keyframe inject: placement, audio, and %51 warning gating.
+
+    All fail-then-pass tests in this class require two nodes.py changes:
+    1. The single-frame placement guard (inject_at % 17 == 0 for F=1 injects).
+    2. The %51 audio-tick warning gate (only fire when audio is present and audio_mode != 'drop').
+    """
+
+    @staticmethod
+    def _images(frames: int, h: int = 64, w: int = 64) -> Any:
+        import torch
+
+        return torch.zeros(frames, h, w, 3)
+
+    @staticmethod
+    def _audio(samples: int = 8000, sr: int = 16000) -> dict:
+        import torch
+
+        return {"waveform": torch.zeros(1, samples), "sample_rate": sr}
+
+    # -- (i) Valid single-frame inject succeeds and produces source_length=1 -------
+
+    def test_single_frame_at_chunk_boundary_drop_succeeds(self):
+        """inject_at=187 (=11*17) + 1 frame + audio_mode='drop' → succeeds; no %51 warning.
+
+        inject_at=187 is a chunk boundary (11*17) but not a multiple of 51 (187 % 51 = 34).
+        With audio_mode='drop' the %51 warning must NOT fire (gated by audio presence).
+        source_length must be 1 and inject_at on the Inject must be 187.
+
+        FAIL-THEN-PASS: Before the %51 gate, a warning fires even for drop mode.
+        After the gate, no warning fires and the inject succeeds.
+        """
+        import warnings
+
+        node = H3AddInject()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            (inject_list,) = node.add_inject(
+                inject_at=187,  # 11 * 17 — chunk boundary, not multiple of 51
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=0,
+                end_fade_out=0,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=self._images(1),
+                audio=None,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 1
+        assert inj.inject_at == 187
+        # %51 warning must NOT fire when audio_mode='drop'.
+        audio_tick_warns = [x for x in w if "multiple of 51" in str(x.message)]
+        assert not audio_tick_warns, (
+            f"%51 warning must be suppressed for audio_mode='drop'; got: {audio_tick_warns}"
+        )
+
+    def test_single_frame_total_rows_is_1(self):
+        """Verify total_rows(1) == 1 so F=1 inject maps to exactly one schedule row.
+
+        Cross-module regression guard confirming the F=1 path of both
+        total_rows (constants.py) and snap_length_down (sanitize.py) are consistent.
+        """
+        from comfyui_h3_blended_inject.constants import total_rows
+
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.0,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=self._images(1),
+            audio=None,
+        )
+        inj = inject_list[0]
+        assert inj.source_length == 1
+        assert total_rows(inj.source_length) == 1
+
+    # -- (ii) Non-chunk-boundary inject_at raises ValueError for F=1 ---------------
+
+    def test_single_frame_nonmultiple_inject_at_raises(self):
+        """inject_at=188 (not a multiple of 17) + 1 frame → ValueError.
+
+        Single-frame injects must land exactly on a chunk boundary (inject_at % 17 == 0).
+        The guard must use the ORIGINAL inject_at (188), not the post-snap value (187).
+
+        FAIL-THEN-PASS: Before the guard, inject_at=188 is silently snapped to 187 and
+        the inject succeeds. After the guard, ValueError is raised naming inject_at=188.
+        """
+        node = H3AddInject()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # suppress snap warning from snap_inject_at
+            with pytest.raises(ValueError, match="inject_at=188"):
+                node.add_inject(
+                    inject_at=188,  # not a multiple of 17
+                    start_fade_in=0,
+                    start_keyframes=0,
+                    end_keyframes=0,
+                    end_fade_out=0,
+                    min_denoise=0.0,
+                    interpolation_type="linear",
+                    audio_mode="drop",
+                    images=self._images(1),
+                    audio=None,
+                )
+
+    def test_single_frame_nonmultiple_inject_at_names_nearest_edges(self):
+        """ValueError for non-chunk-boundary F=1 inject names the two nearest edges.
+
+        inject_at=35 → nearest chunk edges: 34 (=2*17) and 51 (=3*17).
+        """
+        node = H3AddInject()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError) as exc_info:
+                node.add_inject(
+                    inject_at=35,  # 35 % 17 = 1, not a chunk boundary
+                    start_fade_in=0,
+                    start_keyframes=0,
+                    end_keyframes=0,
+                    end_fade_out=0,
+                    min_denoise=0.0,
+                    interpolation_type="linear",
+                    audio_mode="drop",
+                    images=self._images(1),
+                    audio=None,
+                )
+        msg = str(exc_info.value)
+        assert "34" in msg and "51" in msg, (
+            f"Error message must mention edges 34 and 51; got: {msg}"
+        )
+
+    # -- (iii) Single-frame inject with non-drop audio raises ValueError -------------
+
+    def test_single_frame_keep_audio_raises(self):
+        """inject_at=0 + 1 frame + audio_mode='keep' + audio → ValueError.
+
+        Single-frame (keyframe) injects have no audio extent to preserve.
+        audio_mode='keep' with audio present must raise ValueError.
+
+        FAIL-THEN-PASS: Before the guard the inject succeeds; after it raises ValueError.
+        """
+        node = H3AddInject()
+        with pytest.raises(ValueError, match="audio_mode"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=0,
+                end_fade_out=0,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=self._images(1),
+                audio=self._audio(),
+            )
+
+    def test_single_frame_fade_audio_raises(self):
+        """inject_at=0 + 1 frame + audio_mode='fade' + audio → ValueError."""
+        node = H3AddInject()
+        with pytest.raises(ValueError, match="audio_mode"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=0,
+                end_fade_out=0,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="fade",
+                images=self._images(1),
+                audio=self._audio(),
+            )
+
+    def test_single_frame_no_audio_with_keep_mode_succeeds(self):
+        """inject_at=0 + 1 frame + audio_mode='keep' + audio=None → succeeds.
+
+        audio_mode='keep' with audio=None is fine: no audio to inject.
+        """
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.0,
+            interpolation_type="linear",
+            audio_mode="keep",
+            images=self._images(1),
+            audio=None,  # no audio → guard does not fire
+        )
+        assert inject_list[0].source_length == 1
+
+    # -- (iv) %51 warning is gated on audio presence and audio_mode ----------------
+
+    def test_no_51_warning_for_drop_mode_at_nonmultiple_of_51(self):
+        """audio_mode='drop' + audio + inject_at=17 (not mult of 51) → no %51 UserWarning.
+
+        The %51 position warning must be suppressed when audio_mode='drop'.
+        Uses a 22-frame inject (F>1) to stay in the multi-frame path.
+
+        FAIL-THEN-PASS: Before the gate, the warning fires regardless of audio_mode.
+        After the gate, it is suppressed when audio_mode='drop'.
+        """
+        import warnings
+
+        import torch
+
+        node = H3AddInject()
+        images = torch.zeros(22, 64, 64, 3)  # 22 = 5+17*1, valid 17n+5
+        audio = self._audio()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=17,  # multiple of 17 but not 51
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=21,
+                end_fade_out=21,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+                audio=audio,
+            )
+        audio_tick_warns = [x for x in w if "multiple of 51" in str(x.message)]
+        assert not audio_tick_warns, (
+            f"%51 warning must NOT fire for audio_mode='drop'; fired: {audio_tick_warns}"
+        )
+
+    def test_51_warning_fires_for_keep_mode_with_audio(self):
+        """audio_mode='keep' + audio + inject_at=17 (not mult of 51) → %51 UserWarning fires.
+
+        The %51 warning must still fire when audio IS being injected (audio_mode != 'drop').
+        Uses a 22-frame inject to stay in the multi-frame path.
+        """
+        import torch
+
+        node = H3AddInject()
+        images = torch.zeros(22, 64, 64, 3)
+        audio = self._audio()
+        with pytest.warns(UserWarning, match="multiple of 51"):
+            node.add_inject(
+                inject_at=17,  # multiple of 17 but not 51
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=21,
+                end_fade_out=21,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=images,
+                audio=audio,
+            )
+
+    def test_51_warning_suppressed_when_no_audio(self):
+        """%51 warning must not fire when audio=None (regardless of audio_mode).
+
+        FAIL-THEN-PASS: Before the gate, warning fires even without audio.
+        After: only fires when audio is present and audio_mode != 'drop'.
+        """
+        import warnings
+
+        import torch
+
+        node = H3AddInject()
+        images = torch.zeros(22, 64, 64, 3)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=17,  # multiple of 17 but not 51 → would normally warn
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=21,
+                end_fade_out=21,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=images,
+                audio=None,  # no audio → %51 warning suppressed
+            )
+        audio_tick_warns = [x for x in w if "multiple of 51" in str(x.message)]
+        assert not audio_tick_warns, (
+            f"%51 warning must NOT fire when audio=None; fired: {audio_tick_warns}"
+        )
