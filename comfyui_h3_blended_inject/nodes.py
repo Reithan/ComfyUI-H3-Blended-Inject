@@ -231,6 +231,8 @@ def _run_sampler(  # pragma: no cover
             UserWarning,
             stacklevel=2,
         )
+    # scale_stochastic_noise triggers _make_per_row_noise_sampler — a deferred no-op
+    # (Bug B: noise-magnitude shim insufficient for H3's RF-ancestral path; see sampler.py).
     wrapped_fn = build_per_row_sampler_function(
         base_fn,
         m_packed,

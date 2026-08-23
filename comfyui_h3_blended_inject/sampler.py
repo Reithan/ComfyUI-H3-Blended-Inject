@@ -22,7 +22,7 @@ For deterministic samplers (euler, res_multistep, dpmpp_2m, ...) the per-step up
 invariant under scaling all sigmas by ``m_r``, so running the global sampler on the global
 schedule with per-row-conditioned ``x0`` and per-row initial noise reproduces per-row
 img2img exactly — no sampler modification needed.  Stochastic samplers (ancestral/SDE,
-euler s_churn>0) add fresh noise per step; :func:`make_per_row_noise_sampler` scales that
+euler s_churn>0) add fresh noise per step; :func:`_make_per_row_noise_sampler` scales that
 noise per-row, but this is INSUFFICIENT for H3's RF-ancestral path (Bug B): the
 ``sample_euler_ancestral_RF`` renoise sub-step is affine (not linear) in sigma via its
 ``alpha = 1 - sigma`` terms, so no noise-magnitude shim alone can make it scale-invariant.
@@ -154,12 +154,19 @@ def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Deferred stochastic shim (Bug B)
+# ---------------------------------------------------------------------------
+
+
 def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
     """Return ``True`` iff ``fn`` declares an explicit ``noise_sampler`` parameter.
 
     A bare ``**kwargs`` does *not* count: only samplers that name ``noise_sampler`` actually
     consume an injected noise source (stochastic ancestral/SDE samplers).  Deterministic
-    samplers omit it, so we skip the shim for them.
+    samplers omit it, so the shim is skipped for them.  When this returns ``True``,
+    ``build_per_row_sampler_function`` installs ``_make_per_row_noise_sampler`` — a shim
+    that is currently deferred (Bug B: insufficient for H3's RF-ancestral path).
     """
     try:
         return "noise_sampler" in inspect.signature(fn).parameters
@@ -167,7 +174,7 @@ def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
         return False
 
 
-def make_per_row_noise_sampler(
+def _make_per_row_noise_sampler(
     base_noise_sampler: Callable[[Any, Any], torch.Tensor],
     m: torch.Tensor,
 ) -> Callable[[Any, Any], torch.Tensor]:
@@ -211,15 +218,19 @@ def _default_noise_sampler_factory(
     """Lazily build ComfyUI's ``default_noise_sampler(x, seed=seed)``.
 
     Imported lazily so this module stays importable without ``comfy`` present (tests inject
-    their own factory).  Falls back to a plain ``randn_like`` source if the seed-aware API
-    is unavailable.
+    their own factory).  Falls back to the no-seed call when the API does not declare a
+    ``seed`` parameter (older ComfyUI builds).
     """
     from comfy.k_diffusion import sampling as k_sampling  # noqa: PLC0415
 
     try:
-        return k_sampling.default_noise_sampler(x, seed=seed)
-    except TypeError:
+        sig = inspect.signature(k_sampling.default_noise_sampler)
+    except (TypeError, ValueError):
+        # Uninspectable (C extension or similar); skip the seed-aware path.
         return k_sampling.default_noise_sampler(x)
+    if "seed" in sig.parameters:
+        return k_sampling.default_noise_sampler(x, seed=seed)
+    return k_sampling.default_noise_sampler(x)
 
 
 def build_conditioning_wrapper(
@@ -348,7 +359,7 @@ def build_per_row_sampler_function(
         if scale_stochastic_noise and kwargs.get("noise_sampler") is None:
             seed = (extra_args or {}).get("seed")
             base_ns = factory(x0, seed=seed)
-            kwargs["noise_sampler"] = make_per_row_noise_sampler(base_ns, m_packed)
+            kwargs["noise_sampler"] = _make_per_row_noise_sampler(base_ns, m_packed)
         return base_fn(
             model,
             x0,
