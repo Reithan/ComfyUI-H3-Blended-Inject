@@ -226,7 +226,13 @@ def warn_audio_tail_alignment(
         return
 
     # Condition 3: tail is NOT faded through.
-    is_faded_through = end_fade_out > end_keyframes and end_fade_out == snapped_length
+    # Masking only applies to fade mode (audio-follows-video): when a fade-out ramp
+    # reaches the clip tail, the tail audio weight drops to 0 and the desync is inaudible.
+    # keep mode is audio_frozen everywhere — the video envelope does NOT mask the audio
+    # tail — so keep mode is never treated as faded-through and always warns.
+    is_faded_through = (
+        audio_mode == "fade" and end_fade_out > end_keyframes and end_fade_out == snapped_length
+    )
     if is_faded_through:
         return
 

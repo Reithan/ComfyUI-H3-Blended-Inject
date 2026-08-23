@@ -806,6 +806,25 @@ class TestWarnAudioTailAlignment:
                 has_audio=True,
             )
 
+    def test_warn_keep_mode_with_video_fadeout_reaching_tail(self):
+        """Regression: keep-mode + video fade-out reaching tail → MUST warn.
+
+        Bug (pre-fix): is_faded_through checked ALL modes; end_fade_out=56 ==
+        snapped_length=56 AND end_fade_out > end_keyframes → suppressed warning
+        even in keep mode.  Fix: gate is_faded_through on audio_mode == "fade".
+
+        FAIL-THEN-PASS: Against the unfixed code this test fails with
+        "Failed: DID NOT WARN".  After the one-line fix it passes.
+        """
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="keep",
+                end_keyframes=50,
+                end_fade_out=56,  # video fade-out reaches tail — must NOT suppress keep-mode
+                has_audio=True,
+            )
+
     # -- Warning message content -----------------------------------------------
 
     def test_warn_message_mentions_nearest_aligned_lengths(self):

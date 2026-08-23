@@ -1109,6 +1109,32 @@ class TestE8AudioTailAlignment:
 
     # -- NO-WARN cases ---------------------------------------------------------
 
+    def test_warn_keep_mode_video_fadeout_reaching_tail(self):
+        """Regression: keep-mode + video fade-out reaching tail → MUST warn (end-to-end).
+
+        Bug: is_faded_through was not gated on fade mode; keep+non-aligned+faded-through
+        video envelope wrongly suppressed the warning.  After fix, keep is never
+        treated as faded-through and always warns when non-aligned + has_audio.
+
+        FAIL-THEN-PASS: DID NOT WARN against the unfixed code; warns after fix.
+        """
+        node = H3AddInject()
+        # 56 = 5+17*3, not audio-aligned; video fade-out end_keyframes=50, end_fade_out=56
+        # reaches the tail of the 56-frame clip.  keep mode must still warn.
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=50,
+                end_fade_out=56,  # == snapped_length=56, video ramp reaches tail
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=self._images(56),
+                audio=self._audio(),
+            )
+
     def test_no_warn_fade_mode_faded_through(self):
         """fade-mode WITH fade-out ramp reaching clip tail → no tail-alignment warning.
 
