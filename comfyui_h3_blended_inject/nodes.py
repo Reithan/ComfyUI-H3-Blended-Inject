@@ -105,12 +105,15 @@ def _run_sampler(  # pragma: no cover
     # H3 video latent: [1, C_v, T, Hl, Wl]; clip row axis is dim 2.
     # H3 audio latent: [1, C_a, 2, audio_t]; clip tick axis is dim 3.
     #
-    # Row-offset fix: row_s.row_idx is the ABSOLUTE target latent row.  The inject
-    # clip's own latent starts at clip row 0 corresponding to target row inject_at_row.
-    # clip_row = row_idx - inject_at_row.  NOTE: the frame→row boundary for non-51n
-    # inject_at values (e.g. inject_at=34 starts between rows) may not align clip rows
-    # to target rows exactly — needs live-model validation.  The additive offset is the
-    # straightforward mapping; a future fix may add sub-row alignment.
+    # Row-offset: row_s.row_idx is the ABSOLUTE target latent row.  Under task #24's
+    # per-17-chunk grid fix, inject_at (always a multiple of 17 after snapping) lands
+    # exactly on a chunk-boundary row: frame_to_row(17k) = 5k.  Clip row 0 therefore
+    # aligns to target row 5k with no sub-row offset.
+    # Audio-tick alignment for inject_at values that are not multiples of 51 may still
+    # incur up to ~12.5 ms rounding error (see snap_inject_at_audio_tick warning).
+    #
+    # inject_row_map / inject_audio_ticks_for_row encapsulate the clip↔target bounds
+    # logic and are shared with the d==0 composite in Step 6.5 below.
     per_row_original: dict[int, Any] = {}
     per_row_noise: dict[int, Any] = {}
     audio_row_original: dict[int, Any] = {}
@@ -120,33 +123,27 @@ def _run_sampler(  # pragma: no cover
         inj = row_s.inject
         if inj is None or inj.video_latent is None:
             continue
-        row_idx = row_s.row_idx
-        inject_at_row = constants.frame_to_row(inj.inject_at)
-        clip_row = row_idx - inject_at_row
         n_clip_rows = int(inj.video_latent.shape[2])
-        if clip_row < 0 or clip_row >= n_clip_rows:
-            # Guard out-of-range: this row falls outside the clip latent.
+        row_map = dict(constants.inject_row_map(inj.inject_at, n_clip_rows, target_rows))
+        if row_s.row_idx not in row_map:
             continue
-        per_row_original[row_idx] = inj.video_latent[:, :, clip_row : clip_row + 1, :, :]
-        per_row_noise[row_idx] = draw_row_noise(
+        clip_row = row_map[row_s.row_idx]
+        per_row_original[row_s.row_idx] = inj.video_latent[:, :, clip_row : clip_row + 1, :, :]
+        per_row_noise[row_s.row_idx] = draw_row_noise(
             noise_seed,
-            per_row_original[row_idx].shape,
-            device=per_row_original[row_idx].device,
-            dtype=per_row_original[row_idx].dtype,
+            per_row_original[row_s.row_idx].shape,
+            device=per_row_original[row_s.row_idx].device,
+            dtype=per_row_original[row_s.row_idx].dtype,
         )
 
     for row_s in schedule:
         inj = row_s.inject
         if inj is None or inj.audio_latent is None:
             continue
-        row_idx = row_s.row_idx
-        inject_at_row = constants.frame_to_row(inj.inject_at)
-        inject_start_tick = constants.video_row_to_audio_tick(inject_at_row)
         n_clip_ticks = int(inj.audio_latent.shape[-1])
-        for tick in constants.audio_tick_range(row_idx, target_rows, audio_ticks):
-            clip_tick = tick - inject_start_tick
-            if clip_tick < 0 or clip_tick >= n_clip_ticks:
-                continue
+        for tick, clip_tick in constants.inject_audio_ticks_for_row(
+            row_s.row_idx, inj.inject_at, n_clip_ticks, target_rows, audio_ticks
+        ):
             audio_row_original[tick] = inj.audio_latent[:, :, :, clip_tick : clip_tick + 1]
             audio_row_noise[tick] = draw_row_noise(
                 noise_seed,
@@ -154,6 +151,55 @@ def _run_sampler(  # pragma: no cover
                 device=audio_row_original[tick].device,
                 dtype=audio_row_original[tick].dtype,
             )
+
+    # --- Step 6.5: Composite injected content at d==0 preserve rows. ---
+    # Rows with denoise==0.0 are routed through the derived noise mask (H3's
+    # scale_latent_inpaint trained path), which expects the latent at those positions
+    # to already hold the injected content.  Write clip rows/ticks directly into
+    # a copy of the target latent for every d==0 schedule entry that has video/audio
+    # latents attached.
+    #
+    # Fractional-denoise (fade) rows and d==1.0 (free-gen) rows are NOT touched here;
+    # fractional rows are handled by the hold-and-release wrapper (Step 8), and the
+    # fade fix (task #26) will handle fade rows separately.
+    #
+    # GPU-only assumption: inj.video_latent / inj.audio_latent must already reside on
+    # the same device as latent_image["samples"]'s components.  No device transfer is
+    # performed here.  The NestedTensor components are cloned before writing to avoid
+    # mutating the original input.
+    _samples = latent_image["samples"]
+    if getattr(_samples, "is_nested", False):
+        from comfy.nested_tensor import NestedTensor as _NestedTensor  # noqa: PLC0415
+
+        _components = list(_samples.unbind())
+        _video = _components[0].clone()  # [1, C_v, T, Hl, Wl]; row axis dim 2
+        _audio = _components[1].clone() if len(_components) > 1 else None  # [1, C_a, 2, audio_t]
+        _wrote_any = False
+        for row_s in schedule:
+            if row_s.denoise != 0.0:
+                continue
+            inj = row_s.inject
+            if inj is None:
+                continue
+            # Video: write clip row slice into target row.
+            if inj.video_latent is not None:
+                _n_clip_rows = int(inj.video_latent.shape[2])
+                _row_map = dict(constants.inject_row_map(inj.inject_at, _n_clip_rows, target_rows))
+                if row_s.row_idx in _row_map:
+                    _clip_row = _row_map[row_s.row_idx]
+                    _video[:, :, row_s.row_idx, :, :] = inj.video_latent[:, :, _clip_row, :, :]
+                    _wrote_any = True
+            # Audio: write clip tick slices into the audio component for this row.
+            if _audio is not None and inj.audio_latent is not None:
+                _n_clip_ticks = int(inj.audio_latent.shape[-1])
+                for _tick, _clip_tick in constants.inject_audio_ticks_for_row(
+                    row_s.row_idx, inj.inject_at, _n_clip_ticks, target_rows, audio_ticks
+                ):
+                    _audio[:, :, :, _tick] = inj.audio_latent[:, :, :, _clip_tick]
+                    _wrote_any = True
+        if _wrote_any:
+            _new_samples = _NestedTensor((_video,) if _audio is None else (_video, _audio))
+            latent_image = {**latent_image, "samples": _new_samples}
 
     # --- Step 7: Derive audio_scale_factor from model_sampling if available. ---
     # audio_scale = sigma_shift_video / sigma_shift_audio = 12.0 / 3.0 = 4.0
