@@ -13,7 +13,7 @@ Image and audio handles are typed as ``Any`` to avoid runtime torch/comfy depend
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from comfyui_h3_blended_inject.envelope import classify_row_region, evaluate_envelope
 
@@ -23,6 +23,7 @@ from comfyui_h3_blended_inject.envelope import classify_row_region, evaluate_env
 InjectList = list["Inject"]
 
 
+# eq=False: identity equality — the same Inject object IS the same inject (no value-based dedup).
 @dataclass(eq=False)
 class Inject:
     """All parameters needed to schedule and apply one inject into the target latent.
@@ -83,8 +84,8 @@ class Inject:
     end_keyframes: int
     end_fade_out: int
     min_denoise: float
-    interpolation_type: str
-    audio_mode: str
+    interpolation_type: Literal["ease_in", "ease_out", "ease_in_out", "linear", "none"]
+    audio_mode: Literal["fade", "drop", "keep"]
     images: Any | None
     audio: Any | None
     resolution: tuple[int, int]
@@ -222,13 +223,13 @@ def merge_schedule(
             inject=inj,
             audio_frozen=(inj.audio_mode == "keep"),  # "keep" mode freezes audio at d=0
             region=classify_row_region(
-                row_idx,
-                inj.inject_at,
-                inj.start_fade_in,
-                inj.start_keyframes,
-                inj.end_keyframes,
-                inj.end_fade_out,
-                inj.min_denoise,
+                row_idx=row_idx,
+                inject_at=inj.inject_at,
+                start_fade_in=inj.start_fade_in,
+                start_keyframes=inj.start_keyframes,
+                end_keyframes=inj.end_keyframes,
+                end_fade_out=inj.end_fade_out,
+                min_denoise=inj.min_denoise,
             ),
         )
         for row_idx, (inj, d) in sorted(row_map.items())

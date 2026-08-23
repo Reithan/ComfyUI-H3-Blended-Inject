@@ -5,13 +5,13 @@ single pure function :func:`resolve_guidance` that decides how to forward the
 optional negative conditioning, cfg scale, and model_options to ComfyUI's
 sampler — without importing torch or comfy.
 
-Background (from comfy/samplers.py):
+Background (from ``comfy/samplers.py``):
 
-- Line 610-613 ``sampling_function``: if ``math.isclose(cond_scale, 1.0)`` and
+- ``sampling_function``: if ``math.isclose(cond_scale, 1.0)`` and
   ``model_options.get("disable_cfg1_optimization", False) == False``, then
   ``uncond_ = None`` — i.e. the uncond pass is dropped at cfg==1.0 UNLESS
   ``disable_cfg1_optimization`` is True.
-- Line 591-596 ``cfg_function``: if ``"sampler_cfg_function" in model_options``,
+- ``cfg_function``: if ``"sampler_cfg_function" in model_options``,
   that custom hook is called regardless of cfg or whether an uncond pass ran
   (with ``uncond = x - uncond_pred``; if no uncond pass ran uncond_pred=0 so it
   gets ``x``, i.e. garbage).  Standard blend otherwise is
@@ -34,8 +34,8 @@ from typing import Any
 def resolve_guidance(
     negative: Any,
     cfg: float,
-    model_options: dict,
-) -> tuple[Any, float, dict]:
+    model_options: dict[str, Any],
+) -> tuple[Any, float, dict[str, Any]]:
     """Return (effective_negative, effective_cfg, model_options) per the H3 guidance rule.
 
     Three branches, in priority order:
@@ -64,7 +64,7 @@ def resolve_guidance(
     cfg:
         Classifier-free guidance scale as entered by the user.
     model_options:
-        The ``model_options`` dict from the cloned model patcher (``m.model_options``).
+        ``dict[str, Any]`` from the cloned model patcher (``m.model_options``).
         This dict is never mutated; when a change is needed a new dict is returned.
 
     Returns
