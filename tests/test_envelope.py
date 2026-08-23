@@ -19,6 +19,7 @@ from comfyui_h3_blended_inject.envelope import (
     INTERPOLATION_TYPES,
     InterpolationType,
     _denoise_at_frame_time,
+    classify_row_region,
     evaluate_curve,
     evaluate_envelope,
     is_row_exactly_zero,
@@ -965,3 +966,254 @@ class TestExclusiveEndKeyframesRegression:
             inject_at=0,
         )
         assert result is False, "center 4.5 = ekf-0.5 falls outside hold [skf=1, ekf-1=4]"
+
+
+# ---------------------------------------------------------------------------
+# classify_row_region — region classifier tests
+# FAIL before classify_row_region is added to envelope.py; PASS after.
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyRowRegion:
+    """classify_row_region classifies a scheduled row by integer clip-frame membership.
+
+    Grid reference (inject_at=0):
+      Row 0: centers (0.5,)
+      Row 1: centers (1.5, 2.5, 3.5, 4.5)
+      Row 2: centers (5.5, 6.5, 7.5, 8.5)
+      Row 3: centers (9.5, 10.5, 11.5, 12.5)
+      Row 4: centers (13.5, 14.5, 15.5, 16.5)
+
+    For inject_at=17: Row 5 centers (17.5,) → clip_center = 17.5 - 17 = 0.5; etc.
+    """
+
+    # --- preserve (min_denoise=0, all centers in [skf, ekf)) ---
+
+    def test_preserve_when_min_denoise_zero_and_all_centers_in_hold(self) -> None:
+        """Row 2 centers (5.5–8.5) all in [5, 10) with min_denoise=0 → 'preserve'."""
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.0,
+        )
+        assert result == "preserve", f"Expected 'preserve', got {result!r}"
+
+    # --- hold (min_denoise>0, all centers in [skf, ekf)) ---
+
+    def test_hold_when_min_denoise_positive_and_all_centers_in_hold(self) -> None:
+        """Row 2 centers (5.5–8.5) all in [5, 10) with min_denoise=0.3 → 'hold'."""
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+        )
+        assert result == "hold", f"Expected 'hold', got {result!r}"
+
+    # --- fade-in ramp ---
+
+    def test_fade_in_ramp_row_classified_as_fade(self) -> None:
+        """Row 1 centers (1.5–4.5) all in fade-in span [1, 5) → 'fade'."""
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+        )
+        assert result == "fade", f"Expected 'fade' (fade-in ramp), got {result!r}"
+
+    def test_fade_in_ramp_row_classified_as_fade_min_denoise_zero(self) -> None:
+        """Fade-in ramp row with min_denoise=0 is still 'fade' (not 'preserve')."""
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.0,
+        )
+        assert result == "fade", f"Expected 'fade' (fade-in ramp, d=0), got {result!r}"
+
+    # --- fade-out ramp ---
+
+    def test_fade_out_ramp_row_classified_as_fade(self) -> None:
+        """Row 3 centers (9.5–12.5) all in fade-out span [9, 14) → 'fade'."""
+        result = classify_row_region(
+            row_idx=3,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=9,
+            end_fade_out=14,
+            min_denoise=0.3,
+        )
+        assert result == "fade", f"Expected 'fade' (fade-out ramp), got {result!r}"
+
+    # --- free (row outside envelope) ---
+
+    def test_free_when_row_outside_envelope(self) -> None:
+        """Row 0 center (0.5) below fade-in start (5) and not in hold → 'free'."""
+        result = classify_row_region(
+            row_idx=0,
+            inject_at=0,
+            start_fade_in=5,
+            start_keyframes=6,
+            end_keyframes=10,
+            end_fade_out=14,
+            min_denoise=0.3,
+        )
+        assert result == "free", f"Expected 'free' (row outside envelope), got {result!r}"
+
+    # --- boundary: row spanning hold+fade → 'fade' ---
+
+    def test_boundary_row_spanning_hold_and_fade_in_classified_as_fade(self) -> None:
+        """Row 1 centers (1.5–4.5): 1.5 and 2.5 in fade-in [1,3), 3.5 and 4.5 in hold [3,10).
+        Not ALL in hold → 'fade'."""
+        result = classify_row_region(
+            row_idx=1,
+            inject_at=0,
+            start_fade_in=1,
+            start_keyframes=3,  # skf=3; centers 1.5,2.5 in [1,3) → fade
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+        )
+        assert result == "fade", f"Expected 'fade' (spans hold+fade-in boundary), got {result!r}"
+
+    def test_boundary_row_spanning_hold_and_fade_out_classified_as_fade(self) -> None:
+        """Row 2 centers (5.5–8.5): some in hold [5,8), some in fade-out [8,14).
+        Not ALL in hold → 'fade'."""
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=5,
+            end_keyframes=8,  # ekf=8; centers 8.5 in [8,14) → fade
+            end_fade_out=14,
+            min_denoise=0.3,
+        )
+        assert result == "fade", f"Expected 'fade' (spans hold+fade-out boundary), got {result!r}"
+
+    # --- inject_at > 0 offset ---
+
+    def test_inject_at_offset_hold_row(self) -> None:
+        """With inject_at=17, row 5 center (17.5) → clip_center=0.5 in [0, 5) hold → 'hold'."""
+        result = classify_row_region(
+            row_idx=5,
+            inject_at=17,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=5,
+            end_fade_out=10,
+            min_denoise=0.4,
+        )
+        assert result == "hold", f"Expected 'hold' with inject_at=17 offset, got {result!r}"
+
+    def test_inject_at_offset_preserve_row(self) -> None:
+        """With inject_at=17, row 5 center clip=0.5 in [0, 5) hold + min_denoise=0 → 'preserve'."""
+        result = classify_row_region(
+            row_idx=5,
+            inject_at=17,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=5,
+            end_fade_out=10,
+            min_denoise=0.0,
+        )
+        assert result == "preserve", f"Expected 'preserve' with inject_at=17 offset, got {result!r}"
+
+    def test_inject_at_offset_fade_row(self) -> None:
+        """With inject_at=17, row 6 centers clip=(1.5,2.5,3.5,4.5) in fade-in [1,5) → 'fade'."""
+        result = classify_row_region(
+            row_idx=6,
+            inject_at=17,
+            start_fade_in=1,
+            start_keyframes=5,
+            end_keyframes=10,
+            end_fade_out=17,
+            min_denoise=0.3,
+        )
+        assert result == "fade", f"Expected 'fade' with inject_at=17 offset, got {result!r}"
+
+    # --- degenerate still-inject (all four markers equal) ---
+
+    def test_degenerate_still_inject_min_denoise_zero_is_preserve(self) -> None:
+        """Degenerate envelope (all four equal) with min_denoise=0.0 → 'preserve'."""
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=5,
+            start_keyframes=5,
+            end_keyframes=5,
+            end_fade_out=5,
+            min_denoise=0.0,
+        )
+        assert result == "preserve", f"Expected 'preserve' for degenerate d=0, got {result!r}"
+
+    def test_degenerate_still_inject_min_denoise_positive_is_hold(self) -> None:
+        """Degenerate envelope (all four equal) with min_denoise>0 → 'hold'."""
+        result = classify_row_region(
+            row_idx=2,
+            inject_at=0,
+            start_fade_in=5,
+            start_keyframes=5,
+            end_keyframes=5,
+            end_fade_out=5,
+            min_denoise=0.5,
+        )
+        assert result == "hold", f"Expected 'hold' for degenerate d>0, got {result!r}"
+
+    # --- Hypothesis: consistency with evaluate_envelope hold-region rows ---
+
+    @given(
+        inject_at=st.integers(min_value=0, max_value=4).map(lambda n: n * 17),
+        ekf_gap=st.integers(min_value=1, max_value=20),
+        min_denoise=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    )
+    @settings(max_examples=80)
+    def test_classify_row_region_pure_hold_all_centers_inside(
+        self, inject_at: int, ekf_gap: int, min_denoise: float
+    ) -> None:
+        """When ALL clip-frame centers of a row lie in [skf, ekf), classify_row_region
+        returns 'hold' (if min_denoise>0) or 'preserve' (if min_denoise==0).
+
+        This tests the classifier's core contract directly, without relying on
+        evaluate_envelope (which can include boundary rows with centers partially
+        outside the hold span due to the anchor-zone effect).
+
+        Uses skf=0 so the hold region starts at clip frame 0 and the anchor is at -1,
+        ensuring all non-negative clip centers are fully inside [0, ekf).
+        """
+        skf = 0  # hold starts at clip frame 0; anchor at -1
+        ekf = ekf_gap  # exclusive end
+        efo = ekf  # no fade-out
+        sfi = skf  # no fade-in
+
+        # Find a row whose ALL clip centers are in [0, ekf) after subtracting inject_at.
+        # Row at frame_to_row(inject_at) has center inject_at + 0.5; clip center = 0.5.
+        # All rows up to (but not including) the first row whose centers exceed ekf qualify.
+        base_row = frame_to_row(inject_at)
+        expected_region = "preserve" if min_denoise == 0.0 else "hold"
+
+        for row_idx_offset in range(10):
+            row_idx = base_row + row_idx_offset
+            clip_centers = [c - inject_at for c in row_center_times(row_idx)]
+            if all(skf <= cc < ekf for cc in clip_centers):
+                region = classify_row_region(row_idx, inject_at, sfi, skf, ekf, efo, min_denoise)
+                assert region == expected_region, (
+                    f"row {row_idx} (inject_at={inject_at}, skf={skf}, ekf={ekf}, "
+                    f"clip_centers={[round(c, 2) for c in clip_centers]}): "
+                    f"all centers in [{skf},{ekf}) → expected {expected_region!r}, "
+                    f"got {region!r}"
+                )

@@ -290,6 +290,87 @@ def is_row_exactly_zero(
     return all(start_keyframes <= cc <= end_keyframes - 1 for cc in clip_centers)
 
 
+def classify_row_region(
+    row_idx: int,
+    inject_at: int,
+    start_fade_in: int,
+    start_keyframes: int,
+    end_keyframes: int,
+    end_fade_out: int,
+    min_denoise: float,
+) -> str:
+    """Classify a scheduled row as ``'preserve'``, ``'hold'``, ``'fade'``, or ``'free'``.
+
+    Uses integer clip-frame membership against the winning inject's half-open markers to
+    determine the region.  Does NOT compare the float denoise value ``d`` — floating-point
+    averaging in :func:`evaluate_envelope` can make a true hold row appear non-exact.
+
+    Regions
+    -------
+    ``'preserve'``:
+        ALL clip-frame centers lie in the keyframe span ``[start_keyframes, end_keyframes)``
+        AND ``min_denoise == 0.0``.  Routes to the derived noise mask + composite; the
+        wrapper must not touch these rows.
+    ``'hold'``:
+        ALL clip-frame centers lie in ``[start_keyframes, end_keyframes)`` AND
+        ``min_denoise > 0``.  Wrapper applies binary hold-and-release (is_held gate).
+    ``'fade'``:
+        At least one clip-frame center lies in the fade-in ramp
+        ``[start_fade_in, start_keyframes)`` or the fade-out ramp
+        ``[end_keyframes, end_fade_out)``.  Wrapper blends prediction permanently:
+        ``(1 - d) * original + d * model_pred``.
+    ``'free'``:
+        None of the above.  Wrapper does nothing.
+
+    Degenerate still-inject (all four markers equal): classify solely by ``min_denoise``
+    (``'preserve'`` if 0.0, ``'hold'`` otherwise).
+
+    Parameters
+    ----------
+    row_idx:
+        Absolute target latent row index to classify.
+    inject_at:
+        Latent FRAME index where the inject begins (multiple of 17 after snapping).
+    start_fade_in:
+        Clip frame index where fade-in begins (first frame below 1.0).
+    start_keyframes:
+        Clip frame index where hold at ``min_denoise`` begins (inclusive).
+    end_keyframes:
+        EXCLUSIVE: first fade-out clip frame.  Last held clip frame is
+        ``end_keyframes - 1``.
+    end_fade_out:
+        EXCLUSIVE upper bound; denoise returns to 1.0 here.
+    min_denoise:
+        Envelope floor during the hold region.
+
+    Returns
+    -------
+    str
+        One of ``'preserve'``, ``'hold'``, ``'fade'``, ``'free'``.
+    """
+    # Degenerate still-inject: no fade regions exist; classify by min_denoise only.
+    if start_fade_in == start_keyframes == end_keyframes == end_fade_out:
+        return "preserve" if min_denoise == 0.0 else "hold"
+
+    clip_centers = [c - inject_at for c in row_center_times(row_idx)]
+
+    # 'hold' / 'preserve': ALL centers lie in the keyframe span [skf, ekf).
+    in_hold = all(start_keyframes <= cc < end_keyframes for cc in clip_centers)
+    if in_hold:
+        return "preserve" if min_denoise == 0.0 else "hold"
+
+    # 'fade': at least one center in the fade-in ramp [sfi, skf) or
+    #         fade-out ramp [ekf, efo).
+    in_fade = any(
+        (start_fade_in <= cc < start_keyframes) or (end_keyframes <= cc < end_fade_out)
+        for cc in clip_centers
+    )
+    if in_fade:
+        return "fade"
+
+    return "free"
+
+
 def still_inject_denoise(min_denoise: float) -> list[float]:
     """Return the single-element denoise list for a still (single-image) inject.
 
