@@ -118,6 +118,142 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
     return inject_at
 
 
+def snap_length_down(source_length: int) -> int:
+    """Snap injected content length down to the largest valid H3 clip length (17n+5).
+
+    Valid H3 clip lengths are ``17n + 5`` for n >= 0: 5, 22, 39, 56, 73, 90, 107, …
+    A length is valid iff ``source_length >= 5 and (source_length - 5) % 17 == 0``.
+    Already-valid lengths are returned unchanged with no warning.
+
+    The snap-down formula is ``5 + 17 * ((source_length - 5) // 17)``.
+
+    Note: this snaps only to the video-grid lattice (17n+5), NOT to the stricter
+    joint audio+video lattice (51n+39 = 39, 90, 141, …).  A non-audio-aligned valid
+    length mismatches audio by at most ~17 ms confined to the last 1–2 audio ticks
+    (tail-local, no global desync, no hard assert in the model), so the joint lattice
+    is only precision-optimal, not required.
+
+    Parameters
+    ----------
+    source_length:
+        Total number of source frames in the injected content.  Must be >= 5
+        (the minimum valid H3 clip length).
+
+    Returns
+    -------
+    int
+        Snapped length: ``5 + 17 * ((source_length - 5) // 17)``.
+        Equal to ``source_length`` when already valid.
+
+    Warns
+    -----
+    UserWarning
+        If ``source_length`` is not already a valid ``17n+5`` length.  Message includes
+        the original length, the snapped length, and the number of frames discarded.
+
+    Raises
+    ------
+    ValueError
+        If ``source_length < 5`` (the minimum valid H3 clip length is 5 frames).
+    """
+    if source_length < 5:
+        raise ValueError(
+            f"source_length={source_length} is below the minimum valid H3 clip length of "
+            "5 frames. Valid clip lengths are 17n+5: 5, 22, 39, 56, 73, 90, …"
+        )
+    snapped = 5 + 17 * ((source_length - 5) // 17)
+    if snapped != source_length:
+        discarded = source_length - snapped
+        warnings.warn(
+            f"Inject content length {source_length} is not a valid H3 clip length (17n+5); "
+            f"snapping down to {snapped} (discarding {discarded} trailing frame(s)).",
+            UserWarning,
+            stacklevel=2,
+        )
+    return snapped
+
+
+def warn_audio_tail_alignment(
+    snapped_length: int,
+    audio_mode: str,
+    end_keyframes: int,
+    end_fade_out: int,
+    has_audio: bool,
+) -> None:
+    """Warn when the snapped clip length may expose a tail audio desync.
+
+    H3 audio latents are aligned to the joint AV lattice (``51n+39``: 39, 90, 141, 192, …).
+    Lengths that are valid video-grid lengths (``17n+5``) but not audio-sync-aligned produce
+    up to ~17 ms of tail-local audio error confined to the last 1–2 audio ticks.  A fade-out
+    ramp that reaches the clip tail masks this error; ``keep`` mode or an un-faded tail exposes
+    it.
+
+    Parameters
+    ----------
+    snapped_length:
+        Post-trim clip length (already snapped to 17n+5 by :func:`snap_length_down`).
+    audio_mode:
+        One of ``"fade"``, ``"drop"``, or ``"keep"``.
+    end_keyframes:
+        EXCLUSIVE end of the hold region.  A fade-out ramp exists when
+        ``end_fade_out > end_keyframes``.
+    end_fade_out:
+        EXCLUSIVE upper bound of the envelope.  The ramp reaches the clip tail when
+        ``end_fade_out == snapped_length``.
+    has_audio:
+        Whether injected audio is present.
+
+    Warns
+    -----
+    UserWarning
+        Emitted when all three conditions hold:
+
+        1. ``snapped_length`` is not audio-sync-aligned:
+           ``ceil(snapped_length / 17) % 3 != 0``.
+        2. ``has_audio`` is ``True`` and ``audio_mode != "drop"``.
+        3. The tail is NOT faded through — either ``audio_mode == "keep"`` or
+           ``audio_mode == "fade"`` without a fade-out ramp reaching the clip tail
+           (``not (end_fade_out > end_keyframes and end_fade_out == snapped_length)``).
+    """
+    import math as _math
+
+    # Condition 1: not audio-sync-aligned (ceil(n/17) % 3 != 0).
+    if _math.ceil(snapped_length / 17) % 3 == 0:
+        return
+
+    # Condition 2: injected audio is present and not dropped.
+    if not has_audio or audio_mode == "drop":
+        return
+
+    # Condition 3: tail is NOT faded through.
+    is_faded_through = end_fade_out > end_keyframes and end_fade_out == snapped_length
+    if is_faded_through:
+        return
+
+    # Compute nearest audio-sync-aligned lengths (51k+39).
+    if snapped_length >= 39:
+        k = (snapped_length - 39) // 51
+        nearest_below: int | None = 39 + 51 * k
+        nearest_above = 39 + 51 * (k + 1)
+        aligned_str = f"{nearest_below} (below) and {nearest_above} (above)"
+    else:
+        nearest_above = 39
+        aligned_str = (
+            f"{nearest_above} (nearest above; no audio-aligned valid length shorter than 39)"
+        )
+
+    warnings.warn(
+        f"Inject content length {snapped_length} is not audio-sync-aligned (not 51k+39). "
+        f"The audio tail may be off by up to ~17 ms (last 1-2 audio ticks). "
+        f"audio_mode={audio_mode!r} with an unfaded clip end exposes this error. "
+        f"Nearest audio-sync-aligned lengths: {aligned_str}. "
+        "To suppress: snap the content length to an audio-aligned value, or add a "
+        "fade-out ramp reaching the clip end (end_fade_out == snapped content length).",
+        UserWarning,
+        stacklevel=2,
+    )
+
+
 def check_resolution(
     images: Any,
     target_width: int,
