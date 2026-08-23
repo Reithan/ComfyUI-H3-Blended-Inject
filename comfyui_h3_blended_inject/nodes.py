@@ -15,6 +15,7 @@ re-exported from the top-level ``__init__.py``.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from comfyui_h3_blended_inject import constants
@@ -71,6 +72,23 @@ def _encode_ref_audio(audio_vae: Any, audio: Any) -> tuple[Any, int]:  # pragma:
         waveform = torchaudio.functional.resample(waveform, sr, vae_sr)
     z = audio_vae.encode(waveform[:1].movedim(1, -1))  # [1, 32, 2, T]
     return z, z.shape[-1]
+
+
+def _unpack_av(samples: Any) -> tuple[Any, Any | None]:
+    """Unpack an H3 NestedTensor or plain tensor into ``(video, audio_or_None)``.
+
+    H3 FLOW_AV latents arrive as ``NestedTensor((video, audio))``.  Plain tensors
+    (non-nested CPU-test paths or video-only runs) pass through unchanged with
+    ``audio=None``.
+    """
+    if getattr(samples, "is_nested", False):
+        components = list(samples.unbind())
+        video = components[0]  # [B, C_v, T, Hl, Wl]; row axis dim 2
+        audio = components[1] if len(components) > 1 else None  # [B, C_a, 2, audio_t]
+    else:
+        video = samples
+        audio = None
+    return video, audio
 
 
 def _run_sampler(  # pragma: no cover
@@ -140,13 +158,7 @@ def _run_sampler(  # pragma: no cover
     # --- 1. Split the target latent into components (H3 FLOW_AV is NestedTensor). ---
     _samples = latent_image["samples"]
     is_nested = getattr(_samples, "is_nested", False)
-    if is_nested:
-        _components = list(_samples.unbind())
-        video = _components[0]  # [1, C_v, T, Hl, Wl]; row axis dim 2
-        audio = _components[1] if len(_components) > 1 else None  # [1, C_a, 2, audio_t]
-    else:
-        video = _samples
-        audio = None
+    video, audio = _unpack_av(_samples)
 
     # --- 2. Clean reference: target with all inject content composited in. ---
     # Fractional rows img2img *from* this content; m==1 rows ignore it; m==0 rows are
@@ -170,9 +182,7 @@ def _run_sampler(  # pragma: no cover
     clean_packed, latent_shapes = _comfy_utils.pack_latents(clean_components)
     if clean_audio is not None:
         audio_scale = float(getattr(m.model.model_sampling, "audio_scale", 1.0))
-        n_video_elems = 1
-        for _dim in latent_shapes[0][1:]:
-            n_video_elems *= int(_dim)
+        n_video_elems = math.prod(int(d) for d in latent_shapes[0][1:])
         clean_packed = scale_packed_audio(clean_packed, n_video_elems, audio_scale)
 
     # --- 3. Fractional per-row denoise mask, packed to the same flat layout. ---
@@ -283,13 +293,7 @@ def _run_sampler(  # pragma: no cover
     )
 
     # --- 9. Exact-preserve overwrite of m==0 rows / audio-preserve ticks. ---
-    if getattr(out_samples, "is_nested", False):
-        _out_components = list(out_samples.unbind())
-        out_video = _out_components[0]
-        out_audio = _out_components[1] if len(_out_components) > 1 else None
-    else:
-        out_video = out_samples
-        out_audio = None
+    out_video, out_audio = _unpack_av(out_samples)
     out_video, out_audio = post_composite_preserve(
         out_video, out_audio, clean_video, clean_audio, schedule, target_rows, audio_ticks
     )
@@ -333,10 +337,7 @@ class H3AddInject:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:  # noqa: N802
-        """Return the full ComfyUI input schema for H3AddInject.
-
-        Returns the real dict (not a stub); ``INPUT_TYPES`` is a static schema, not logic.
-        """
+        """Return the full ComfyUI input schema for H3AddInject."""
         return {
             "required": {
                 "inject_at": (
@@ -566,6 +567,8 @@ class H3AddInject:
 
         # b. Lightweight ordering validation (full bounds check with target_rows happens
         #    later in sample() once the target latent is known).
+        # Deliberately repeats the ordering check in validate_envelope_indices to catch
+        # mis-ordered indices early at add_inject time, before the target latent is known.
         if not (start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out):
             raise ValueError(
                 f"Envelope index ordering violated: "
@@ -714,8 +717,6 @@ class H3InjectSampler:
 
         Sampler and scheduler lists are sourced from ``comfy.samplers`` lazily.  Falls back to
         empty lists if comfy is not available (test context).
-
-        Returns the real dict (not a stub); ``INPUT_TYPES`` is a static schema, not logic.
         """
         try:
             import comfy.samplers
@@ -881,9 +882,9 @@ class H3InjectSampler:
         else:
             audio_ticks = constants.audio_ticks_for_rows(target_rows)
 
-        # 5–9. GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference
-        #      and fractional denoise mask, install the conditioning wrapper, wrap the base
-        #      sampler for per-row init lerp, run sample_custom, and exact-preserve composite.
+        # GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference
+        # and fractional denoise mask, install the conditioning wrapper, wrap the base
+        # sampler for per-row init lerp, run sample_custom, and exact-preserve composite.
         return _run_sampler(  # pragma: no cover
             model=model,
             schedule=schedule,
