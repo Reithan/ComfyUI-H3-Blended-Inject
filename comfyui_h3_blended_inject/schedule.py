@@ -150,6 +150,7 @@ class RowSchedule:
 def merge_schedule(
     inject_list: InjectList,
     target_rows: int,
+    crossfade: bool = False,
 ) -> list[RowSchedule]:
     """Merge a list of injects into a flat per-row schedule using last-in-wins semantics.
 
@@ -170,6 +171,11 @@ def merge_schedule(
         ``H3AddInject`` chain order; later entries win on overlap.
     target_rows:
         Total number of rows in the target latent.
+    crossfade:
+        Passed through to :func:`~comfyui_h3_blended_inject.envelope.classify_row_region`.
+        When ``False`` (default), fade-ramp rows are classified as ``'hold'`` and use the
+        ordinary fractional hold-and-release path.  When ``True``, ramp rows classify as
+        ``'fade'`` and activate the legacy persistent prediction-blend path.
 
     Returns
     -------
@@ -211,6 +217,7 @@ def merge_schedule(
                 inj.end_keyframes,
                 inj.end_fade_out,
                 inj.min_denoise,
+                crossfade,
             ),
         )
         for row_idx, (inj, d) in sorted(row_map.items())
