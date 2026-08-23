@@ -934,25 +934,33 @@ class TestSigmaRecovery:
             )
 
     def test_audio_sigma_uses_transformer_options_shift(self, fake_comfy: types.ModuleType) -> None:
-        """Wrapper reads sigma shifts from transformer_options, not hardcoded defaults.
+        """Wrapper reads sigma shifts from transformer_options to compute sigma_audio.
 
-        At sigma_video=0.5 and denoise=0.1:
-          - default shifts (12.0, 3.0): sigma_audio ≈ 0.200
-            audio threshold = denoise_to_sigma_threshold(0.1, 3.0) = 0.25
-            0.200 < 0.25 → NOT held
-          - override shift_v=8.0: sigma_audio ≈ 0.273
-            0.273 > 0.25 → IS held
+        The audio sigma (sigma_audio = time_shift_sigma(sigma_video, shift_v, shift_a)) uses
+        transformer_options shift_v / shift_a — this is UNCHANGED by E2.  A different shift_v
+        produces a different sigma_audio, which shows up as a different hold_value written to
+        the audio input when the row is held.
 
-        The test asserts that WITH the transformer_options override, audio tick 0 is
-        held (its value differs from the background fill of 200.0).
+        Scenario: sigma_video=0.9, denoise=0.1.  The video row is always held (sigma_video=0.9
+        > denoise_to_sigma_threshold(0.1, 12.0) ≈ 0.571; v_shift defaults to 12.0 when no
+        model_sampling is available from the plain-function mock).  sigma_audio differs:
+          - shift_v=8.0:  sigma_audio = time_shift_sigma(0.9, 8.0, 3.0) = 27/35 ≈ 0.771
+          - shift_v=12.0: sigma_audio = time_shift_sigma(0.9, 12.0, 3.0) = 9/13 ≈ 0.692
+        The audio hold_value (proportional to sigma_audio) differs, confirming transformer_options
+        shift_v is used for sigma_audio — regardless of the E2 threshold change.
 
-        FAILS against code that ignores transformer_options (hardcoded 12.0 keeps
-        sigma_audio ≈ 0.200, below the threshold 0.25, so no audio tick is ever held).
-        PASSES once the wrapper reads the override key and calls time_shift_sigma with
-        shift_v=8.0, raising sigma_audio above the threshold.
+        FAILS against code that ignores transformer_options (hardcoded shift produces the same
+        sigma_audio regardless of the override, so hold_value is identical in both cases).
+        PASSES once the wrapper reads the override key for sigma_audio computation.
+
+        NOTE: updated from the pre-E2 version (which tested hold/release gating at sigma_video=0.5,
+        denoise=0.1).  Under E2 the audio threshold is the hybrid formula — at sigma_video=0.5 the
+        video row is NOT held (sigma < v_thresh≈0.571), so the audio sigma write path is not
+        reached.  The new scenario (sigma_video=0.9) exercises the same sigma_audio code path
+        and isolates transformer_options influence from the threshold change.
         """
-        sigma_video = 0.5
-        denoise = 0.1  # audio threshold = denoise_to_sigma_threshold(0.1, 3.0) = 0.25
+        sigma_video = 0.9
+        denoise = 0.1
         (
             schedule,
             per_row_original,
@@ -979,10 +987,9 @@ class TestSigmaRecovery:
             latent_shapes=latent_shapes,
             target_rows=_T,
             audio_ticks=_AUDIO_T,
-            # default_shift_video=12.0 (not overridden here; override comes from topts below)
         )
 
-        # Build args_dict with the transformer_options override (shift_v=8.0).
+        # Run with transformer_options override (shift_v=8.0).
         args_with_override = {
             "input": packed_input,
             "timestep": torch.tensor([sigma_video]),
@@ -993,29 +1000,40 @@ class TestSigmaRecovery:
 
         assert len(received) == 1
         unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
-        audio_in = unpacked_in[1]  # [B, C_a, 2, audio_t]
+        audio_in_override = unpacked_in[1]  # [B, C_a, 2, audio_t]
 
-        # Tick 0 should be held: its value must differ from the background fill (200.0).
-        tick0_value = audio_in[:, :, :, 0].mean().item()
-        assert tick0_value != 200.0, (
-            f"Audio tick 0 must be held when transformer_options sets shift_v=8.0 "
-            f"(sigma_audio ≈ 0.273 > threshold=0.25 [denoise=0.1, shift_a=3.0]), "
-            f"but got fill value {tick0_value:.3f}. "
-            "Ensure the wrapper reads transformer_options['minimax_h3_sigma_shift_video']."
-        )
-
-        # Also confirm that WITHOUT the override (default shift 12.0, sigma_audio ≈ 0.200),
-        # the same tick is NOT held (0.200 < threshold=0.25).
+        # Run with default shifts (no override, shift_v=12.0).
         received.clear()
-        args_no_override = _args_dict(packed_input, sigma_video)  # "c": {}
-        wrapper(mock_apply_model, args_no_override)
+        wrapper(mock_apply_model, _args_dict(packed_input, sigma_video))
 
         unpacked_no = _fake_unpack_latents(received[0], latent_shapes)
-        audio_no = unpacked_no[1]
-        tick0_no = audio_no[:, :, :, 0].mean().item()
-        assert tick0_no == 200.0, (
-            f"Audio tick 0 must NOT be held with default shifts (sigma_audio ≈ 0.200 < "
-            f"threshold=0.25 [denoise=0.1, shift_a=3.0]), but got {tick0_no:.3f}."
+        audio_in_default = unpacked_no[1]
+
+        # Tick 0 original fill = float(0+10) = 10.0; noise fill = float(0.1*(0+10)) = 1.0.
+        # sigma_audio_override = time_shift_sigma(0.9, 8.0, 3.0) = 27/35 ≈ 0.77143
+        # sigma_audio_default  = time_shift_sigma(0.9, 12.0, 3.0) = 9/13 ≈ 0.69231
+        # hold_value(10, 1, sigma_a) = (1-sigma_a)*10 + sigma_a*1 = 10 - 9*sigma_a
+        sigma_audio_override = constants.time_shift_sigma(sigma_video, 8.0, 3.0)
+        sigma_audio_default = constants.time_shift_sigma(sigma_video, 12.0, 3.0)
+        expected_override = 10.0 - 9.0 * sigma_audio_override  # ≈ 3.057
+        expected_default = 10.0 - 9.0 * sigma_audio_default  # ≈ 3.769
+
+        tick0_override = audio_in_override[:, :, :, 0].mean().item()
+        tick0_default = audio_in_default[:, :, :, 0].mean().item()
+
+        assert abs(tick0_override - expected_override) < 1e-4, (
+            f"Tick 0 with shift_v=8.0: expected hold_value≈{expected_override:.4f} "
+            f"(sigma_audio≈{sigma_audio_override:.4f}), got {tick0_override:.4f}. "
+            "Wrapper must read transformer_options['minimax_h3_sigma_shift_video'] for sigma_audio."
+        )
+        assert abs(tick0_default - expected_default) < 1e-4, (
+            f"Tick 0 with default shift_v=12.0: expected hold_value≈{expected_default:.4f} "
+            f"(sigma_audio≈{sigma_audio_default:.4f}), got {tick0_default:.4f}."
+        )
+        assert abs(tick0_override - tick0_default) > 0.1, (
+            f"Audio tick 0 value must differ between shift_v=8.0 ({tick0_override:.4f}) and "
+            f"shift_v=12.0 ({tick0_default:.4f}): "
+            "transformer_options shift_v must influence sigma_audio computation."
         )
 
 
@@ -2092,3 +2110,297 @@ class TestDenoiseThresholdFix:
                 f"got {actual:.4f}. "
                 f"Pre-fix: prediction would have been overwritten with per_row_original."
             )
+
+
+# ---------------------------------------------------------------------------
+# Mock apply_model with __self__.model_sampling.shift for knob-divergence tests
+# ---------------------------------------------------------------------------
+
+
+class _ApplyModelMock:
+    """Mock apply_model callable exposing ``__self__.model_sampling.shift``.
+
+    Simulates a ComfyUI bound method where ``getattr(am, '__self__')`` returns a
+    BaseModel-like namespace whose ``model_sampling.shift`` is the given float.
+    Each call appends the input tensor to ``received`` and returns it unchanged.
+    """
+
+    def __init__(self, model_sampling_shift: float) -> None:
+        self.__self__ = types.SimpleNamespace(
+            model_sampling=types.SimpleNamespace(shift=model_sampling_shift)
+        )
+        self.received: list[torch.Tensor] = []
+
+    def __call__(self, input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        self.received.append(input_x.detach().clone())
+        return input_x
+
+
+# ---------------------------------------------------------------------------
+# TestKnobDivergence: model_sampling.shift ≠ transformer_options shift_v
+# ---------------------------------------------------------------------------
+
+
+class TestKnobDivergence:
+    """model_sampling.shift ≠ transformer_options shift_v: thresholds track the right source.
+
+    E2 (plan.v2): the video release threshold uses model_sampling.shift (the shift used to
+    build the sampler's sigma schedule via ModelSamplingAV), not transformer_options shift_v.
+    The audio threshold is the hybrid: time_shift_sigma(denoise_to_sigma_threshold(d, v_shift),
+    shift_v, shift_a) — pushed through the same DiT chain as sigma_audio.
+
+    At defaults (model_sampling.shift == transformer_options shift_v == 12.0) both formulas
+    reduce to the pre-E2 values, so all existing tests stay green.  This class exercises
+    the divergent case: model_sampling.shift=8.0, transformer_options shift_v=12.0.
+
+    Shared boundary arithmetic:
+      d = 0.5,  model_sampling.shift = 8.0,  topts shift_v = 12.0, shift_a = 3.0
+      v_thresh_new = denoise_to_sigma_threshold(0.5, 8.0) = 8/9  ≈ 0.889  (model_sampling)
+      v_thresh_old = denoise_to_sigma_threshold(0.5, 12.0) = 12/13 ≈ 0.923  (transformer_options)
+      sigma_video  = 0.91  (between the two thresholds)
+        new: HELD (0.91 > 8/9 ≈ 0.889)   old: NOT HELD (0.91 < 12/13 ≈ 0.923)
+
+      sigma_audio  = time_shift_sigma(0.91, 12.0, 3.0) = 91/127 ≈ 0.717
+      a_thresh_new = time_shift_sigma(8/9,  12.0, 3.0) = 2/3     ≈ 0.667
+      a_thresh_old = denoise_to_sigma_threshold(0.5, 3.0)          = 0.75
+        new: HELD (0.717 > 2/3)            old: NOT HELD (0.717 < 0.75)
+
+    All tests verified fail-then-pass (pre-E2 code → FAIL; post-E2 code → PASS).
+    """
+
+    _MS_SHIFT: float = 8.0  # model_sampling.shift
+    _TOPTS_SHIFT_V: float = 12.0  # transformer_options shift_v
+    _TOPTS_SHIFT_A: float = 3.0  # transformer_options shift_a
+    _D: float = 0.5
+    _SIGMA_VIDEO: float = 0.91
+
+    def _args_with_topts(self, packed_input: torch.Tensor) -> dict[str, Any]:
+        """Build args_dict with explicit transformer_options shifts and the divergent sigma."""
+        return {
+            "input": packed_input,
+            "timestep": torch.tensor([self._SIGMA_VIDEO]),
+            "c": {
+                "transformer_options": {
+                    "minimax_h3_sigma_shift_video": self._TOPTS_SHIFT_V,
+                    "minimax_h3_sigma_shift_audio": self._TOPTS_SHIFT_A,
+                }
+            },
+            "cond_or_uncond": [0],
+        }
+
+    def test_video_threshold_tracks_model_sampling_shift(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Video row is held when model_sampling.shift=8.0 gives thresh≈0.889 < sigma_video=0.91.
+
+        With transformer_options shift_v=12.0 the old threshold would be ≈0.923 > 0.91 → NOT held.
+        The new code re-points the video threshold to model_sampling.shift=8.0 → HELD.
+
+        Semantic assertion (not call expression): v_thresh == denoise_to_sigma_threshold(d, 8.0)
+        and v_thresh != denoise_to_sigma_threshold(d, 12.0) for d=0.5.
+
+        FAILS pre-E2: threshold = denoise_to_sigma_threshold(0.5, shift_v=12.0) ≈ 0.923;
+        0.91 < 0.923 → NOT held → input passes through unmodified.
+        PASSES post-E2: threshold = denoise_to_sigma_threshold(0.5, model_sampling.shift=8.0)
+        ≈ 0.889; 0.91 > 0.889 → held → input = hold_value.
+        """
+        # Verify the boundary arithmetic this test relies on.
+        v_thresh_new = denoise_to_sigma_threshold(self._D, self._MS_SHIFT)
+        v_thresh_old = denoise_to_sigma_threshold(self._D, self._TOPTS_SHIFT_V)
+        assert self._SIGMA_VIDEO > v_thresh_new, "sigma_video must exceed the model_sampling thresh"
+        assert self._SIGMA_VIDEO < v_thresh_old, "sigma_video must be below the topts thresh"
+
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=self._D, region="hold")
+
+        mock_am = _ApplyModelMock(model_sampling_shift=self._MS_SHIFT)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_am, self._args_with_topts(packed_input))
+
+        assert len(mock_am.received) == 1
+        unpacked_in = _fake_unpack_latents(mock_am.received[0], latent_shapes)
+        video_in = unpacked_in[0]  # [B, C_v, T, Hl, Wl]
+
+        # Post-E2: rows are HELD (model_sampling.shift=8.0 → v_thresh≈0.889 < sigma_video=0.91).
+        # The input must equal hold_value(original, noise, sigma_video) for each held row.
+        for i in range(_T):
+            expected = hold_value(per_row_original[i], per_row_noise[i], self._SIGMA_VIDEO)
+            actual = video_in[:, :, i : i + 1, :, :]
+            assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
+                f"Video row {i}: must be HELD (input == hold_value) at "
+                f"sigma_video={self._SIGMA_VIDEO} using "
+                f"model_sampling.shift={self._MS_SHIFT} (v_thresh_new≈{v_thresh_new:.4f}). "
+                f"Pre-E2 uses transformer_options shift_v={self._TOPTS_SHIFT_V} "
+                f"(v_thresh_old≈{v_thresh_old:.4f} > sigma_video) → NOT held."
+            )
+
+    def test_audio_threshold_uses_hybrid_formula(self, fake_comfy: types.ModuleType) -> None:
+        """Audio tick is held via the hybrid threshold (not denoise_to_sigma_threshold(d, shift_a)).
+
+        sigma_audio = time_shift_sigma(0.91, 12.0, 3.0) = 91/127 ≈ 0.717.
+        a_thresh_new = time_shift_sigma(8/9, 12.0, 3.0) = 2/3 ≈ 0.667  (hybrid, new)
+        a_thresh_old = denoise_to_sigma_threshold(0.5, 3.0) = 0.75       (pre-E2)
+
+        Semantic: a_thresh == time_shift_sigma(denoise_to_sigma_threshold(d, ms_shift), sv, sa)
+        and a_thresh != denoise_to_sigma_threshold(d, shift_a).
+
+        FAILS pre-E2: a_thresh = 0.75; sigma_audio=0.717 < 0.75 → NOT held → input unchanged.
+        PASSES post-E2: a_thresh = 2/3 ≈ 0.667; sigma_audio=0.717 > 0.667 → HELD → input modified.
+        """
+        sigma_audio = constants.time_shift_sigma(
+            self._SIGMA_VIDEO, self._TOPTS_SHIFT_V, self._TOPTS_SHIFT_A
+        )
+        a_thresh_new = constants.time_shift_sigma(
+            denoise_to_sigma_threshold(self._D, self._MS_SHIFT),
+            self._TOPTS_SHIFT_V,
+            self._TOPTS_SHIFT_A,
+        )
+        a_thresh_old = denoise_to_sigma_threshold(self._D, self._TOPTS_SHIFT_A)
+
+        # Verify the boundary arithmetic this test relies on.
+        assert sigma_audio > a_thresh_new, (
+            f"sigma_audio={sigma_audio:.4f} must exceed new hybrid thresh={a_thresh_new:.4f}"
+        )
+        assert sigma_audio < a_thresh_old, (
+            f"sigma_audio={sigma_audio:.4f} must be below old thresh={a_thresh_old:.4f}"
+        )
+
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=self._D, region="hold")
+
+        mock_am = _ApplyModelMock(model_sampling_shift=self._MS_SHIFT)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_am, self._args_with_topts(packed_input))
+
+        assert len(mock_am.received) == 1
+        unpacked_in = _fake_unpack_latents(mock_am.received[0], latent_shapes)
+        audio_in = unpacked_in[1]  # [B, C_a, 2, audio_t]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_audio = unpacked_orig[1]
+
+        # Tick 0 (owned by row 0 with d=0.5, original fill=10.0, noise fill=1.0) must be held.
+        # is_held(sigma_audio≈0.717, a_thresh_new≈0.667) = True
+        tick0_original = original_audio[:, :, :, 0].mean().item()
+        tick0_held = audio_in[:, :, :, 0].mean().item()
+
+        # Input must differ from the background fill (hold_value ≠ original).
+        assert abs(tick0_held - tick0_original) > 0.1, (
+            f"Audio tick 0 must be HELD (sigma_audio≈{sigma_audio:.4f} > "
+            f"a_thresh_new≈{a_thresh_new:.4f}). "
+            f"Pre-E2: a_thresh_old={a_thresh_old:.3f} > sigma_audio → NOT held. "
+            f"Got input value {tick0_held:.4f} vs original {tick0_original:.4f}."
+        )
+
+        # Verify the held value matches hold_value at the correct sigma_audio.
+        # Tick 0: original=10.0, noise=1.0 → hold_value = (1-sigma_a)*10 + sigma_a*1
+        expected_held = (1.0 - sigma_audio) * 10.0 + sigma_audio * 1.0
+        assert abs(tick0_held - expected_held) < 1e-4, (
+            f"Audio tick 0 hold_value mismatch: expected {expected_held:.4f} "
+            f"(sigma_audio≈{sigma_audio:.4f}), got {tick0_held:.4f}."
+        )
+
+    def test_d_equals_one_row_never_held(self, fake_comfy: types.ModuleType) -> None:
+        """d=1.0 → v_thresh=1.0 → is_held(sigma, 1.0)=False for all sigma ≤ 1.0 → no-op.
+
+        Boundary condition: denoise_to_sigma_threshold(1.0, any_shift) = 1.0 by the formula
+        shift*1/(1+(shift-1)*1) = shift/shift = 1.  Since the sampler's sigmas never exceed
+        1.0, is_held is always False → wrapper is a strict no-op.  Holds for any shift value.
+        """
+        sigma_video = 0.999
+        d = 1.0
+
+        # Verify the boundary formula.
+        v_thresh = denoise_to_sigma_threshold(d, self._MS_SHIFT)
+        assert abs(v_thresh - 1.0) < 1e-9, (
+            f"denoise_to_sigma_threshold(1.0, {self._MS_SHIFT}) must equal 1.0, got {v_thresh}"
+        )
+        assert not is_held(sigma_video, v_thresh), (
+            f"is_held({sigma_video}, v_thresh=1.0) must be False (strict inequality)"
+        )
+
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=d, region="hold")
+
+        snapshot = packed_input.clone()
+        mock_am = _ApplyModelMock(model_sampling_shift=self._MS_SHIFT)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(
+            mock_am,
+            {
+                "input": packed_input,
+                "timestep": torch.tensor([sigma_video]),
+                "c": {},
+                "cond_or_uncond": [0],
+            },
+        )
+
+        # The wrapper must not modify the caller's input tensor (aliasing-safe).
+        assert torch.equal(packed_input, snapshot), (
+            "d=1.0: wrapper must not mutate the input tensor (v_thresh=1.0, never held)"
+        )
+
+        # apply_model received the unmodified input (no hold_value written for any row).
+        assert len(mock_am.received) == 1
+        unpacked_in = _fake_unpack_latents(mock_am.received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_video = unpacked_orig[0]
+
+        for i in range(_T):
+            assert torch.allclose(
+                video_in[:, :, i, :, :], original_video[:, :, i, :, :], atol=1e-7
+            ), f"d=1.0: video row {i} must pass through to apply_model unmodified (never held)"

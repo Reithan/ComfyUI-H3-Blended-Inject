@@ -333,6 +333,23 @@ def build_model_function_wrapper(
         shift_a = float(topts.get("minimax_h3_sigma_shift_audio", default_shift_audio))
         sigma_audio = _constants.time_shift_sigma(sigma_video, shift_v, shift_a)
 
+        # Reach model_sampling via apply_model.__self__ (the bound BaseModel instance).
+        # The sampler builds its sigma schedule from model_sampling (ModelSamplingAV.sigma /
+        # percent_to_sigma), so the video release threshold must use model_sampling.shift, not
+        # any transformer_options value.  At defaults both knobs equal 12; they are sourced
+        # separately (schedule vs. DiT forward), so re-pointing each threshold to its correct
+        # source is correct by construction regardless of whether they can diverge in practice.
+        # NOTE on percent_to_sigma: ComfyUI's percent_to_sigma(p) == time_snr_shift(shift, 1-p)
+        # (percent measured from the start; p=0 → sigma 1.0).  The release sigma at t=d is
+        # time_snr_shift(shift, d) = percent_to_sigma(1 - d), NOT percent_to_sigma(d).
+        # Express via denoise_to_sigma_threshold(d, v_shift) to avoid that inversion trap.
+        model_sampling = getattr(getattr(apply_model, "__self__", None), "model_sampling", None)
+        v_shift = (
+            float(model_sampling.shift)
+            if model_sampling is not None and getattr(model_sampling, "shift", None) is not None
+            else default_shift_video
+        )
+
         # Step 2: Unpack the packed AV latent into video and audio streams.
         # latent_shapes is closure-captured; unpack_latents keys element counts off
         # prod(shape[1:]) and takes batch from the runtime flat tensor.
@@ -367,11 +384,12 @@ def build_model_function_wrapper(
         # Only 'hold' region rows receive the input write; 'fade' rows skip this step
         # entirely (writing the input drains the sampler's noise budget and kills the fade).
         # 'preserve' and 'free' rows are never touched.
-        # The hold RELEASE threshold is denoise_to_sigma_threshold(d, shift_v) — the raw
-        # shifted sigma at schedule position t=d.  This keeps video and audio aligned at t=d.
+        # The hold RELEASE threshold uses v_shift (= model_sampling.shift when available,
+        # else default_shift_video): denoise_to_sigma_threshold(d, v_shift).  This matches
+        # the sigma schedule the sampler actually builds from model_sampling.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
-            v_thresh = denoise_to_sigma_threshold(row_s.denoise, shift_v)
+            v_thresh = denoise_to_sigma_threshold(row_s.denoise, v_shift)
             if (
                 row_s.region == "hold"
                 and row_idx in per_row_original
@@ -383,10 +401,15 @@ def build_model_function_wrapper(
         # Step 4: Write held AUDIO ticks (audio_t dim 3).
         # audio_row_original[tick] has shape [1, C_a, 2, 1]; broadcasts across B.
         # 'hold' ticks only; 'fade' ticks skip the input write.
-        # Audio threshold uses shift_a so audio release aligns with video at the same t=d.
+        # Audio threshold: video threshold (denoise_to_sigma_threshold(d, v_shift)) pushed through
+        # time_shift_sigma(·, shift_v, shift_a) — the same chain the DiT uses for sigma_audio.
+        # This places a_thresh at the audio noise level at the video release moment, so both
+        # streams release at schedule position t=d.
         for tick, d in tick_denoise.items():
             r = tick_region[tick]
-            a_thresh = denoise_to_sigma_threshold(d, shift_a)
+            a_thresh = _constants.time_shift_sigma(
+                denoise_to_sigma_threshold(d, v_shift), shift_v, shift_a
+            )
             if r == "hold" and tick in audio_row_original and is_held(sigma_audio, a_thresh):
                 held_audio = hold_value(
                     audio_row_original[tick], audio_row_noise[tick], sigma_audio
@@ -408,14 +431,14 @@ def build_model_function_wrapper(
 
         # Apply prediction edits per video row region:
         #   'hold': overwrite prediction with original (binary hold — sigma-gated).
-        #           Release threshold: denoise_to_sigma_threshold(d, shift_v) (t=d).
+        #           Release threshold: denoise_to_sigma_threshold(d, v_shift) (t=d).
         #   'fade': blend prediction permanently: (1-d)*original + d*model_pred.
         #   'preserve'/'free': untouched.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
             if row_idx not in per_row_original:
                 continue
-            v_thresh = denoise_to_sigma_threshold(row_s.denoise, shift_v)
+            v_thresh = denoise_to_sigma_threshold(row_s.denoise, v_shift)
             if row_s.region == "hold" and is_held(sigma_video, v_thresh):
                 pred_video_edit[:, :, row_idx : row_idx + 1, :, :] = per_row_original[row_idx]
             elif row_s.region == "fade":
@@ -427,14 +450,17 @@ def build_model_function_wrapper(
 
         # Apply prediction edits per audio tick region:
         #   'hold': overwrite prediction with original at internal scale (sigma-gated).
-        #           Release threshold: denoise_to_sigma_threshold(d, shift_a) (t=d).
+        #           Release threshold: hybrid — video threshold pushed through the same
+        #           time_shift_sigma chain as sigma_audio (t=d in both streams).
         #   'fade': blend prediction: (1-d)*original*scale + d*model_pred_tick.
         #   'preserve'/'free': untouched.
         for tick, d in tick_denoise.items():
             r = tick_region[tick]
             if tick not in audio_row_original:
                 continue
-            a_thresh = denoise_to_sigma_threshold(d, shift_a)
+            a_thresh = _constants.time_shift_sigma(
+                denoise_to_sigma_threshold(d, v_shift), shift_v, shift_a
+            )
             if r == "hold" and is_held(sigma_audio, a_thresh):
                 pred_audio_edit[:, :, :, tick : tick + 1] = audio_internal_scale(
                     audio_row_original[tick], sigma_audio, audio_scale_factor
