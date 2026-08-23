@@ -396,6 +396,46 @@ class TestConditioningWrapperDenoisedCorrection:
         assert out.dtype == torch.float16
 
 
+class TestConditioningWrapperCombinedPath:
+    """Combined path: pooled_conds non-empty AND m_packed non-None.
+
+    Neither TestBuildConditioningWrapper nor TestConditioningWrapperDenoisedCorrection covers
+    this branch directly — one always passes empty pooled_conds, the other always passes
+    m_packed=None.  This class exercises both levers simultaneously.
+    """
+
+    def _args(self, input_: torch.Tensor) -> dict[str, Any]:
+        return {
+            "input": input_,
+            "timestep": torch.tensor([0.5]),
+            "c": {"transformer_options": {}},
+            "cond_or_uncond": [0],
+        }
+
+    def test_combined_injects_cond_and_applies_correction(self) -> None:
+        """With both pooled_conds and m_packed supplied, the wrapper injects the cond key
+        into c AND applies the denoised correction — both levers active at once."""
+        inp = torch.zeros(1, 4, 3)
+        denoised = torch.ones(1, 4, 3)
+        m = torch.full((1, 4, 3), 0.5)
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+
+        # Spy: record which kwargs reached apply_model, and return the denoised tensor.
+        received_kwargs: dict[str, Any] = {}
+
+        def apply_model_spy(input_: Any, timestep: Any, **kwargs: Any) -> torch.Tensor:
+            received_kwargs.update(kwargs)
+            return denoised
+
+        wrapper = build_conditioning_wrapper(pooled, m)
+        out = wrapper(apply_model_spy, self._args(inp))
+
+        # Cond key was injected into c before the apply_model call.
+        assert "denoise_mask" in received_kwargs
+        # Correction applied: m*denoised + (1-m)*inp = 0.5*1 + 0.5*0 = 0.5
+        assert torch.allclose(out, torch.full((1, 4, 3), 0.5))
+
+
 class TestScalePackedAudio:
     """The lerp's clean term must carry the same audio scale comfy's process_latent_in applies.
 

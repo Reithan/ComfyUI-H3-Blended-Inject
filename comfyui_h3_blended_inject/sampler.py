@@ -95,8 +95,12 @@ def scale_packed_audio(
     garble under deterministic samplers).
 
     ``packed`` is a flat ``[B, video_elems + audio_elems]`` latent; ``video_element_count`` is
-    ``prod(video_shape[1:])`` — the packed video-prefix length.  Modifies ``packed`` in place
-    and returns it.  A no-op when ``audio_scale == 1.0`` or there is no audio tail.
+    ``prod(video_shape[1:])`` — the packed video-prefix length.  A no-op when
+    ``audio_scale == 1.0`` or there is no audio tail.
+
+    **Dual contract:** mutates ``packed`` in place *and* returns the same tensor.  Both are
+    relied on: call sites use the return value for assignment, and tests assert ``out is packed``
+    (identity) to confirm no copy was made.
 
     Parameters
     ----------
@@ -110,7 +114,7 @@ def scale_packed_audio(
     Returns
     -------
     torch.Tensor
-        ``packed`` (scaled in place).
+        ``packed`` — the same object, audio tail scaled in place.
     """
     if audio_scale != 1.0 and video_element_count < packed.shape[-1]:
         packed[..., video_element_count:] *= audio_scale
@@ -240,57 +244,38 @@ def build_conditioning_wrapper(
     pooled_conds: dict[str, torch.Tensor],
     m_packed: torch.Tensor | None = None,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
-    """Return a ``model_function_wrapper`` that injects per-row conditioning *and* corrects
-    the denoised prediction so the sampler integrates each row at its compressed rate.
+    """Return a ``model_function_wrapper`` that injects per-row conditioning and corrects
+    the denoised prediction so each row integrates at its compressed rate.
 
     Two jobs, both required for per-row img2img:
 
-    **1. Inject the pooled per-row denoise conditioning.**  The sampler passes
-    ``noise_mask=None`` (no compositing), so the DiT is fed its fractional per-row schedule
-    directly.  This wrapper injects the pooled, token-grid denoise mask tensors — produced once
-    at wiring time via ``model._denoise_mask_values(packed_mask, latent_shapes)`` — as **named
-    keys** in the conditioning dict ``c`` (e.g. ``"denoise_mask"``, ``"audio_denoise_mask"``),
-    so they flow through ``apply_model(**c)`` → ``extra_conds`` kwargs → the DiT ``_forward``
-    named params.  The tensors go into ``c`` directly, *not* into ``c["transformer_options"]``;
-    each is device/dtype-aligned to the current ``input`` per step, and ``c`` is copied not
-    mutated.  This makes the network's *velocity prediction* valid for the row's true (low)
-    noise level.
+    **1. Inject pooled per-row conditioning.**  Each key/tensor in ``pooled_conds`` is placed
+    directly into a copy of ``c`` (device/dtype-aligned to the current ``input``) so it flows
+    through ``apply_model(**c)`` → DiT ``extra_conds`` params.  ``c`` is copied, never mutated.
 
-    **2. Correct the denoised toward the input by the per-row fraction ``m``.**  This is the
-    fix for the "noise runs in reverse / low-denoise rows end up as static" bug.  H3's
-    ``process_timestep`` compresses only the timestep *embedding* fed to the network
-    (``v_timestep = m * t``), but ``model_base._apply_model`` still converts the network output
-    to a denoised via ``calculate_denoised(sigma, v, x) = x - sigma * v`` using the **outer**
-    (uncompressed) sigma.  So without correction the sampler computes ``d = (x - denoised)/sigma
-    = v`` and integrates each row's velocity over the *full* global interval — a low-``m`` row
-    is stepped ``1/m`` too far and lands off-distribution (pixelation / grey static).  Blending
-    ``corrected = m * denoised + (1 - m) * x`` makes ``d = (x - corrected)/sigma = m * v``, so
-    the sampler integrates each row over exactly its compressed ``m * sigma`` interval — true
-    per-row img2img, for any sampler.  ``m == 1`` rows are unchanged (full generation);
-    ``m == 0`` rows are frozen at their (clean) init value.  The correction is affine in the
-    denoised, so it commutes with CFG (correcting cond and uncond identically is equivalent to
-    correcting the CFG-combined denoised).
+    **2. Denoised correction.**  H3's ``process_timestep`` compresses the *embedding*
+    (``v_timestep = m*t``) but ``calculate_denoised`` still uses the outer sigma, so the
+    sampler would integrate every row over the full global interval.  Blending
+    ``corrected = m*denoised + (1-m)*x`` makes the effective velocity ``m*v`` and confines
+    each row's integral to its compressed ``m*sigma`` interval.  ``m==1`` → raw denoised;
+    ``m==0`` → frozen at the (clean) init.  The correction commutes with CFG.
 
-    The wrapper matches ComfyUI's ``model_function_wrapper`` contract:
-    ``(apply_model, args_dict) -> prediction``, where ``args_dict`` carries ``"input"``,
-    ``"timestep"``, ``"c"``, ``"cond_or_uncond"``.
+    Matches ComfyUI's ``model_function_wrapper`` contract:
+    ``(apply_model, args_dict) -> prediction``.
 
     Parameters
     ----------
     pooled_conds:
-        Mapping of DiT conditioning key → raw pooled mask tensor, as returned by
-        ``MiniMaxH3._denoise_mask_values``.  May be empty (nothing to preserve/compress).
+        DiT conditioning key → pooled mask tensor from ``MiniMaxH3._denoise_mask_values``.
+        May be empty (pure denoised-correction pass-through).
     m_packed:
-        Per-row denoise fractions in the sampler's packed latent layout, broadcastable to the
-        model input/output (``derive_fractional_mask`` expands each row's ``m_r`` across all
-        channels and spatial dims, so this matches the packed latent element-for-element).
-        When ``None`` the denoised correction is skipped (transparent pass-through) — used by
-        conditioning-injection unit tests; production always supplies it.
+        Per-row denoise fractions broadcastable to the model input/output.  ``None`` skips
+        the denoised correction (used by conditioning-injection unit tests).
 
     Returns
     -------
     Callable
-        A ``model_function_wrapper`` suitable for ``model_options["model_function_wrapper"]``.
+        A ``model_function_wrapper`` for ``model_options["model_function_wrapper"]``.
     """
 
     def wrapper(apply_model: Callable[..., Any], args_dict: dict[str, Any]) -> Any:
