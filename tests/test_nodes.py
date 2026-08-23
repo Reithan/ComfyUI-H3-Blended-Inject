@@ -182,7 +182,6 @@ class TestH3InjectSamplerInputTypes:
         required = set(H3InjectSampler.INPUT_TYPES()["required"].keys())
         expected = {
             "model",
-            "add_noise",
             "noise_seed",
             "steps",
             "cfg",
@@ -190,12 +189,23 @@ class TestH3InjectSamplerInputTypes:
             "scheduler",
             "positive",
             "latent_image",
-            "start_at_step",
-            "end_at_step",
-            "return_with_leftover_noise",
             "inject_list",
         }
         assert expected <= required
+
+    def test_chaining_widgets_hidden(self):
+        """Chaining widgets are deliberately hidden while unsupported (per-row
+        compression makes add_noise=disable / partial ranges / leftover noise
+        per-row-incorrect).  Assert they stay out of the node surface."""
+        types = H3InjectSampler.INPUT_TYPES()
+        surface = set(types["required"].keys()) | set(types.get("optional", {}).keys())
+        for key in (
+            "add_noise",
+            "start_at_step",
+            "end_at_step",
+            "return_with_leftover_noise",
+        ):
+            assert key not in surface, f"chaining widget {key!r} must stay hidden"
 
     def test_negative_is_optional_input(self):
         """H3 is CFG-distilled: negative must be optional, not required."""
@@ -515,7 +525,6 @@ class TestH3InjectSamplerBehavior:
         with pytest.raises(ValueError):
             node.sample(
                 model=object(),
-                add_noise="enable",
                 noise_seed=0,
                 steps=20,
                 cfg=7.0,
@@ -524,9 +533,6 @@ class TestH3InjectSamplerBehavior:
                 positive=object(),
                 negative=object(),
                 latent_image=latent_image,
-                start_at_step=0,
-                end_at_step=20,
-                return_with_leftover_noise="disable",
                 inject_list=[mismatched_inject],
             )
 
@@ -555,7 +561,6 @@ class TestH3InjectSamplerBehavior:
         with pytest.raises(ValueError):
             node.sample(
                 model=object(),
-                add_noise="enable",
                 noise_seed=0,
                 steps=20,
                 cfg=7.0,
@@ -564,9 +569,6 @@ class TestH3InjectSamplerBehavior:
                 positive=object(),
                 negative=object(),
                 latent_image=latent_image,
-                start_at_step=0,
-                end_at_step=20,
-                return_with_leftover_noise="disable",
                 inject_list=[invalid_inject],
             )
 
@@ -600,7 +602,6 @@ class TestH3InjectSamplerBehavior:
         with pytest.raises(AttributeError):
             node.sample(
                 model=object(),
-                add_noise="enable",
                 noise_seed=0,
                 steps=20,
                 cfg=7.0,
@@ -609,9 +610,6 @@ class TestH3InjectSamplerBehavior:
                 positive=object(),
                 negative=object(),
                 latent_image=latent_image,
-                start_at_step=0,
-                end_at_step=20,
-                return_with_leftover_noise="disable",
                 inject_list=[valid_inject],
             )
 
@@ -655,7 +653,6 @@ class TestH3InjectSamplerBehavior:
         # Do NOT pass negative — it must default to None.
         node.sample(
             model=object(),
-            add_noise="enable",
             noise_seed=0,
             steps=20,
             cfg=7.0,
@@ -663,9 +660,6 @@ class TestH3InjectSamplerBehavior:
             scheduler="normal",
             positive=object(),
             latent_image=latent_image,
-            start_at_step=0,
-            end_at_step=20,
-            return_with_leftover_noise="disable",
             inject_list=[inj],
         )
         assert len(calls) == 1
@@ -688,7 +682,6 @@ class TestH3InjectSamplerBehavior:
         node = H3InjectSampler()
         node.sample(
             model=object(),
-            add_noise="enable",
             noise_seed=0,
             steps=20,
             cfg=7.0,
@@ -696,9 +689,6 @@ class TestH3InjectSamplerBehavior:
             scheduler="normal",
             positive=object(),
             latent_image=latent_image,
-            start_at_step=0,
-            end_at_step=20,
-            return_with_leftover_noise="disable",
             inject_list=[inj],
             negative=sentinel_negative,
         )
@@ -757,7 +747,6 @@ class TestH3InjectSamplerBehavior:
         # Must NOT raise AttributeError ("NestedTensor has no attribute dim").
         node.sample(
             model=object(),
-            add_noise="enable",
             noise_seed=0,
             steps=20,
             cfg=7.0,
@@ -765,9 +754,6 @@ class TestH3InjectSamplerBehavior:
             scheduler="normal",
             positive=object(),
             latent_image={"samples": FakeNestedTensor()},
-            start_at_step=0,
-            end_at_step=20,
-            return_with_leftover_noise="disable",
             inject_list=[valid_inject],
         )
         assert len(calls) == 1, "sample() must call _run_sampler for a nested latent"

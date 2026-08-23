@@ -78,7 +78,6 @@ def _run_sampler(  # pragma: no cover
     schedule: Any,
     latent_image: dict[str, Any],
     noise_seed: int,
-    add_noise: str,
     steps: int,
     cfg: float,
     sampler_name: str,
@@ -86,9 +85,6 @@ def _run_sampler(  # pragma: no cover
     positive: Any,
     negative: Any | None,
     samples: Any,
-    start_at_step: int,
-    end_at_step: int,
-    return_with_leftover_noise: str,
     target_rows: int,
     audio_ticks: int,
 ) -> tuple[dict[str, Any]]:
@@ -125,7 +121,6 @@ def _run_sampler(  # pragma: no cover
 
     import comfy.sample
     import comfy.samplers
-    import torch
     from comfy.nested_tensor import NestedTensor
 
     from comfyui_h3_blended_inject.composite import (
@@ -247,18 +242,12 @@ def _run_sampler(  # pragma: no cover
         negative, cfg, m.model_options
     )
 
-    # --- 7. Prepare noise and per-step sigmas (last_step then start_step slicing). ---
+    # --- 7. Prepare noise and the full-range sigma schedule. ---
+    # Chaining (add_noise=disable / partial step range / leftover noise) is intentionally
+    # unsupported: per-row compression makes those per-row-incorrect (see INPUT_TYPES note).
     import comfy.model_management
 
-    disable_noise = add_noise == "disable"
-    force_full_denoise = return_with_leftover_noise == "disable"
-
     noise = comfy.sample.prepare_noise(samples, noise_seed)
-    if disable_noise:
-        if getattr(noise, "is_nested", False):
-            noise = NestedTensor(tuple(torch.zeros_like(c) for c in noise.unbind()))
-        else:
-            noise = torch.zeros_like(noise)
 
     device = comfy.model_management.get_torch_device()
     ksampler_obj = comfy.samplers.KSampler(
@@ -270,20 +259,7 @@ def _run_sampler(  # pragma: no cover
         denoise=1.0,
         model_options=m.model_options,
     )
-    sigmas = ksampler_obj.sigmas
-    if end_at_step < len(sigmas) - 1:
-        sigmas = sigmas[: end_at_step + 1]
-        if force_full_denoise:
-            sigmas[-1] = 0
-    if start_at_step > 0:
-        if start_at_step < len(sigmas) - 1:
-            sigmas = sigmas[start_at_step:]
-        else:
-            # Nothing left to sample — return the clean reference unchanged.
-            out = latent_image.copy()
-            out["samples"] = clean_nested
-            return (out,)
-    sigmas = sigmas.to(device)
+    sigmas = ksampler_obj.sigmas.to(device)
 
     # --- 8. Sample with noise_mask=None (no native compositing → no compounding ghost). ---
     # Standard custom-sampler preview callback (same wiring as SamplerCustom): drives the
@@ -712,9 +688,10 @@ class H3AddInject:
 class H3InjectSampler:
     """KSampler Advanced clone that applies per-row img2img inject during sampling.
 
-    Mirrors the KSampler Advanced surface (model, seed, steps, cfg, sampler, scheduler,
-    start/end step, latent, conditioning, add_noise, return_with_leftover_noise) and adds an
-    ``inject_list`` input.
+    Mirrors the core KSampler surface (model, seed, steps, cfg, sampler, scheduler, latent,
+    conditioning) and adds an ``inject_list`` input.  The KSampler-Advanced chaining widgets
+    (add_noise / start-end step / leftover noise) are deliberately hidden — per-row
+    compression makes partial runs per-row-incorrect (see the INPUT_TYPES note).
 
     Responsibilities:
 
@@ -752,10 +729,13 @@ class H3InjectSampler:
         return {
             "required": {
                 "model": ("MODEL",),
-                "add_noise": (
-                    ["enable", "disable"],
-                    {"tooltip": "Whether to add noise before sampling (disable for img2img)."},
-                ),
+                # NOTE (prototype): the KSampler-Advanced chaining surface (add_noise,
+                # start_at_step, end_at_step, return_with_leftover_noise) is HIDDEN, not
+                # supported: per-row compressed schedules make partial runs / leftover
+                # noise per-row-incorrect (fractional rows end at m*sigma_end, but the
+                # sampler's final inverse_noise_scaling divides all rows by (1-sigma_end)).
+                # Internally hardcoded to add_noise=enable / full step range / no leftover.
+                # Revisit post-prototype: see wiki status-and-open-paths.
                 "noise_seed": (
                     "INT",
                     {
@@ -774,12 +754,6 @@ class H3InjectSampler:
                 "scheduler": (schedulers,),
                 "positive": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
-                "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
-                "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
-                "return_with_leftover_noise": (
-                    ["disable", "enable"],
-                    {"tooltip": "Return the latent with leftover noise (for chained samplers)."},
-                ),
                 "inject_list": (INJECT_LIST,),
             },
             "optional": {
@@ -804,7 +778,6 @@ class H3InjectSampler:
     def sample(
         self,
         model: Any,
-        add_noise: str,
         noise_seed: int,
         steps: int,
         cfg: float,
@@ -812,9 +785,6 @@ class H3InjectSampler:
         scheduler: str,
         positive: Any,
         latent_image: dict[str, Any],
-        start_at_step: int,
-        end_at_step: int,
-        return_with_leftover_noise: str,
         inject_list: InjectList,
         negative: Any | None = None,
     ) -> tuple[dict[str, Any]]:
@@ -824,8 +794,6 @@ class H3InjectSampler:
         ----------
         model:
             ComfyUI MODEL object (a ``MiniMaxH3`` instance is expected).
-        add_noise:
-            ``"enable"`` to add noise before sampling; ``"disable"`` for img2img.
         noise_seed:
             RNG seed for the sampler's initial noise (and the stochastic per-row noise shim).
         steps:
@@ -840,12 +808,6 @@ class H3InjectSampler:
             Positive conditioning tensor.
         latent_image:
             ComfyUI LATENT dict with ``"samples"`` key.
-        start_at_step:
-            First step index to sample (for step-range chaining).
-        end_at_step:
-            Last step index to sample (exclusive).
-        return_with_leftover_noise:
-            ``"enable"`` to return the latent without final denoising (for chained samplers).
         inject_list:
             Ordered list of :class:`~comfyui_h3_blended_inject.schedule.Inject` instances.
         negative:
@@ -927,7 +889,6 @@ class H3InjectSampler:
             schedule=schedule,
             latent_image=latent_image,
             noise_seed=noise_seed,
-            add_noise=add_noise,
             steps=steps,
             cfg=cfg,
             sampler_name=sampler_name,
@@ -935,9 +896,6 @@ class H3InjectSampler:
             positive=positive,
             negative=negative,
             samples=samples,
-            start_at_step=start_at_step,
-            end_at_step=end_at_step,
-            return_with_leftover_noise=return_with_leftover_noise,
             target_rows=target_rows,
             audio_ticks=audio_ticks,
         )
