@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from comfyui_h3_blended_inject.envelope import evaluate_envelope
+from comfyui_h3_blended_inject.envelope import classify_row_region, evaluate_envelope
 
 # Type alias for the list of injects that flows between H3AddInject nodes and into
 # H3InjectSampler.  Defined here for use by callers; the ComfyUI type *string* is defined
@@ -112,12 +112,20 @@ class RowSchedule:
     audio_frozen:
         True iff the winning inject has ``audio_mode == "keep"``.  When True, the derived
         mask sets the audio ticks corresponding to this row to 0 (exact preserve).
+    region:
+        Envelope region for this row, set by
+        :func:`~comfyui_h3_blended_inject.envelope.classify_row_region`.  One of:
+        ``'preserve'`` (d==0 hold, routed to mask+composite), ``'hold'`` (fractional hold,
+        binary is-held gate), ``'fade'`` (ramp row, permanent prediction blend),
+        ``'free'`` (d==1.0, no intervention).  Defaults to ``'free'`` for rows constructed
+        outside :func:`merge_schedule` (e.g. in tests).
     """
 
     row_idx: int
     denoise: float
     inject: Inject | None
     audio_frozen: bool = field(default=False)
+    region: str = field(default="free")
 
 
 def merge_schedule(
@@ -176,6 +184,15 @@ def merge_schedule(
             denoise=d,
             inject=inj,
             audio_frozen=(inj.audio_mode == "keep"),  # "keep" mode freezes audio at d=0
+            region=classify_row_region(
+                row_idx,
+                inj.inject_at,
+                inj.start_fade_in,
+                inj.start_keyframes,
+                inj.end_keyframes,
+                inj.end_fade_out,
+                inj.min_denoise,
+            ),
         )
         for row_idx, (inj, d) in sorted(row_map.items())
     ]
