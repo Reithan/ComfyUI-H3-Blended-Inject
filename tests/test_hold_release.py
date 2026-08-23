@@ -1773,3 +1773,110 @@ class TestFadeHoldBoundary:
                 f"is_held is False → prediction must be sentinel {sentinel_val}, "
                 f"got {actual:.4f}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Device alignment regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperDeviceAlignment:
+    """Wrapper must align per-row/tick tensors to the working stream's device/dtype.
+
+    _run_sampler builds the per_row_original / per_row_noise / audio_row_original /
+    audio_row_noise dicts on CPU, then comfy.sample moves the latent to the sampling
+    device (e.g. cuda) before invoking the wrapper.  Without alignment, every site that
+    mixes a closure-captured CPU tensor with the runtime (cuda / meta) stream tensor
+    raises RuntimeError: Expected all tensors to be on the same device.
+
+    We reproduce the exact error class on a CPU-only box by putting the packed latent on
+    torch.device("meta") while the per-row dicts stay on CPU — same device-class mismatch
+    as the real cuda+cpu bug.  .to(device="meta") is a supported PyTorch operation;
+    meta-device arithmetic and pack/unpack (cat/reshape/slice) all work correctly.
+    """
+
+    def test_fade_region_no_device_error(self, fake_comfy: types.ModuleType) -> None:
+        """Fade-region wrapper must not raise when packed input is on meta (cpu vs meta mismatch).
+
+        FAILS before fix: RuntimeError device mismatch at the fade blend arithmetic
+        ((1-d)*per_row_original[cpu] + d*pred_row[meta] raises).
+        PASSES after fix: per-row dicts aligned to meta before blend executes.
+        """
+        denoise = 0.4
+        sigma = 0.6  # sigma > d → blend path active
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="fade")
+
+        # Move the packed working latent to meta — simulates the cuda device move that
+        # comfy.sample performs before invoking the wrapper.  Per-row dicts stay on CPU.
+        packed_meta = packed_input.to(device="meta")
+
+        def meta_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            # Return a meta prediction of the correct packed shape.
+            return torch.zeros(input_x.shape, device="meta", dtype=input_x.dtype)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+
+        # Must not raise after the fix; raises RuntimeError before the fix.
+        result = wrapper(meta_apply_model, _args_dict(packed_meta, sigma))
+        assert result.device.type == "meta", (
+            f"Result must be on meta device (matches working stream), got {result.device}"
+        )
+
+    def test_hold_region_no_device_error(self, fake_comfy: types.ModuleType) -> None:
+        """Hold-region wrapper must not raise when packed input is on meta (cpu vs meta mismatch).
+
+        FAILS before fix: RuntimeError at the hold input-write (hold_value computed on
+        CPU original/noise then assigned into a meta video_edit slice).
+        PASSES after fix: per-row dicts aligned to meta before hold logic executes.
+        """
+        denoise = 0.3
+        sigma = 0.7  # sigma > d → is_held True → hold input-write and pred overwrite active
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        packed_meta = packed_input.to(device="meta")
+
+        def meta_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            return torch.zeros(input_x.shape, device="meta", dtype=input_x.dtype)
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+
+        result = wrapper(meta_apply_model, _args_dict(packed_meta, sigma))
+        assert result.device.type == "meta", (
+            f"Result must be on meta device (matches working stream), got {result.device}"
+        )
