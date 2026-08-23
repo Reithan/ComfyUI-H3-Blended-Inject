@@ -56,8 +56,10 @@ def derive_mask(
     (preserve).  All other rows — including fractional-denoise rows handled by
     hold-and-release — are 1 (generate).  Rows absent from ``schedule`` are 1.
 
-    For the **audio stream**: ticks whose corresponding row has ``audio_frozen == True``
-    are set to 0 (preserve).  All other ticks are 1 (generate).
+    For the **audio stream**: ticks whose corresponding row has ``audio_preserve == True``
+    are set to 0 (preserve).  All other ticks are 1 (generate).  ``audio_preserve`` is True
+    for ``keep``-mode rows (everywhere) and ``fade``-mode rows where ``denoise == 0.0``
+    (mirroring the video-preserve set).
 
     **Non-nested path** (``video_component_shape`` is ``None``):
         Returns a ``dict`` with keys ``"video_mask"`` and ``"audio_mask"``, each a
@@ -105,7 +107,7 @@ def derive_mask(
         if r.denoise == 0.0:
             if 0 <= r.row_idx < video_rows:
                 video_zeros[r.row_idx] = True
-        if r.audio_frozen:
+        if r.audio_preserve:
             for tick in audio_tick_range(r.row_idx, video_rows, audio_ticks):
                 if 0 <= tick < audio_ticks:
                     audio_zeros[tick] = True

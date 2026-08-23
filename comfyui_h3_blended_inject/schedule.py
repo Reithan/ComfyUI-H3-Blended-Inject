@@ -119,6 +119,12 @@ class RowSchedule:
         binary is-held gate), ``'fade'`` (ramp row, permanent prediction blend),
         ``'free'`` (d==1.0, no intervention).  Defaults to ``'free'`` for rows constructed
         outside :func:`merge_schedule` (e.g. in tests).
+    audio_preserve:
+        Computed property.  True iff this row's audio should be composited and mask-frozen
+        at d=0.  In ``keep`` mode (``audio_frozen == True``) every row is preserved.  In
+        ``fade`` mode, only the rows where ``denoise == 0.0`` are preserved — mirroring the
+        video-preserve set exactly so audio follows the video envelope through the hold
+        region.
     """
 
     row_idx: int
@@ -126,6 +132,19 @@ class RowSchedule:
     inject: Inject | None
     audio_frozen: bool = field(default=False)
     region: str = field(default="free")
+
+    @property
+    def audio_preserve(self) -> bool:
+        """True iff this row's audio should be composited + mask-frozen at d=0.
+
+        Keep-mode (audio_frozen) preserves the inject's audio everywhere; fade-mode
+        preserves audio exactly where the video schedule reaches exact preserve
+        (denoise == 0.0), so the audio-preserve set mirrors the video-preserve set
+        and audio follows the video envelope through the hold region.
+        """
+        if self.audio_frozen:
+            return True
+        return self.inject is not None and self.inject.audio_mode == "fade" and self.denoise == 0.0
 
 
 def merge_schedule(
