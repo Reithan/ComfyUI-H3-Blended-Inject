@@ -24,10 +24,10 @@ from comfyui_h3_blended_inject.sanitize import (
     check_resolution,
     sanitize_audio,
     snap_inject_at,
-    snap_inject_at_audio_tick,
     snap_length_down,
     validate_envelope_indices,
     warn_audio_tail_alignment,
+    warn_audio_tick_alignment,
 )
 from comfyui_h3_blended_inject.schedule import Inject, InjectList, merge_schedule
 
@@ -563,7 +563,7 @@ class H3AddInject:
         # Only warn about non-51 audio-tick alignment when audio is actually being injected.
         # The %51 position error is irrelevant for audio_mode='drop' (pure noise, no audio insert).
         if audio is not None and audio_mode != "drop":
-            snap_inject_at_audio_tick(snapped)  # side-effect: warn if not mult of 51
+            warn_audio_tick_alignment(snapped)  # side-effect: warn if not mult of 51
 
         # b. Lightweight ordering validation (full bounds check with target_rows happens
         #    later in sample() once the target latent is known).

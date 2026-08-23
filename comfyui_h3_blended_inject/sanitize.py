@@ -14,6 +14,7 @@ Audio and image tensors are typed as ``Any`` to avoid runtime dependencies.
 
 from __future__ import annotations
 
+import math as _math
 import warnings
 from typing import Any
 
@@ -67,14 +68,13 @@ def snap_inject_at(inject_at: int) -> int:
     return snapped
 
 
-def snap_inject_at_audio_tick(inject_at: int) -> int:
-    """Apply the audio-tick position rule to a (possibly already snapped) ``inject_at``.
+def warn_audio_tick_alignment(inject_at: int) -> None:
+    """Warn if ``inject_at`` does not land on an exact audio tick boundary.
 
     Positions that are multiples of 51 (``51n``) are exact audio tick boundaries and require
     no rounding.  All other multiples of 17 (``17n`` but not ``51n``) land between audio tick
-    boundaries (10.2 ticks offset due to ``17 * 0.6 = 10.2``); they are rounded to the
-    nearest audio tick and a :func:`warnings.warn` is issued with the millisecond error
-    (up to approximately 12.5 ms).
+    boundaries (10.2 ticks offset due to ``17 * 0.6 = 10.2``); a :func:`warnings.warn` is
+    issued with the millisecond error (up to approximately 12.5 ms).
 
     This is a *position rule* distinct from the length rule.  Valid co-termination clip
     lengths (39, 90, 141, 192) are unaffected by this rule.
@@ -86,9 +86,8 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
 
     Returns
     -------
-    int
-        The same ``inject_at`` value unchanged; this function is called for its side-effect
-        (the warning).  The rounded audio tick is embedded in the warning message only.
+    None
+        Called purely for its warning side-effect.
 
     Warns
     -----
@@ -97,7 +96,7 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
         between the requested position and the nearest audio tick (max ~12.5 ms).
     """
     if inject_at % 51 == 0:
-        return inject_at
+        return
 
     # Compute the ms error between inject_at and the nearest audio tick.
     position_s = inject_at / _FPS
@@ -113,7 +112,6 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
         UserWarning,
         stacklevel=2,
     )
-    return inject_at
 
 
 def snap_length_down(source_length: int) -> int:
@@ -223,8 +221,6 @@ def warn_audio_tail_alignment(
            ``audio_mode == "fade"`` without a fade-out ramp reaching the clip tail
            (``not (end_fade_out > end_keyframes and end_fade_out == snapped_length)``).
     """
-    import math as _math
-
     # Condition 1: not audio-sync-aligned (ceil(n/17) % 3 != 0).
     if _math.ceil(snapped_length / 17) % 3 == 0:
         return
