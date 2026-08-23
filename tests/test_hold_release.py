@@ -341,10 +341,14 @@ def _make_wrapper_fixtures(
 
 
 def _args_dict(packed_input: torch.Tensor, sigma: float) -> dict[str, Any]:
-    """Construct the args_dict the ComfyUI sampler passes to the wrapper."""
+    """Construct the args_dict the ComfyUI sampler passes to the wrapper.
+
+    ComfyUI passes the raw k-diffusion sigma in [0, 1] as ``timestep``; the ×1000
+    model-timestep conversion happens inside ``_apply_model``, after the wrapper has run.
+    """
     return {
         "input": packed_input,
-        "timestep": torch.tensor([sigma * 1000.0]),
+        "timestep": torch.tensor([sigma]),
         "c": {},
         "cond_or_uncond": [0],
     }
@@ -827,6 +831,94 @@ class TestBuildModelFunctionWrapper:
                 assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
                     f"Audio tick {j} must be held when target_rows/audio_ticks provided"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Regression: sigma recovery must NOT divide by 1000
+# ---------------------------------------------------------------------------
+
+
+class TestSigmaRecovery:
+    """Regression: wrapper must recover the raw k-diffusion sigma, not sigma/1000.
+
+    ComfyUI passes the raw sigma (e.g. 0.5) as args_dict["timestep"]; the ×1000
+    model-timestep conversion happens inside _apply_model, after the wrapper runs.
+    Before the fix, the wrapper divided by 1000 (sigma_video = timestep / 1000 ≈ 0.0005),
+    making is_held always False for any fractional-denoise row — the hold-and-release
+    mechanism silently never fired.
+
+    FAIL before fix: wrapper computes sigma_video = 0.5/1000 = 0.0005 → is_held(0.0005,
+    0.3) = False → no row held → held_video_row[:] equals the original unmodified
+    sampler input, not hold_value.
+    PASS after fix:  wrapper computes sigma_video = 0.5 → is_held(0.5, 0.3) = True →
+    row is held → held_video_row[:] equals hold_value(original, noise, 0.5).
+    """
+
+    def test_fractional_denoise_row_is_held_with_raw_sigma(
+        self, fake_comfy: types.ModuleType
+    ) -> None:
+        """Wrapper holds a fractional-denoise row when timestep carries raw sigma [0,1].
+
+        Constructs args_dict with timestep=tensor([0.5]) — the raw sigma as ComfyUI
+        actually sends it.  Asserts that the apply_model input has been overwritten with
+        hold_value(original, noise, 0.5) for the held video row.
+
+        FAILS against pre-fix code (sigma_video = 0.5/1000 = 0.0005, not held).
+        PASSES after fix (sigma_video = 0.5, held because 0.5 > 0.3).
+        """
+        raw_sigma = 0.5
+        denoise = 0.3  # 0.5 > 0.3 → row must be held
+
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise)
+
+        # Build args_dict with the raw sigma tensor — exactly what ComfyUI passes.
+        raw_args = {
+            "input": packed_input,
+            "timestep": torch.tensor([raw_sigma]),  # raw k-diffusion sigma, NOT * 1000
+            "c": {},
+            "cond_or_uncond": [0],
+        }
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return input_x
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+        )
+        wrapper(mock_apply_model, raw_args)
+
+        assert len(received) == 1
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]  # [B, C_v, T, Hl, Wl]
+
+        # Every video row must be held (sigma=0.5 > denoise=0.3 for all rows).
+        for i in range(_T):
+            expected = hold_value(per_row_original[i], per_row_noise[i], raw_sigma)
+            actual = video_in[:, :, i : i + 1, :, :]
+            assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
+                f"Video row {i}: wrapper must hold it when raw_sigma={raw_sigma} > "
+                f"denoise={denoise}. Pre-fix: sigma_video=0.0005 → not held. "
+                f"Post-fix: sigma_video=0.5 → held."
+            )
 
 
 # ---------------------------------------------------------------------------
