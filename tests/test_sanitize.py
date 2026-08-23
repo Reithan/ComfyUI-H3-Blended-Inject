@@ -21,7 +21,9 @@ from comfyui_h3_blended_inject.sanitize import (
     sanitize_audio,
     snap_inject_at,
     snap_inject_at_audio_tick,
+    snap_length_down,
     validate_envelope_indices,
+    warn_audio_tail_alignment,
 )
 
 # ---------------------------------------------------------------------------
@@ -590,3 +592,329 @@ class TestValidateEnvelopeIndices:
         source_length = efo + 2
         with pytest.raises(ValueError):
             validate_envelope_indices(0, skf, ekf, efo, source_length, 50, 0)
+
+
+# ---------------------------------------------------------------------------
+# snap_length_down
+# ---------------------------------------------------------------------------
+
+
+class TestSnapLengthDown:
+    """snap_length_down(n) → largest 17k+5 <= n; warn on snap; ValueError when n < 5."""
+
+    # -- Snap-down cases: warn and return snapped value -------------------------
+
+    def test_snap_100_to_90(self):
+        """100 → 90: (100-5)//17=5, 5*17+5=90."""
+        with pytest.warns(UserWarning):
+            result = snap_length_down(100)
+        assert result == 90
+
+    def test_snap_45_to_39(self):
+        """45 → 39: (45-5)//17=2, 2*17+5=39."""
+        with pytest.warns(UserWarning):
+            result = snap_length_down(45)
+        assert result == 39
+
+    def test_snap_20_to_5(self):
+        """20 → 5: (20-5)//17=0, 0*17+5=5."""
+        with pytest.warns(UserWarning):
+            result = snap_length_down(20)
+        assert result == 5
+
+    def test_snap_6_to_5(self):
+        """6 → 5: the smallest non-trivial snap."""
+        with pytest.warns(UserWarning):
+            result = snap_length_down(6)
+        assert result == 5
+
+    def test_snap_21_to_5(self):
+        """21 → 5 (not 22): 22 > 21 so we can't reach 22 from 21 by snapping down."""
+        with pytest.warns(UserWarning):
+            result = snap_length_down(21)
+        assert result == 5
+
+    def test_warning_message_mentions_original_and_snapped(self):
+        """Warning message should include both the original length and the snapped length."""
+        with pytest.warns(UserWarning) as record:
+            snap_length_down(100)
+        msg = str(record[0].message)
+        assert "100" in msg
+        assert "90" in msg
+
+    # -- No-op when already valid (17n+5): no warning --------------------------
+
+    def test_no_op_5(self):
+        """5 = 5+17*0: minimum valid length; no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(5)
+        assert result == 5
+        snap_warns = [x for x in w if issubclass(x.category, UserWarning)]
+        assert not snap_warns
+
+    def test_no_op_22(self):
+        """22 = 5+17*1: valid; no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(22)
+        assert result == 22
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    def test_no_op_39(self):
+        """39 = 5+17*2: valid; no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(39)
+        assert result == 39
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    def test_no_op_90(self):
+        """90 = 5+17*5: valid; no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(90)
+        assert result == 90
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    def test_no_op_107(self):
+        """107 = 5+17*6: valid; no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(107)
+        assert result == 107
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    # -- ValueError when source_length < 5 -------------------------------------
+
+    def test_error_4(self):
+        """4 < 5 → ValueError."""
+        with pytest.raises(ValueError):
+            snap_length_down(4)
+
+    def test_error_0(self):
+        """0 < 5 → ValueError."""
+        with pytest.raises(ValueError):
+            snap_length_down(0)
+
+    def test_error_negative(self):
+        """-1 < 5 → ValueError."""
+        with pytest.raises(ValueError):
+            snap_length_down(-1)
+
+    def test_error_message_mentions_5(self):
+        """Error message should mention the minimum valid length (5)."""
+        with pytest.raises(ValueError, match="5"):
+            snap_length_down(3)
+
+    # -- Properties: snapped result is always a valid 17n+5 length -------------
+
+    @given(n=st.integers(min_value=5, max_value=10_000))
+    def test_result_is_valid_17n5(self, n):
+        """snap_length_down(n) always produces a valid 17k+5 length."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = snap_length_down(n)
+        assert result >= 5
+        assert (result - 5) % 17 == 0
+
+    @given(n=st.integers(min_value=5, max_value=10_000))
+    def test_result_le_n(self, n):
+        """Snapped result is always <= n."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = snap_length_down(n)
+        assert result <= n
+
+    @given(n=st.integers(min_value=5, max_value=10_000))
+    def test_gap_lt_17(self, n):
+        """Gap between n and result is always < 17."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = snap_length_down(n)
+        assert n - result < 17
+
+    @given(k=st.integers(min_value=0, max_value=588))
+    def test_valid_lengths_are_no_op(self, k):
+        """Already-valid lengths 17k+5 are returned unchanged without a warning."""
+        n = 5 + 17 * k
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(n)
+        assert result == n
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+
+# ---------------------------------------------------------------------------
+# warn_audio_tail_alignment
+# ---------------------------------------------------------------------------
+
+
+class TestWarnAudioTailAlignment:
+    """warn_audio_tail_alignment emits UserWarning on exposed non-audio-aligned tail."""
+
+    # -- Warn cases ------------------------------------------------------------
+
+    def test_warn_keep_mode_non_aligned(self):
+        """keep-mode + non-aligned length (56 = 5+17*3) → UserWarning.
+
+        ceil(56/17)=4, 4%3=1 → not audio-aligned.
+        FAIL-THEN-PASS: Without the emit logic, no warning is produced.
+        """
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="keep",
+                end_keyframes=55,
+                end_fade_out=55,
+                has_audio=True,
+            )
+
+    def test_warn_fade_unfaded_end_non_aligned(self):
+        """fade-mode + ramp doesn't reach tail → UserWarning.
+
+        end_fade_out=55 < snapped_length=56 → not faded through.
+        """
+        with pytest.warns(UserWarning):
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="fade",
+                end_keyframes=50,
+                end_fade_out=55,  # < 56: ramp doesn't reach clip tail
+                has_audio=True,
+            )
+
+    def test_warn_fade_no_ramp_non_aligned(self):
+        """fade-mode + no fade-out ramp (ekf == efo) + non-aligned → UserWarning."""
+        with pytest.warns(UserWarning):
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="fade",
+                end_keyframes=55,
+                end_fade_out=55,  # no ramp: efo == ekf
+                has_audio=True,
+            )
+
+    def test_warn_22_keep_mode(self):
+        """Length 22 (non-aligned: ceil(22/17)=2, 2%3=2) + keep + audio → warns."""
+        with pytest.warns(UserWarning):
+            warn_audio_tail_alignment(
+                snapped_length=22,
+                audio_mode="keep",
+                end_keyframes=21,
+                end_fade_out=21,
+                has_audio=True,
+            )
+
+    # -- Warning message content -----------------------------------------------
+
+    def test_warn_message_mentions_nearest_aligned_lengths(self):
+        """Warning message includes the nearest audio-aligned lengths."""
+        with pytest.warns(UserWarning) as record:
+            warn_audio_tail_alignment(
+                snapped_length=56,  # nearest below=39, nearest above=90
+                audio_mode="keep",
+                end_keyframes=55,
+                end_fade_out=55,
+                has_audio=True,
+            )
+        msg = str(record[0].message)
+        assert "39" in msg and "90" in msg
+
+    def test_warn_message_mentions_tail_error_ms(self):
+        """Warning message quantifies the tail error in ms."""
+        with pytest.warns(UserWarning) as record:
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="keep",
+                end_keyframes=55,
+                end_fade_out=55,
+                has_audio=True,
+            )
+        msg = str(record[0].message)
+        assert "ms" in msg
+
+    # -- No-warn cases ---------------------------------------------------------
+
+    def test_no_warn_audio_aligned_39(self):
+        """Length 39 (audio-aligned: ceil(39/17)=3, 3%3=0) → no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=39,
+                audio_mode="keep",
+                end_keyframes=38,
+                end_fade_out=38,
+                has_audio=True,
+            )
+        tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
+        assert not tail_warns
+
+    def test_no_warn_audio_aligned_90(self):
+        """Length 90 (audio-aligned: ceil(90/17)=6, 6%3=0) → no warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=90,
+                audio_mode="keep",
+                end_keyframes=89,
+                end_fade_out=89,
+                has_audio=True,
+            )
+        assert not [x for x in w if "audio-sync-aligned" in str(x.message)]
+
+    def test_no_warn_drop_mode(self):
+        """drop-mode → no warning even if non-aligned and has_audio=True."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="drop",
+                end_keyframes=55,
+                end_fade_out=55,
+                has_audio=True,
+            )
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    def test_no_warn_no_audio(self):
+        """has_audio=False → no warning (nothing to misalign)."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="keep",
+                end_keyframes=55,
+                end_fade_out=55,
+                has_audio=False,
+            )
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    def test_no_warn_faded_through(self):
+        """fade-mode with ramp reaching clip tail → no warning (masked)."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=56,
+                audio_mode="fade",
+                end_keyframes=50,
+                end_fade_out=56,  # == snapped_length: faded through → no warn
+                has_audio=True,
+            )
+        assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+    # -- Properties ------------------------------------------------------------
+
+    @given(k=st.integers(min_value=0, max_value=50))
+    def test_audio_aligned_lengths_never_warn(self, k):
+        """51k+39 lengths always suppress the warning (condition 1 fails)."""
+        n = 39 + 51 * k
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            warn_audio_tail_alignment(
+                snapped_length=n,
+                audio_mode="keep",
+                end_keyframes=n - 1,
+                end_fade_out=n - 1,
+                has_audio=True,
+            )
+        assert not [x for x in w if issubclass(x.category, UserWarning)]

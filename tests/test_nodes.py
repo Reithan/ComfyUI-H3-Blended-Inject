@@ -41,10 +41,21 @@ AUDIO_MODES = ["fade", "drop", "keep"]
 
 
 class FakeImages:
-    """Minimal stand-in for a ComfyUI IMAGE tensor batch (shape only)."""
+    """Minimal stand-in for a ComfyUI IMAGE tensor batch (shape only).
+
+    Supports slicing (``fake[:n]``) so that add_inject's content-length trim path does not
+    crash when FakeImages is used in tests where the snap-down path is exercised.
+    """
 
     def __init__(self, frames: int, h: int, w: int, c: int = 3) -> None:
         self.shape = (frames, h, w, c)
+
+    def __getitem__(self, key: slice) -> FakeImages:
+        if isinstance(key, slice):
+            start, stop, step = key.indices(self.shape[0])
+            new_frames = len(range(start, stop, step or 1))
+            return FakeImages(new_frames, self.shape[1], self.shape[2], self.shape[3])
+        raise TypeError(f"FakeImages indices must be slices, not {type(key).__name__}")
 
 
 def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
@@ -64,7 +75,7 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
         "interpolation_type": "linear",
         "audio_mode": "fade",
         "inject_list": None,
-        "images": FakeImages(16, 64, 64),
+        "images": FakeImages(22, 64, 64),  # 22 = 5+17*1, a valid H3 clip length (17n+5)
         "audio": None,
     }
     defaults.update(overrides)
@@ -713,3 +724,481 @@ class TestH3InjectSamplerBehavior:
             inject_list=[valid_inject],
         )
         assert len(calls) == 1, "sample() must call _run_sampler for a nested latent"
+
+
+# ---------------------------------------------------------------------------
+# E8: content-length snapping and audio tail-alignment warning
+# ---------------------------------------------------------------------------
+
+
+class TestE8LengthSnapping:
+    """E8: snap injected content length down to the 17n+5 grid; trim image/audio tensors.
+
+    Fail-then-pass requirement: each test that covers new behaviour must FAIL before
+    snap_length_down is wired into add_inject and PASS after.
+    """
+
+    @staticmethod
+    def _images(frames: int, h: int = 64, w: int = 64) -> Any:
+        """Return a real torch tensor [frames, H, W, 3] for use as inject images."""
+        import torch
+
+        return torch.zeros(frames, h, w, 3)
+
+    @staticmethod
+    def _audio(samples: int = 8000, sr: int = 16000) -> dict:
+        import torch
+
+        return {"waveform": torch.zeros(1, samples), "sample_rate": sr}
+
+    # -- Snap-down: tensor trimmed, source_length updated ----------------------
+
+    def test_snap_100_to_90_trims_image_tensor(self):
+        """Source 100 → snaps to 90; image tensor trimmed; source_length=90."""
+        node = H3AddInject()
+        images = self._images(100)
+        with pytest.warns(UserWarning):
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=89,
+                end_fade_out=89,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 90
+        assert inj.images.shape[0] == 90
+
+    def test_snap_45_to_39_trims_image_tensor(self):
+        """Source 45 → snaps to 39 (= 5+17*2); image tensor trimmed; source_length=39."""
+        node = H3AddInject()
+        images = self._images(45)
+        with pytest.warns(UserWarning):
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=38,
+                end_fade_out=38,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 39
+        assert inj.images.shape[0] == 39
+
+    def test_snap_20_to_5_trims_image_tensor(self):
+        """Source 20 → snaps to 5 (= 5+17*0); image tensor trimmed; source_length=5."""
+        node = H3AddInject()
+        images = self._images(20)
+        with pytest.warns(UserWarning):
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=4,
+                end_fade_out=4,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 5
+        assert inj.images.shape[0] == 5
+
+    def test_snap_trims_audio_to_match_snapped_length(self):
+        """When source 100 → 90 and audio is present, audio is sanitized for 90 frames."""
+        import torch
+
+        node = H3AddInject()
+        images = self._images(100)
+        # Audio longer than 90 frames' worth at 32 kHz should be trimmed.
+        audio = {"waveform": torch.zeros(1, 200000), "sample_rate": 32000}
+        with pytest.warns(UserWarning):
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=89,
+                end_fade_out=89,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+                audio=audio,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 90
+        # Audio should be trimmed to 90-frame duration at 32 kHz (target_sample_rate default 32000).
+        expected_samples = round(90 / 24 * 32000)
+        assert inj.audio["waveform"].shape[-1] == expected_samples
+
+    # -- No-op when already valid ----------------------------------------------
+
+    def test_no_op_when_source_length_is_39(self):
+        """Source 39 (= 5+17*2): valid 17n+5 → returned unchanged; no UserWarning from snap."""
+        import warnings
+
+        node = H3AddInject()
+        images = self._images(39)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=38,
+                end_fade_out=38,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        snap_warns = [
+            x for x in w if "17n+5" in str(x.message) or "snapping" in str(x.message).lower()
+        ]
+        assert not snap_warns, "No snap warning expected for already-valid length 39"
+        assert inject_list[0].source_length == 39
+        assert inject_list[0].images.shape[0] == 39
+
+    def test_no_op_when_source_length_is_90(self):
+        """Source 90 (= 5+17*5): valid 17n+5 → returned unchanged."""
+        node = H3AddInject()
+        images = self._images(90)
+        # No pytest.warns needed — snap warning must NOT be emitted.
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=89,
+                end_fade_out=89,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        snap_warns = [
+            x for x in w if "17n+5" in str(x.message) or "snapping" in str(x.message).lower()
+        ]
+        assert not snap_warns
+        assert inject_list[0].source_length == 90
+
+    # -- Hard error: source_length < 5 -----------------------------------------
+
+    def test_error_source_length_4(self):
+        """source_length=4 < 5 → ValueError (minimum valid H3 clip length is 5)."""
+        node = H3AddInject()
+        images = self._images(4)
+        with pytest.raises(ValueError, match="5"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=3,
+                end_fade_out=3,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+
+    def test_error_source_length_1(self):
+        """source_length=1 < 5 → ValueError."""
+        node = H3AddInject()
+        images = self._images(1)
+        with pytest.raises(ValueError):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=0,
+                end_fade_out=0,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+
+    # -- Hard error: fade index outside post-trim context ----------------------
+
+    def test_error_efo_exceeds_snapped_length(self):
+        """Source 100 → snaps to 90; end_fade_out=95 > 90 → ValueError at add_inject time.
+
+        FAIL-THEN-PASS: Before snap_length_down is wired in, efo=95 <= 100 passes; no error.
+        After: snap to 90, efo=95 > 90 → ValueError.
+        """
+        node = H3AddInject()
+        images = self._images(100)
+        with pytest.raises(ValueError, match="end_fade_out"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=90,
+                end_fade_out=95,  # > snapped_length=90 → must ERROR
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+
+    def test_error_efo_just_over_snapped_length(self):
+        """Source 100, end_fade_out=91 > snapped_length=90 → ValueError."""
+        node = H3AddInject()
+        images = self._images(100)
+        with pytest.raises(ValueError):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=90,
+                end_fade_out=91,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+
+    # -- Half-open boundary: efo == snapped_length is ACCEPTED -----------------
+
+    def test_half_open_efo_equals_snapped_length_accepted(self):
+        """efo == snapped_length (90) is VALID: exclusive upper bound, half-open model.
+
+        FAIL-THEN-PASS: Without snap, source_length=100, so efo=90 passes trivially
+        (90 <= 100); BUT inj.source_length would be 100, not 90. After snap: source=90,
+        efo=90 == 90 is valid, and inj.source_length==90.
+        """
+        node = H3AddInject()
+        images = self._images(100)
+        with pytest.warns(UserWarning):
+            (inject_list,) = node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=89,
+                end_fade_out=90,  # == snapped_length → half-open, valid
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=images,
+            )
+        inj = inject_list[0]
+        assert inj.source_length == 90  # snapped; fails without implementation (would be 100)
+        assert inj.end_fade_out == 90
+
+
+# ---------------------------------------------------------------------------
+# E8: audio tail-alignment warning (from add_inject)
+# ---------------------------------------------------------------------------
+
+
+class TestE8AudioTailAlignment:
+    """E8 addition: warn when non-audio-aligned clip end is exposed without a fade-out.
+
+    Fail-then-pass: Before warn_audio_tail_alignment is wired in, no warning is emitted;
+    tests expecting pytest.warns fail. After wiring, tests pass.
+    """
+
+    @staticmethod
+    def _images(frames: int) -> Any:
+        import torch
+
+        return torch.zeros(frames, 64, 64, 3)
+
+    @staticmethod
+    def _audio() -> dict:
+        import torch
+
+        return {"waveform": torch.zeros(1, 8000), "sample_rate": 16000}
+
+    def _add_inject(
+        self, frames: int, audio_mode: str, end_keyframes: int, end_fade_out: int
+    ) -> Any:
+        """Helper: call add_inject with given params; images=frames tensor, audio always present."""
+        node = H3AddInject()
+        # Suppress snap-length warnings so only the tail-alignment warning is checked.
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=end_keyframes,
+                end_fade_out=end_fade_out,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode=audio_mode,
+                images=self._images(frames),
+                audio=self._audio(),
+            )
+        return [str(x.message) for x in w if issubclass(x.category, UserWarning)]
+
+    # -- WARN cases ------------------------------------------------------------
+
+    def test_warn_keep_mode_non_aligned_length(self):
+        """keep-mode + non-aligned length (56 = 5+17*3) → tail warning emitted.
+
+        FAIL-THEN-PASS: Without the warning logic, no UserWarning is emitted.
+        """
+        node = H3AddInject()
+        # 56 is a valid 17n+5 length; ceil(56/17)=4, 4%3=1 → not audio-aligned.
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=55,
+                end_fade_out=55,  # no fade-out ramp: end_fade_out == end_keyframes
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=self._images(56),
+                audio=self._audio(),
+            )
+
+    def test_warn_fade_mode_unfaded_end_non_aligned(self):
+        """fade-mode + clip end not faded through + non-aligned length → tail warning.
+
+        Un-faded means end_fade_out < snapped_length (ramp exists but doesn't reach tail).
+        """
+        node = H3AddInject()
+        # 56 frames; fade-out ramp [50, 55) doesn't reach tail at 56.
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=50,
+                end_fade_out=55,  # ramp exists but < snapped_length=56 → not faded through
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="fade",
+                images=self._images(56),
+                audio=self._audio(),
+            )
+
+    def test_warn_fade_mode_no_ramp_at_all_non_aligned(self):
+        """fade-mode + no fade-out ramp (end_keyframes == end_fade_out) + non-aligned → warns."""
+        node = H3AddInject()
+        with pytest.warns(UserWarning, match="audio-sync-aligned"):
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=55,
+                end_fade_out=55,  # no ramp → not faded through
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="fade",
+                images=self._images(56),
+                audio=self._audio(),
+            )
+
+    # -- NO-WARN cases ---------------------------------------------------------
+
+    def test_no_warn_fade_mode_faded_through(self):
+        """fade-mode WITH fade-out ramp reaching clip tail → no tail-alignment warning.
+
+        end_fade_out == snapped_length (56) AND end_fade_out > end_keyframes → faded through.
+        """
+        import warnings
+
+        node = H3AddInject()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=50,
+                end_fade_out=56,  # == snapped_length=56 → faded through → no warn
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="fade",
+                images=self._images(56),
+                audio=self._audio(),
+            )
+        tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
+        assert not tail_warns, "Faded-through tail must NOT trigger tail-alignment warning"
+
+    def test_no_warn_audio_aligned_length_keep(self):
+        """Audio-aligned length (39 = 51*0+39) + keep-mode → no tail-alignment warning.
+
+        ceil(39/17)=3, 3%3=0 → aligned; condition 1 fails → no warning.
+        """
+        import warnings
+
+        node = H3AddInject()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=38,
+                end_fade_out=38,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=self._images(39),
+                audio=self._audio(),
+            )
+        tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
+        assert not tail_warns, "Audio-aligned length must NOT trigger tail-alignment warning"
+
+    def test_no_warn_drop_mode(self):
+        """drop-mode (no injected audio) → no tail-alignment warning regardless of length."""
+        import warnings
+
+        node = H3AddInject()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=55,
+                end_fade_out=55,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="drop",
+                images=self._images(56),
+                audio=self._audio(),  # audio present but mode=drop
+            )
+        tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
+        assert not tail_warns, "drop-mode must NOT trigger tail-alignment warning"
+
+    def test_no_warn_no_audio(self):
+        """No audio provided → no tail-alignment warning (nothing to misalign)."""
+        import warnings
+
+        node = H3AddInject()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            node.add_inject(
+                inject_at=0,
+                start_fade_in=0,
+                start_keyframes=0,
+                end_keyframes=55,
+                end_fade_out=55,
+                min_denoise=0.0,
+                interpolation_type="linear",
+                audio_mode="keep",
+                images=self._images(56),
+                audio=None,  # no audio
+            )
+        tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
+        assert not tail_warns
