@@ -1,14 +1,4 @@
-"""Tests for ComfyUI H3 Blended Inject nodes (comfyui_h3_blended_inject/nodes.py).
-
-Pass/fail matrix at initial implementation stage:
-
-PASS NOW (static schema already implemented):
-  - All INPUT_TYPES / wiring tests (class attrs, key ordering, combo values, mappings).
-
-FAIL NOW, PASS once implemented:
-  - All behavioral tests in TestH3AddInjectBehavior and TestH3InjectSamplerBehavior.
-    (add_inject / sample currently raise NotImplementedError.)
-"""
+"""Tests for ComfyUI H3 Blended Inject nodes (comfyui_h3_blended_inject/nodes.py)."""
 
 from __future__ import annotations
 
@@ -116,7 +106,7 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# INPUT_TYPES / wiring tests — PASS NOW
+# INPUT_TYPES / wiring tests
 # ---------------------------------------------------------------------------
 
 
@@ -155,7 +145,12 @@ class TestH3AddInjectInputTypes:
     def test_images_tooltip_mentions_24_fps(self):
         images_spec = H3AddInject.INPUT_TYPES()["optional"]["images"]
         tooltip: str = images_spec[1].get("tooltip", "")
-        assert "24" in tooltip and "fps" in tooltip.lower()
+        # Assert on the specific phrase "24 fps" (not just the digit "24") and on
+        # "native" — which captures the key assumption that no fps conversion is done.
+        assert "24 fps" in tooltip, f"tooltip should contain '24 fps': {tooltip!r}"
+        assert "native" in tooltip.lower(), (
+            f"tooltip should state the 24 fps assumption is native (no conversion): {tooltip!r}"
+        )
 
 
 class TestH3AddInjectClassAttrs:
@@ -258,7 +253,7 @@ class TestNodeMappings:
         assert "H3AddInject" in entry.NODE_CLASS_MAPPINGS
         assert "H3InjectSampler" in entry.NODE_CLASS_MAPPINGS
 
-    def test_entry_point_loads_when_pack_not_on_sys_path(self):
+    def test_entry_point_loads_when_pack_not_on_sys_path(self, monkeypatch):
         """Regression: entry __init__.py self-heals when pack dir is absent from sys.path.
 
         ComfyUI execs the entry by file path from ``custom_nodes/`` without adding the
@@ -266,60 +261,49 @@ class TestNodeMappings:
         package would be unimportable by default.  The fix (``sys.path.insert`` in
         ``__init__.py``) must be present; this test fails if it is removed.
 
-        Global state (``sys.path``, ``sys.modules``) is saved before the test and
-        fully restored in ``finally`` so other tests are unaffected.
+        monkeypatch auto-restores ``sys.path`` and the evicted ``sys.modules`` entries
+        at teardown, so no manual save/restore is needed.
         """
         root = str(Path(__file__).resolve().parents[1])
 
-        # Save global state that this test temporarily mutates.
-        saved_path = list(sys.path)
-        saved_modules = {
-            k: v
-            for k, v in sys.modules.items()
+        # Evict pack modules so import resolution starts from scratch; monkeypatch
+        # restores each entry at teardown.
+        pack_keys = [
+            k
+            for k in sys.modules
             if k == "comfyui_h3_blended_inject" or k.startswith("comfyui_h3_blended_inject.")
-        }
+        ]
+        for k in pack_keys:
+            monkeypatch.delitem(sys.modules, k)
 
-        try:
-            # Remove pack modules so import resolution starts from scratch.
-            for k in list(saved_modules):
-                del sys.modules[k]
+        # Strip project-root entries from sys.path to replicate ComfyUI's env;
+        # monkeypatch restores the original sys.path attribute at teardown.
+        clean_path = [p for p in sys.path if p not in ("", root, root + os.sep)]
+        monkeypatch.setattr(sys, "path", clean_path)
 
-            # Strip project-root entries from sys.path to replicate ComfyUI's env.
-            sys.path[:] = [p for p in sys.path if p not in ("", root, root + os.sep)]
+        # Precondition guard: the pack must now be unimportable.
+        # (If the pack is ever pip-installed, this guard may stop raising;
+        # the exec_module block below still validates the entry-point behaviour.)
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("comfyui_h3_blended_inject")
 
-            # Precondition guard: the pack must now be unimportable.
-            # (If the pack is ever pip-installed, this guard may stop raising;
-            # the exec_module block below still validates the entry-point behaviour.)
-            with pytest.raises(ModuleNotFoundError):
-                importlib.import_module("comfyui_h3_blended_inject")
+        # Load exactly as ComfyUI does: exec the entry file by path.
+        entry_path = Path(root) / "__init__.py"
+        spec = importlib.util.spec_from_file_location("h3_entry_syspath_probe", entry_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
 
-            # Load exactly as ComfyUI does: exec the entry file by path.
-            entry_path = Path(root) / "__init__.py"
-            spec = importlib.util.spec_from_file_location("h3_entry_syspath_probe", entry_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            assert "H3AddInject" in mod.NODE_CLASS_MAPPINGS
-            assert "H3InjectSampler" in mod.NODE_CLASS_MAPPINGS
-
-        finally:
-            # Restore global state so subsequent tests are unaffected.
-            sys.path[:] = saved_path
-            # Overwrite any freshly-loaded copies with the original module objects.
-            sys.modules.update(saved_modules)
+        assert "H3AddInject" in mod.NODE_CLASS_MAPPINGS
+        assert "H3InjectSampler" in mod.NODE_CLASS_MAPPINGS
 
 
 # ---------------------------------------------------------------------------
-# Behavioral tests — FAIL NOW (NotImplementedError), PASS once implemented
+# Behavioral tests
 # ---------------------------------------------------------------------------
 
 
 class TestH3AddInjectBehavior:
-    """Behavioral contract for H3AddInject.add_inject.
-
-    All tests here FAIL NOW because add_inject raises NotImplementedError.
-    They will PASS once the method body is implemented.
-    """
+    """Behavioral contract for H3AddInject.add_inject."""
 
     def test_returns_one_tuple_containing_one_inject(self):
         node = H3AddInject()
@@ -501,8 +485,7 @@ class TestH3InjectSamplerBehavior:
         """
         import torch
 
-        # Construct the mismatched inject directly to avoid depending on add_inject
-        # (which also raises NotImplementedError at this stage).
+        # Construct the mismatched inject directly to avoid depending on add_inject.
         mismatched_inject = Inject(
             inject_at=0,
             start_fade_in=0,
