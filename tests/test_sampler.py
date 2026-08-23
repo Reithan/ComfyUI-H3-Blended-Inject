@@ -20,6 +20,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.sampler import (
+    build_conditioning_wrapper,
     build_per_row_sampler_function,
     make_per_row_noise_sampler,
     per_row_init_lerp,
@@ -234,3 +235,86 @@ class TestBuildPerRowSamplerFunction:
         )
         fn(object(), torch.randn(1, 2, 1), torch.tensor([1.0, 0.0]), noise_sampler=supplied)
         assert base.received_kwargs.get("noise_sampler") is supplied
+
+
+# ---------------------------------------------------------------------------
+# build_conditioning_wrapper
+# ---------------------------------------------------------------------------
+
+
+class _RecordingApplyModel:
+    """Fake bound apply_model recording positional input/timestep and kwargs."""
+
+    def __init__(self) -> None:
+        self.input: Any = None
+        self.timestep: Any = None
+        self.kwargs: dict[str, Any] = {}
+        self.sentinel = object()
+
+    def __call__(self, input_: Any, timestep: Any, **kwargs: Any) -> Any:
+        self.input = input_
+        self.timestep = timestep
+        self.kwargs = kwargs
+        return self.sentinel
+
+
+class TestBuildConditioningWrapper:
+    def _args(self, input_: torch.Tensor, c: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "input": input_,
+            "timestep": torch.tensor([0.5]),
+            "c": {"transformer_options": {}} if c is None else c,
+            "cond_or_uncond": [0],
+        }
+
+    def test_injects_pooled_conds_as_named_keys(self) -> None:
+        """Each pooled cond is placed into c under its own key (not transformer_options)."""
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3), "audio_denoise_mask": torch.zeros(1, 1, 2)}
+        wrapper = build_conditioning_wrapper(pooled)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(torch.randn(1, 4, 3)))
+        assert "denoise_mask" in am.kwargs
+        assert "audio_denoise_mask" in am.kwargs
+        # not smuggled into transformer_options
+        assert "denoise_mask" not in am.kwargs.get("transformer_options", {})
+
+    def test_forwards_input_and_timestep_and_returns_result(self) -> None:
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+        wrapper = build_conditioning_wrapper(pooled)
+        am = _RecordingApplyModel()
+        inp = torch.randn(1, 4, 3)
+        args = self._args(inp)
+        result = wrapper(am, args)
+        assert result is am.sentinel
+        assert am.input is inp
+        assert am.timestep is args["timestep"]
+
+    def test_preserves_existing_c_keys(self) -> None:
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+        wrapper = build_conditioning_wrapper(pooled)
+        am = _RecordingApplyModel()
+        topts = {"foo": 1}
+        wrapper(am, self._args(torch.randn(1, 4, 3), c={"transformer_options": topts}))
+        assert am.kwargs["transformer_options"] is topts
+
+    def test_does_not_mutate_original_c(self) -> None:
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+        wrapper = build_conditioning_wrapper(pooled)
+        am = _RecordingApplyModel()
+        c = {"transformer_options": {}}
+        wrapper(am, self._args(torch.randn(1, 4, 3), c=c))
+        assert "denoise_mask" not in c
+
+    def test_aligns_dtype_to_input(self) -> None:
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3, dtype=torch.float32)}
+        wrapper = build_conditioning_wrapper(pooled)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(torch.randn(1, 4, 3, dtype=torch.float16)))
+        assert am.kwargs["denoise_mask"].dtype == torch.float16
+
+    def test_empty_pooled_forwards_unchanged(self) -> None:
+        wrapper = build_conditioning_wrapper({})
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(torch.randn(1, 4, 3)))
+        assert "denoise_mask" not in am.kwargs
+        assert "audio_denoise_mask" not in am.kwargs

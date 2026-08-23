@@ -133,6 +133,50 @@ def _default_noise_sampler_factory(
         return k_sampling.default_noise_sampler(x)
 
 
+def build_conditioning_wrapper(
+    pooled_conds: dict[str, torch.Tensor],
+) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
+    """Return a ``model_function_wrapper`` that injects per-row denoise conditioning.
+
+    The per-row img2img sampler passes ``noise_mask=None`` to the sampler (so no compositing
+    happens), and instead feeds the DiT its fractional per-row schedule directly.  This
+    wrapper injects the pooled, token-grid denoise mask tensors — produced once at wiring time
+    via ``model._denoise_mask_values(packed_mask, latent_shapes)`` — as **named keys** in the
+    conditioning dict ``c`` (e.g. ``"denoise_mask"``, ``"audio_denoise_mask"``), so they flow
+    through ``apply_model(**c)`` → ``extra_conds`` kwargs → the DiT ``_forward`` named params.
+
+    Crucially the tensors go into ``c`` directly, *not* into ``c["transformer_options"]`` —
+    only named conditioning keys reach the DiT forward.  Each tensor is device/dtype-aligned to
+    the current ``input`` per step (cond-batched inference may vary device/precision), and the
+    original ``c`` dict is copied rather than mutated.
+
+    The wrapper matches ComfyUI's ``model_function_wrapper`` contract:
+    ``(apply_model, args_dict) -> prediction``, where ``args_dict`` carries ``"input"``,
+    ``"timestep"``, ``"c"``, ``"cond_or_uncond"``.
+
+    Parameters
+    ----------
+    pooled_conds:
+        Mapping of DiT conditioning key → raw pooled mask tensor, as returned by
+        ``MiniMaxH3._denoise_mask_values``.  May be empty (nothing to preserve/compress), in
+        which case the wrapper is a transparent pass-through.
+
+    Returns
+    -------
+    Callable
+        A ``model_function_wrapper`` suitable for ``model_options["model_function_wrapper"]``.
+    """
+
+    def wrapper(apply_model: Callable[..., Any], args_dict: dict[str, Any]) -> Any:
+        inp = args_dict["input"]
+        c = dict(args_dict["c"])
+        for key, value in pooled_conds.items():
+            c[key] = value.to(device=inp.device, dtype=inp.dtype)
+        return apply_model(inp, args_dict["timestep"], **c)
+
+    return wrapper
+
+
 def build_per_row_sampler_function(
     base_fn: Callable[..., Any],
     m_packed: torch.Tensor,
