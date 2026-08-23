@@ -58,6 +58,34 @@ class FakeImages:
         raise TypeError(f"FakeImages indices must be slices, not {type(key).__name__}")
 
 
+class FakeEncodeVAE:
+    """Minimal VAE stand-in: encode() returns a fresh tensor-ish sentinel.
+
+    Baseline add_inject kwargs must include a vae whenever images are present — the
+    node now errors on images-without-vae instead of silently dropping the content.
+    """
+
+    def encode(self, x: Any) -> Any:
+        import torch
+
+        return torch.zeros(1)
+
+
+class FakeAudioVAE:
+    """Minimal audio-VAE stand-in for the audio-without-audio_vae guard.
+
+    ``audio_sample_rate`` matches the real H3 default (32 kHz) so sanitize/resample
+    behavior is unchanged; encode() returns a shape-plausible zero latent.
+    """
+
+    audio_sample_rate = 32000
+
+    def encode(self, x: Any) -> Any:
+        import torch
+
+        return torch.zeros(1, 32, 2, 4)
+
+
 def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
     """Return a baseline valid set of kwargs for H3AddInject.add_inject.
 
@@ -77,8 +105,13 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
         "inject_list": None,
         "images": FakeImages(22, 64, 64),  # 22 = 5+17*1, a valid H3 clip length (17n+5)
         "audio": None,
+        "vae": FakeEncodeVAE(),  # images-without-vae now raises; baseline must wire one
     }
     defaults.update(overrides)
+    # Images without a VAE is now a hard error; drop the default vae only when the
+    # override explicitly removed the images too.
+    if defaults.get("images") is None and "vae" not in overrides:
+        defaults["vae"] = None
     return defaults
 
 
@@ -391,7 +424,9 @@ class TestH3AddInjectBehaviorExtra:
         # 16 kHz waveform; sanitize_audio will resample to 32 kHz and trim/pad.
         audio = {"waveform": torch.zeros(1, 16000), "sample_rate": 16000}
         node = H3AddInject()
-        (inject_list,) = node.add_inject(**_make_add_inject_args(audio=audio))
+        (inject_list,) = node.add_inject(
+            **_make_add_inject_args(audio=audio, audio_vae=FakeAudioVAE())
+        )
         inj = inject_list[0]
         assert inj.audio is not None
         # After resampling the sample_rate should be updated to the target.
@@ -411,14 +446,31 @@ class TestH3AddInjectBehaviorExtra:
         (inject_list,) = node.add_inject(**_make_add_inject_args(vae=FakeVAE()))
         assert inject_list[0].video_latent is FakeVAE.sentinel
 
-    def test_audio_latent_is_none_when_no_audio_vae(self):
-        """audio_vae=None → audio_latent=None even when images and audio are present."""
+    def test_audio_without_audio_vae_raises(self):
+        """audio + audio_mode!='drop' + no audio_vae → hard error (was silently dropped)."""
         import torch
 
         audio = {"waveform": torch.zeros(1, 8000), "sample_rate": 16000}
         node = H3AddInject()
-        (inject_list,) = node.add_inject(**_make_add_inject_args(audio=audio, audio_vae=None))
+        with pytest.raises(ValueError, match="audio_vae"):
+            node.add_inject(**_make_add_inject_args(audio=audio, audio_vae=None))
+
+    def test_audio_drop_mode_without_audio_vae_ok(self):
+        """audio_mode='drop' ignores audio content, so no audio_vae is required."""
+        import torch
+
+        audio = {"waveform": torch.zeros(1, 8000), "sample_rate": 16000}
+        node = H3AddInject()
+        (inject_list,) = node.add_inject(
+            **_make_add_inject_args(audio=audio, audio_mode="drop", audio_vae=None)
+        )
         assert inject_list[0].audio_latent is None
+
+    def test_images_without_vae_raises(self):
+        """images + no vae → hard error instead of silently ignored inject content."""
+        node = H3AddInject()
+        with pytest.raises(ValueError, match="vae"):
+            node.add_inject(**_make_add_inject_args(vae=None))
 
 
 class TestH3InjectSamplerBehavior:
@@ -763,6 +815,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         inj = inject_list[0]
         assert inj.source_length == 90
@@ -783,6 +836,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         inj = inject_list[0]
         assert inj.source_length == 39
@@ -803,6 +857,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         inj = inject_list[0]
         assert inj.source_length == 5
@@ -827,7 +882,9 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
                 audio=audio,
+                audio_vae=FakeAudioVAE(),
             )
         inj = inject_list[0]
         assert inj.source_length == 90
@@ -855,6 +912,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         snap_warns = [
             x for x in w if "17n+5" in str(x.message) or "snapping" in str(x.message).lower()
@@ -882,6 +940,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         snap_warns = [
             x for x in w if "17n+5" in str(x.message) or "snapping" in str(x.message).lower()
@@ -906,6 +965,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
 
     def test_error_source_length_1_is_now_valid(self):
@@ -928,6 +988,7 @@ class TestE8LengthSnapping:
             interpolation_type="linear",
             audio_mode="drop",
             images=images,
+            vae=FakeEncodeVAE(),
         )
         inj = inject_list[0]
         assert inj.source_length == 1
@@ -953,6 +1014,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
 
     def test_error_efo_just_over_snapped_length(self):
@@ -970,6 +1032,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
 
     # -- Half-open boundary: efo == snapped_length is ACCEPTED -----------------
@@ -994,6 +1057,7 @@ class TestE8LengthSnapping:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
             )
         inj = inject_list[0]
         assert inj.source_length == 90  # snapped; fails without implementation (would be 100)
@@ -1045,6 +1109,7 @@ class TestE8AudioTailAlignment:
                 audio_mode=audio_mode,
                 images=self._images(frames),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
         return [str(x.message) for x in w if issubclass(x.category, UserWarning)]
 
@@ -1068,7 +1133,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_warn_fade_mode_unfaded_end_non_aligned(self):
@@ -1089,7 +1156,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="fade",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_warn_fade_mode_no_ramp_at_all_non_aligned(self):
@@ -1106,7 +1175,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="fade",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     # -- NO-WARN cases ---------------------------------------------------------
@@ -1134,7 +1205,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_no_warn_fade_mode_faded_through(self):
@@ -1157,7 +1230,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="fade",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
         tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
         assert not tail_warns, "Faded-through tail must NOT trigger tail-alignment warning"
@@ -1182,7 +1257,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=self._images(39),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
         tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
         assert not tail_warns, "Audio-aligned length must NOT trigger tail-alignment warning"
@@ -1204,7 +1281,9 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),  # audio present but mode=drop
+                audio_vae=FakeAudioVAE(),
             )
         tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
         assert not tail_warns, "drop-mode must NOT trigger tail-alignment warning"
@@ -1226,6 +1305,7 @@ class TestE8AudioTailAlignment:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=self._images(56),
+                vae=FakeEncodeVAE(),
                 audio=None,  # no audio
             )
         tail_warns = [x for x in w if "audio-sync-aligned" in str(x.message)]
@@ -1284,6 +1364,7 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=self._images(1),
+                vae=FakeEncodeVAE(),
                 audio=None,
             )
         inj = inject_list[0]
@@ -1314,6 +1395,7 @@ class TestF1SingleFrameInject:
             interpolation_type="linear",
             audio_mode="drop",
             images=self._images(1),
+            vae=FakeEncodeVAE(),
             audio=None,
         )
         inj = inject_list[0]
@@ -1347,6 +1429,7 @@ class TestF1SingleFrameInject:
                     interpolation_type="linear",
                     audio_mode="drop",
                     images=self._images(1),
+                    vae=FakeEncodeVAE(),
                     audio=None,
                 )
 
@@ -1371,6 +1454,7 @@ class TestF1SingleFrameInject:
                     interpolation_type="linear",
                     audio_mode="drop",
                     images=self._images(1),
+                    vae=FakeEncodeVAE(),
                     audio=None,
                 )
         msg = str(exc_info.value)
@@ -1400,7 +1484,9 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=self._images(1),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_single_frame_fade_audio_raises(self):
@@ -1417,7 +1503,9 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="fade",
                 images=self._images(1),
+                vae=FakeEncodeVAE(),
                 audio=self._audio(),
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_single_frame_no_audio_with_keep_mode_succeeds(self):
@@ -1436,6 +1524,7 @@ class TestF1SingleFrameInject:
             interpolation_type="linear",
             audio_mode="keep",
             images=self._images(1),
+            vae=FakeEncodeVAE(),
             audio=None,  # no audio → guard does not fire
         )
         assert inject_list[0].source_length == 1
@@ -1470,7 +1559,9 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="drop",
                 images=images,
+                vae=FakeEncodeVAE(),
                 audio=audio,
+                audio_vae=FakeAudioVAE(),
             )
         audio_tick_warns = [x for x in w if "multiple of 51" in str(x.message)]
         assert not audio_tick_warns, (
@@ -1499,7 +1590,9 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=images,
+                vae=FakeEncodeVAE(),
                 audio=audio,
+                audio_vae=FakeAudioVAE(),
             )
 
     def test_51_warning_suppressed_when_no_audio(self):
@@ -1526,6 +1619,7 @@ class TestF1SingleFrameInject:
                 interpolation_type="linear",
                 audio_mode="keep",
                 images=images,
+                vae=FakeEncodeVAE(),
                 audio=None,  # no audio → %51 warning suppressed
             )
         audio_tick_warns = [x for x in w if "multiple of 51" in str(x.message)]

@@ -59,12 +59,15 @@ def _encode_ref_audio(audio_vae: Any, audio: Any) -> tuple[Any, int]:  # pragma:
     ``torchaudio`` is imported lazily here.  This function requires a real
     H3 audio VAE and is therefore not exercised in CPU unit tests.
     """
-    import torchaudio  # noqa: PLC0415
-
     waveform = audio["waveform"]
     sr = audio["sample_rate"]
     vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
     if sr != vae_sr:
+        # Lazy import: torchaudio is only present in the ComfyUI runtime; when the
+        # waveform is already at the VAE rate (sanitize_audio resamples upstream)
+        # this path — and the dependency — is skipped entirely.
+        import torchaudio  # noqa: PLC0415
+
         waveform = torchaudio.functional.resample(waveform, sr, vae_sr)
     z = audio_vae.encode(waveform[:1].movedim(1, -1))  # [1, 32, 2, T]
     return z, z.shape[-1]
@@ -133,7 +136,9 @@ def _run_sampler(  # pragma: no cover
     from comfyui_h3_blended_inject.sampler import (
         build_conditioning_wrapper,
         build_per_row_sampler_function,
+        quantize_denoise,
         sampler_accepts_noise_sampler,
+        sampler_is_stochastic,
         scale_packed_audio,
     )
 
@@ -189,7 +194,11 @@ def _run_sampler(  # pragma: no cover
     if isinstance(frac_components, dict):
         frac_components = (frac_components["video_mask"],)
     m_packed, _ = _comfy_utils.pack_latents(frac_components)
-    m_packed = m_packed.to(device=clean_packed.device)
+    # Snap m to the native 1/256 mask grid BEFORE it feeds any lever: the DiT's
+    # _token_grid_masks quantizes with ceil(m*256)/256, so pre-quantizing keeps the
+    # init lerp (lever 1), the DiT labels (lever 2), and the denoised correction
+    # (lever 3) on the *identical* per-row m. See sampler.quantize_denoise.
+    m_packed = quantize_denoise(m_packed).to(device=clean_packed.device)
 
     # --- 4. Install the fractional-denoise conditioning + denoised-correction wrapper. ---
     # The wrapper injects the pooled per-row timestep conditioning AND corrects the denoised
@@ -205,6 +214,18 @@ def _run_sampler(  # pragma: no cover
     # --- 5. Wrap the base sampler_function for per-row img2img. ---
     base_ks = comfy.samplers.sampler_object(sampler_name)
     base_fn = base_ks.sampler_function
+    if sampler_is_stochastic(base_fn) and any(r.denoise < 1.0 for r in schedule):
+        import warnings as _warnings
+
+        _warnings.warn(
+            f"H3InjectSampler: sampler '{sampler_name}' is stochastic (ancestral/SDE). "
+            "Per-row img2img compression is NOT scale-invariant under stochastic "
+            "renoise on H3's rectified-flow path; fractional/preserved rows will "
+            "come out corrupted (grey static). Use a deterministic sampler "
+            "(euler, res_multistep, dpmpp_2m).",
+            UserWarning,
+            stacklevel=2,
+        )
     wrapped_fn = build_per_row_sampler_function(
         base_fn,
         m_packed,
@@ -265,6 +286,11 @@ def _run_sampler(  # pragma: no cover
     sigmas = sigmas.to(device)
 
     # --- 8. Sample with noise_mask=None (no native compositing → no compounding ghost). ---
+    # Standard custom-sampler preview callback (same wiring as SamplerCustom): drives the
+    # official latent preview + progress; previewer-override nodes patch inside this path.
+    import latent_preview
+
+    callback = latent_preview.prepare_callback(m, sigmas.shape[-1] - 1)
     out_samples = comfy.sample.sample_custom(
         m,
         noise,
@@ -275,7 +301,7 @@ def _run_sampler(  # pragma: no cover
         effective_negative,
         clean_nested,
         noise_mask=None,
-        callback=None,
+        callback=callback,
         disable_pbar=False,
         seed=noise_seed,
     )
@@ -570,6 +596,20 @@ class H3AddInject:
                 f"start_fade_in={start_fade_in}, start_keyframes={start_keyframes}, "
                 f"end_keyframes={end_keyframes}, end_fade_out={end_fade_out}. "
                 "Must satisfy start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out."
+            )
+
+        # b2. Content without a matching VAE would be SILENTLY dropped downstream
+        #     (build_clean_reference skips injects whose latents are None) — error early.
+        if images is not None and vae is None:
+            raise ValueError(
+                "images were provided but no vae is wired; the inject content cannot be "
+                "encoded and would be silently ignored. Connect the video VAE."
+            )
+        if audio is not None and audio_mode != "drop" and audio_vae is None:
+            raise ValueError(
+                f"audio was provided with audio_mode={audio_mode!r} but no audio_vae is "
+                "wired; the inject audio cannot be encoded and would be silently ignored. "
+                "Connect the audio VAE or set audio_mode='drop'."
             )
 
         # c. Derive source_length and resolution from images if present.
