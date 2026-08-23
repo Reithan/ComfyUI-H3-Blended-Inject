@@ -1,16 +1,20 @@
 """Hold-and-release sampler wrapper for fractional-denoise inject rows.
 
 The hold-and-release mechanism intercepts every model evaluation via
-``model_options["model_function_wrapper"]`` and, for each held row (sigma > row's denoise
-value ``d``), performs two operations:
+``model_options["model_function_wrapper"]`` and, for each held row
+(sigma > ``denoise_to_sigma_threshold(d, stream_shift)``), performs two operations:
 
 1. Overwrites the row in the working sample with
    ``(1 - sigma) * original + sigma * noise``.
 2. Reports the row's denoised prediction as ``original``.
 
-Once sigma falls to ``d`` or below, the row is released — no intervention, no injection
-step.  The held path is exactly where a ``d``-noisy frame belongs at every step, so release
-is the natural absence of intervention.
+Once sigma falls to ``denoise_to_sigma_threshold(d, stream_shift)`` or below, the row is
+released — no intervention, no injection step.  The threshold maps the user's img2img
+denoise fraction ``d`` (schedule position ``t = d``) to the raw shifted sigma at that
+schedule position via ComfyUI's ``time_snr_shift`` formula, so that video and audio rows
+both release at the same schedule position ``t = d`` despite their different shift factors.
+The held path is exactly where a ``d``-noisy frame belongs at every step, so release is
+the natural absence of intervention.
 
 Audio rows use the shifted audio sigma (from
 :func:`~comfyui_h3_blended_inject.constants.time_shift_sigma`) and the sampler's internal
@@ -97,10 +101,12 @@ def hold_value(
 
 
 def is_held(sigma: float, d: float) -> bool:
-    """Return True while the current sigma exceeds the row's denoise value ``d``.
+    """Return True while the current sigma exceeds ``d``.
 
     The row is held (intervention active) when ``sigma > d``.  At ``sigma <= d`` the row is
-    released and the hold-and-release mechanism stops touching it.
+    released and the hold-and-release mechanism stops touching it.  In the wrapper, ``d`` is
+    the stream-specific sigma threshold returned by :func:`denoise_to_sigma_threshold`, NOT
+    the raw user denoise fraction.
 
     Parameters
     ----------
@@ -108,8 +114,9 @@ def is_held(sigma: float, d: float) -> bool:
         Current sigma for this stream (video sigma for video rows, shifted audio sigma for
         audio ticks).
     d:
-        Row denoise value in [0.0, 1.0].  Rows with ``d == 0.0`` route to the derived mask,
-        not to hold-and-release, so this predicate is only called for fractional-d rows.
+        Threshold sigma value.  In the wrapper this is
+        ``denoise_to_sigma_threshold(row_s.denoise, stream_shift)`` — the raw shifted sigma
+        at schedule position ``t = row_s.denoise``.
 
     Returns
     -------
@@ -117,6 +124,47 @@ def is_held(sigma: float, d: float) -> bool:
         ``True`` if ``sigma > d``, ``False`` otherwise.
     """
     return sigma > d
+
+
+def denoise_to_sigma_threshold(d: float, shift: float) -> float:
+    """Map an img2img denoise fraction ``d`` to the raw shifted sigma at schedule position t=d.
+
+    The user's ``min_denoise`` value ``d`` is an img2img denoise-strength fraction — a
+    schedule position ``t = d``, not a raw sigma.  The H3 sampler shift-warps the schedule
+    via ComfyUI's ``time_snr_shift(alpha, t) = alpha * t / (1 + (alpha - 1) * t)``.  Because
+    of the warp, raw sigma stays above ``d`` for most of the schedule (for ``d = 0.6`` and
+    shift = 12, sigma stays above 0.6 for ~89% of steps).  Comparing sigma directly to ``d``
+    keeps the row held far too long.
+
+    This function inverts that distortion: given the user's denoise fraction ``d`` and the
+    stream's shift factor, it returns the raw sigma value at which the schedule position
+    equals ``d``.  The hold RELEASES when sigma falls to or below this threshold — the same
+    schedule moment for video (shift ≈ 12) and audio (shift ≈ 3), keeping AV release aligned.
+
+    Parameters
+    ----------
+    d:
+        User-supplied img2img denoise fraction in [0, 1].  Interpreted as schedule position
+        ``t = d``, not a raw sigma.
+    shift:
+        Sigma shift factor for this stream (``shift_v`` for video, ``shift_a`` for audio).
+        Matches the ``alpha`` parameter in ComfyUI's ``time_snr_shift``.
+
+    Returns
+    -------
+    float
+        Raw shifted sigma at schedule position ``t = d``.  Equal to
+        ``shift * d / (1 + (shift - 1) * d)``.  Returns ``d`` unchanged when ``shift == 1.0``
+        (unshifted schedule; avoids a mathematically degenerate expression).
+
+    Notes
+    -----
+    The formula is ComfyUI's ``time_snr_shift`` evaluated at ``t = d``:
+    ``sigma = alpha * t / (1 + (alpha - 1) * t)`` from ``comfy/model_sampling.py:279``.
+    """
+    if shift == 1.0:
+        return d
+    return shift * d / (1.0 + (shift - 1.0) * d)
 
 
 def audio_internal_scale(
@@ -319,12 +367,15 @@ def build_model_function_wrapper(
         # Only 'hold' region rows receive the input write; 'fade' rows skip this step
         # entirely (writing the input drains the sampler's noise budget and kills the fade).
         # 'preserve' and 'free' rows are never touched.
+        # The hold RELEASE threshold is denoise_to_sigma_threshold(d, shift_v) — the raw
+        # shifted sigma at schedule position t=d.  This keeps video and audio aligned at t=d.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
+            v_thresh = denoise_to_sigma_threshold(row_s.denoise, shift_v)
             if (
                 row_s.region == "hold"
                 and row_idx in per_row_original
-                and is_held(sigma_video, row_s.denoise)
+                and is_held(sigma_video, v_thresh)
             ):
                 hv = hold_value(per_row_original[row_idx], per_row_noise[row_idx], sigma_video)
                 video_edit[:, :, row_idx : row_idx + 1, :, :] = hv
@@ -332,9 +383,11 @@ def build_model_function_wrapper(
         # Step 4: Write held AUDIO ticks (audio_t dim 3).
         # audio_row_original[tick] has shape [1, C_a, 2, 1]; broadcasts across B.
         # 'hold' ticks only; 'fade' ticks skip the input write.
+        # Audio threshold uses shift_a so audio release aligns with video at the same t=d.
         for tick, d in tick_denoise.items():
             r = tick_region[tick]
-            if r == "hold" and tick in audio_row_original and is_held(sigma_audio, d):
+            a_thresh = denoise_to_sigma_threshold(d, shift_a)
+            if r == "hold" and tick in audio_row_original and is_held(sigma_audio, a_thresh):
                 held_audio = hold_value(
                     audio_row_original[tick], audio_row_noise[tick], sigma_audio
                 )
@@ -355,13 +408,15 @@ def build_model_function_wrapper(
 
         # Apply prediction edits per video row region:
         #   'hold': overwrite prediction with original (binary hold — sigma-gated).
+        #           Release threshold: denoise_to_sigma_threshold(d, shift_v) (t=d).
         #   'fade': blend prediction permanently: (1-d)*original + d*model_pred.
         #   'preserve'/'free': untouched.
         for row_s in sorted_schedule:
             row_idx = row_s.row_idx
             if row_idx not in per_row_original:
                 continue
-            if row_s.region == "hold" and is_held(sigma_video, row_s.denoise):
+            v_thresh = denoise_to_sigma_threshold(row_s.denoise, shift_v)
+            if row_s.region == "hold" and is_held(sigma_video, v_thresh):
                 pred_video_edit[:, :, row_idx : row_idx + 1, :, :] = per_row_original[row_idx]
             elif row_s.region == "fade":
                 d = row_s.denoise
@@ -372,13 +427,15 @@ def build_model_function_wrapper(
 
         # Apply prediction edits per audio tick region:
         #   'hold': overwrite prediction with original at internal scale (sigma-gated).
+        #           Release threshold: denoise_to_sigma_threshold(d, shift_a) (t=d).
         #   'fade': blend prediction: (1-d)*original*scale + d*model_pred_tick.
         #   'preserve'/'free': untouched.
         for tick, d in tick_denoise.items():
             r = tick_region[tick]
             if tick not in audio_row_original:
                 continue
-            if r == "hold" and is_held(sigma_audio, d):
+            a_thresh = denoise_to_sigma_threshold(d, shift_a)
+            if r == "hold" and is_held(sigma_audio, a_thresh):
                 pred_audio_edit[:, :, :, tick : tick + 1] = audio_internal_scale(
                     audio_row_original[tick], sigma_audio, audio_scale_factor
                 )
