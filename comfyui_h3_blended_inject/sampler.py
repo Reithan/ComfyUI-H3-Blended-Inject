@@ -219,7 +219,7 @@ def _make_per_row_noise_sampler(
     return noise_sampler
 
 
-def _default_noise_sampler_factory(
+def _default_noise_sampler_factory(  # pragma: no cover
     x: torch.Tensor, seed: int | None = None
 ) -> Callable[[Any, Any], torch.Tensor]:
     """Lazily build ComfyUI's ``default_noise_sampler(x, seed=seed)``.
