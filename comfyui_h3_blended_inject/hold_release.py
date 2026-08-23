@@ -159,6 +159,8 @@ def build_model_function_wrapper(
     latent_shapes: list[tuple[int, ...]],
     target_rows: int,
     audio_ticks: int,
+    default_shift_video: float = 12.0,
+    default_shift_audio: float = 3.0,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
     """Return a ``model_function_wrapper`` callable implementing hold-and-release.
 
@@ -220,6 +222,15 @@ def build_model_function_wrapper(
     audio_ticks:
         Total number of audio ticks in the AV latent (the ``audio_ticks`` from the
         sampler).  Used with ``target_rows`` to compute canonical per-row tick ranges.
+    default_shift_video:
+        Fallback video sigma shift used to compute ``sigma_audio`` when
+        ``transformer_options`` does not supply ``"minimax_h3_sigma_shift_video"``.
+        Pass the DiT constructor default read from ``model.diffusion_model.sigma_shift_video``
+        (typically 12.0 for H3).
+    default_shift_audio:
+        Fallback audio sigma shift used when ``transformer_options`` does not supply
+        ``"minimax_h3_sigma_shift_audio"``.  Pass the DiT constructor default read from
+        ``model.diffusion_model.sigma_shift_audio`` (typically 3.0 for H3).
 
     Returns
     -------
@@ -232,6 +243,12 @@ def build_model_function_wrapper(
     -----
     The wrapper receives the raw k-diffusion sigma in [0, 1] as ``args_dict["timestep"]``; the
     ×1000 model-timestep conversion happens later inside ``_apply_model``.
+
+    Sigma shifts are sourced the same way the real DiT does it (``model.py:533-534``):
+    ``args_dict["c"]["transformer_options"]`` is checked first for
+    ``"minimax_h3_sigma_shift_video"`` and ``"minimax_h3_sigma_shift_audio"`` (written by the
+    ``MiniMax H3 Sigma Shift`` node); ``default_shift_video``/``default_shift_audio`` are used
+    as fallback.
 
     Cond-batching: ``args_dict["input"]`` batch dim may be > 1 when cond/uncond are
     concatenated by ``calc_cond_batch``.  Held-row writes use ``[:, :, t:t+1, :, :]``
@@ -259,7 +276,12 @@ def build_model_function_wrapper(
 
         # Step 1: Recover sigma from timestep (raw k-diffusion sigma in [0, 1]).
         sigma_video = float(args_dict["timestep"].flatten()[0].item())
-        sigma_audio = _constants.time_shift_sigma(sigma_video)
+        # Source sigma shifts from transformer_options the same way the DiT does
+        # (model.py:533-534), falling back to the DiT constructor defaults.
+        topts = args_dict.get("c", {}).get("transformer_options", {}) or {}
+        shift_v = float(topts.get("minimax_h3_sigma_shift_video", default_shift_video))
+        shift_a = float(topts.get("minimax_h3_sigma_shift_audio", default_shift_audio))
+        sigma_audio = _constants.time_shift_sigma(sigma_video, shift_v, shift_a)
 
         # Step 2: Unpack the packed AV latent into video and audio streams.
         # latent_shapes is closure-captured; unpack_latents keys element counts off

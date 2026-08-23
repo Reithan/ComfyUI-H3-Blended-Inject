@@ -180,6 +180,14 @@ def _run_sampler(  # pragma: no cover
 
     _, latent_shapes = _comfy_utils.pack_latents(latent_image["samples"].unbind())
 
+    # Read DiT sigma-shift constructor defaults from the live model.  These are the
+    # fallback values used when transformer_options does not supply the runtime keys
+    # "minimax_h3_sigma_shift_video" / "_audio" (model.py:533-534).
+    # m.model is the BaseModel subclass (MiniMaxH3); .diffusion_model is the DiT.
+    _dit = getattr(m.model, "diffusion_model", None)
+    default_shift_video = float(getattr(_dit, "sigma_shift_video", 12.0))
+    default_shift_audio = float(getattr(_dit, "sigma_shift_audio", 3.0))
+
     wrapper = build_model_function_wrapper(
         schedule,
         per_row_original,
@@ -190,6 +198,8 @@ def _run_sampler(  # pragma: no cover
         latent_shapes=latent_shapes,
         target_rows=target_rows,
         audio_ticks=audio_ticks,
+        default_shift_video=default_shift_video,
+        default_shift_audio=default_shift_audio,
     )
     m.model_options = {**m.model_options, "model_function_wrapper": wrapper}
 
