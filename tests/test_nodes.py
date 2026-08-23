@@ -19,6 +19,7 @@ from comfyui_h3_blended_inject.nodes import (
     NODE_DISPLAY_NAME_MAPPINGS,
     H3AddInject,
     H3InjectSampler,
+    _unpack_av,
 )
 from comfyui_h3_blended_inject.schedule import Inject
 
@@ -103,6 +104,66 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
     if defaults.get("images") is None and "vae" not in overrides:
         defaults["vae"] = None
     return defaults
+
+
+# ---------------------------------------------------------------------------
+# _unpack_av
+# ---------------------------------------------------------------------------
+
+
+class TestUnpackAv:
+    """Direct unit tests for the _unpack_av helper (nodes.py:77).
+
+    _unpack_av is called only from _run_sampler (# pragma: no cover), so its body
+    never executes during the GPU path.  These tests exercise both branches directly.
+    """
+
+    def test_nested_with_audio_returns_both_components(self) -> None:
+        """NestedTensor path: is_nested=True, unbind() returns [video, audio]."""
+        video = object()
+        audio = object()
+
+        class FakeNested:
+            is_nested = True
+
+            def unbind(self) -> list[object]:
+                return [video, audio]
+
+        result_video, result_audio = _unpack_av(FakeNested())
+        assert result_video is video
+        assert result_audio is audio
+
+    def test_nested_without_audio_returns_none_audio(self) -> None:
+        """NestedTensor path with only one component: audio is None."""
+        video = object()
+
+        class FakeNestedVideoOnly:
+            is_nested = True
+
+            def unbind(self) -> list[object]:
+                return [video]
+
+        result_video, result_audio = _unpack_av(FakeNestedVideoOnly())
+        assert result_video is video
+        assert result_audio is None
+
+    def test_plain_tensor_returns_samples_and_none(self) -> None:
+        """Non-nested path: no is_nested attribute → (samples, None)."""
+        plain = object()
+        result_video, result_audio = _unpack_av(plain)
+        assert result_video is plain
+        assert result_audio is None
+
+    def test_is_nested_false_treated_as_plain(self) -> None:
+        """Explicit is_nested=False is treated the same as a plain tensor."""
+
+        class FakeNotNested:
+            is_nested = False
+
+        fake = FakeNotNested()
+        result_video, result_audio = _unpack_av(fake)
+        assert result_video is fake
+        assert result_audio is None
 
 
 # ---------------------------------------------------------------------------
