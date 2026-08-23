@@ -294,6 +294,22 @@ def build_model_function_wrapper(
         video, audio = unpacked[0], unpacked[1]
         # video: [B, C_v, T, Hl, Wl]   audio: [B, C_a, 2, audio_t]
 
+        # Align pre-encoded per-row/tick tensors (built on CPU in _run_sampler) to the
+        # working stream's runtime device/dtype. comfy.sample moves the latent to the
+        # sampling device (e.g. cuda) after the dicts are built, so without this the
+        # hold/fade arithmetic below mixes cpu and cuda tensors and raises. .to() is a
+        # no-op returning the same tensor once already aligned, so later steps are free.
+        _vd, _vt = video.device, video.dtype
+        for _k in per_row_original:
+            per_row_original[_k] = per_row_original[_k].to(device=_vd, dtype=_vt)
+        for _k in per_row_noise:
+            per_row_noise[_k] = per_row_noise[_k].to(device=_vd, dtype=_vt)
+        _ad, _at = audio.device, audio.dtype
+        for _k in audio_row_original:
+            audio_row_original[_k] = audio_row_original[_k].to(device=_ad, dtype=_at)
+        for _k in audio_row_noise:
+            audio_row_noise[_k] = audio_row_noise[_k].to(device=_ad, dtype=_at)
+
         # Work on fresh copies — never mutate sampler-owned tensors.
         video_edit = video.clone()
         audio_edit = audio.clone()
