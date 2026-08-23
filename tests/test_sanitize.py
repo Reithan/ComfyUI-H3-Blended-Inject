@@ -685,25 +685,66 @@ class TestSnapLengthDown:
         assert result == 107
         assert not [x for x in w if issubclass(x.category, UserWarning)]
 
-    # -- ValueError when source_length < 5 -------------------------------------
+    # -- F=1 special case: single frame returns 1 with no warning ---------------
+
+    def test_single_frame_returns_1_no_warning(self):
+        """source_length=1 → return 1 unchanged; no UserWarning emitted.
+
+        Valid set is {1} ∪ {17n+5}; the H3 VAE single-frame path produces exactly
+        1 latent row, so length 1 is a first-class valid inject length.
+        FAIL-THEN-PASS: Before this change, snap_length_down(1) raises ValueError
+        (caught by the old 'source_length < 5' guard); after it returns 1.
+        """
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = snap_length_down(1)
+        assert result == 1
+        snap_warns = [x for x in w if issubclass(x.category, UserWarning)]
+        assert not snap_warns, "No warning expected for single-frame (keyframe) length"
+
+    # -- Lengths 2, 3, 4 are explicitly invalid --------------------------------
+
+    def test_error_2_raises(self):
+        """source_length=2 → ValueError: not 1 frame and not >= 5 (17n+5).
+
+        FAIL-THEN-PASS: Before this change the error message doesn't mention '1 frame';
+        the test matches the new guidance message.
+        """
+        with pytest.raises(ValueError, match="1 frame"):
+            snap_length_down(2)
+
+    def test_error_3_raises(self):
+        """source_length=3 → ValueError with guidance about valid lengths."""
+        with pytest.raises(ValueError, match="1 frame"):
+            snap_length_down(3)
+
+    def test_error_4_raises_with_guidance(self):
+        """source_length=4 → ValueError with guidance about valid lengths.
+
+        FAIL-THEN-PASS: The new error message mentions '1 frame'; the old message does not.
+        """
+        with pytest.raises(ValueError, match="1 frame"):
+            snap_length_down(4)
+
+    # -- ValueError when source_length < 1 -------------------------------------
 
     def test_error_4(self):
-        """4 < 5 → ValueError."""
+        """4 is now in the 'invalid 2-4' set → still ValueError."""
         with pytest.raises(ValueError):
             snap_length_down(4)
 
     def test_error_0(self):
-        """0 < 5 → ValueError."""
+        """0 < 1 → ValueError."""
         with pytest.raises(ValueError):
             snap_length_down(0)
 
     def test_error_negative(self):
-        """-1 < 5 → ValueError."""
+        """-1 < 1 → ValueError."""
         with pytest.raises(ValueError):
             snap_length_down(-1)
 
     def test_error_message_mentions_5(self):
-        """Error message should mention the minimum valid length (5)."""
+        """Error message for lengths 2-4 should mention the minimum valid clip length (5)."""
         with pytest.raises(ValueError, match="5"):
             snap_length_down(3)
 

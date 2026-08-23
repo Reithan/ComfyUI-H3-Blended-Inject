@@ -119,47 +119,57 @@ def snap_inject_at_audio_tick(inject_at: int) -> int:
 
 
 def snap_length_down(source_length: int) -> int:
-    """Snap injected content length down to the largest valid H3 clip length (17n+5).
+    """Snap injected content length down to the nearest valid H3 inject length.
 
-    Valid H3 clip lengths are ``17n + 5`` for n >= 0: 5, 22, 39, 56, 73, 90, 107, …
-    A length is valid iff ``source_length >= 5 and (source_length - 5) % 17 == 0``.
-    Already-valid lengths are returned unchanged with no warning.
+    The valid inject-length set is ``{1} ∪ {17n + 5}`` for n >= 0:
+    1, 5, 22, 39, 56, 73, 90, 107, …
 
-    The snap-down formula is ``5 + 17 * ((source_length - 5) // 17)``.
+    - ``source_length == 1`` (single keyframe): returned as-is with no warning.
+      The H3 VAE encodes a single input frame to exactly 1 latent row via a
+      dedicated single-frame path — placement on a chunk boundary is enforced
+      separately by the inject node.
+    - ``source_length >= 5``: snapped down to ``5 + 17 * ((source_length - 5) // 17)``.
+      Already-valid 17n+5 lengths are returned unchanged with no warning.
 
-    Note: this snaps only to the video-grid lattice (17n+5), NOT to the stricter
-    joint audio+video lattice (51n+39 = 39, 90, 141, …).  A non-audio-aligned valid
-    length mismatches audio by at most ~17 ms confined to the last 1–2 audio ticks
+    Note: multi-frame snapping uses only the video-grid lattice (17n+5), NOT the
+    stricter joint audio+video lattice (51n+39 = 39, 90, 141, …).  A non-audio-aligned
+    valid length mismatches audio by at most ~17 ms confined to the last 1–2 audio ticks
     (tail-local, no global desync, no hard assert in the model), so the joint lattice
     is only precision-optimal, not required.
 
     Parameters
     ----------
     source_length:
-        Total number of source frames in the injected content.  Must be >= 5
-        (the minimum valid H3 clip length).
+        Total number of source frames in the injected content.  Must be 1 or >= 5.
+        Lengths 2, 3, 4 are not valid H3 inject lengths and always raise ``ValueError``.
 
     Returns
     -------
     int
-        Snapped length: ``5 + 17 * ((source_length - 5) // 17)``.
-        Equal to ``source_length`` when already valid.
+        - ``1`` when ``source_length == 1`` (no warning).
+        - ``5 + 17 * ((source_length - 5) // 17)`` when ``source_length >= 5``.
+          Equal to ``source_length`` when already a valid 17n+5 value.
 
     Warns
     -----
     UserWarning
-        If ``source_length`` is not already a valid ``17n+5`` length.  Message includes
-        the original length, the snapped length, and the number of frames discarded.
+        If ``source_length >= 5`` and is not already a valid ``17n+5`` length.
+        Message includes the original length, the snapped length, and the number of
+        frames discarded.  No warning is emitted for ``source_length == 1``.
 
     Raises
     ------
     ValueError
-        If ``source_length < 5`` (the minimum valid H3 clip length is 5 frames).
+        If ``source_length < 1`` or ``source_length in {2, 3, 4}``.
     """
-    if source_length < 5:
+    if source_length < 1:
+        raise ValueError(f"source_length={source_length} must be at least 1.")
+    if source_length == 1:
+        return 1
+    if source_length in (2, 3, 4):
         raise ValueError(
-            f"source_length={source_length} is below the minimum valid H3 clip length of "
-            "5 frames. Valid clip lengths are 17n+5: 5, 22, 39, 56, 73, 90, …"
+            f"H3 inject content must be exactly 1 frame (single keyframe) or a valid clip "
+            f"length >= 5 (17n+5: 5, 22, 39, ...); got {source_length}."
         )
     snapped = 5 + 17 * ((source_length - 5) // 17)
     if snapped != source_length:

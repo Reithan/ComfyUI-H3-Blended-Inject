@@ -913,22 +913,29 @@ class TestE8LengthSnapping:
                 images=images,
             )
 
-    def test_error_source_length_1(self):
-        """source_length=1 < 5 → ValueError."""
+    def test_error_source_length_1_is_now_valid(self):
+        """source_length=1 at a valid chunk boundary with audio_mode='drop' succeeds.
+
+        F=1 is now a first-class valid inject length (single-keyframe path).
+        This test was updated from 'expects ValueError' to 'expects success' when the
+        valid-length set changed from {17n+5} to {1} ∪ {17n+5}.
+        inject_at=0 is a multiple of 17 and audio_mode='drop' → all guards pass.
+        """
         node = H3AddInject()
         images = self._images(1)
-        with pytest.raises(ValueError):
-            node.add_inject(
-                inject_at=0,
-                start_fade_in=0,
-                start_keyframes=0,
-                end_keyframes=0,
-                end_fade_out=0,
-                min_denoise=0.0,
-                interpolation_type="linear",
-                audio_mode="drop",
-                images=images,
-            )
+        (inject_list,) = node.add_inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.0,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=images,
+        )
+        inj = inject_list[0]
+        assert inj.source_length == 1
 
     # -- Hard error: fade index outside post-trim context ----------------------
 
