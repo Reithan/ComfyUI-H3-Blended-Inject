@@ -24,6 +24,7 @@ from comfyui_h3_blended_inject import constants
 from comfyui_h3_blended_inject.hold_release import (
     audio_internal_scale,
     build_model_function_wrapper,
+    denoise_to_sigma_threshold,
     draw_row_noise,
     hold_value,
     is_held,
@@ -383,7 +384,7 @@ class TestBuildModelFunctionWrapper:
         pass after.
         """
         denoise = 0.3
-        sigma = 0.7  # sigma > denoise => all rows held
+        sigma = 0.9  # sigma > denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 => all rows held
         (
             schedule,
             per_row_original,
@@ -474,7 +475,7 @@ class TestBuildModelFunctionWrapper:
     ) -> None:
         """Held video rows: wrapper overwrites returned prediction with per_row_original."""
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 => rows held
         (
             schedule,
             per_row_original,
@@ -594,7 +595,7 @@ class TestBuildModelFunctionWrapper:
     ) -> None:
         """Wrapper must not mutate the caller's packed input tensor in place."""
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 → hold path active
         (
             schedule,
             per_row_original,
@@ -645,7 +646,7 @@ class TestBuildModelFunctionWrapper:
         This test MUST fail before the wrapper indexing fix and pass after.
         """
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 => row held
         target_row = 1  # middle row to avoid boundary ambiguity
         (
             schedule,
@@ -698,7 +699,7 @@ class TestBuildModelFunctionWrapper:
         This test MUST fail before the fix and pass after.
         """
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 => all rows held
         (
             schedule,
             per_row_original,
@@ -866,15 +867,19 @@ class TestSigmaRecovery:
     ) -> None:
         """Wrapper holds a fractional-denoise row when timestep carries raw sigma [0,1].
 
-        Constructs args_dict with timestep=tensor([0.5]) — the raw sigma as ComfyUI
+        Constructs args_dict with timestep=tensor([0.9]) — the raw sigma as ComfyUI
         actually sends it.  Asserts that the apply_model input has been overwritten with
-        hold_value(original, noise, 0.5) for the held video row.
+        hold_value(original, noise, 0.9) for the held video row.
 
-        FAILS against pre-fix code (sigma_video = 0.5/1000 = 0.0005, not held).
-        PASSES after fix (sigma_video = 0.5, held because 0.5 > 0.3).
+        sigma=0.9 is above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837, so the row
+        is held.  If the wrapper divided timestep by 1000 (pre-fix bug), sigma_video
+        would be 0.0009, which is below 0.837, so the row would NOT be held.
+
+        FAILS against pre-fix code (sigma_video = 0.9/1000 = 0.0009, not held).
+        PASSES after fix (sigma_video = 0.9, held because 0.9 > threshold ≈ 0.837).
         """
-        raw_sigma = 0.5
-        denoise = 0.3  # 0.5 > 0.3 → row must be held
+        raw_sigma = 0.9
+        denoise = 0.3  # threshold ≈ 0.837; 0.9 > 0.837 → row must be held
 
         (
             schedule,
@@ -923,27 +928,31 @@ class TestSigmaRecovery:
             actual = video_in[:, :, i : i + 1, :, :]
             assert torch.allclose(actual, expected.expand_as(actual), atol=1e-6), (
                 f"Video row {i}: wrapper must hold it when raw_sigma={raw_sigma} > "
-                f"denoise={denoise}. Pre-fix: sigma_video=0.0005 → not held. "
-                f"Post-fix: sigma_video=0.5 → held."
+                f"threshold≈0.837 (denoise={denoise}, shift=12). "
+                f"Pre-fix: sigma_video=0.0009 (÷1000) → not held. "
+                f"Post-fix: sigma_video=0.9 → held (0.9 > 0.837)."
             )
 
     def test_audio_sigma_uses_transformer_options_shift(self, fake_comfy: types.ModuleType) -> None:
         """Wrapper reads sigma shifts from transformer_options, not hardcoded defaults.
 
-        At sigma_video=0.5 and denoise=0.25:
-          - default shifts (12.0, 3.0): sigma_audio ≈ 0.200 < denoise=0.25 → NOT held
-          - override shift_v=8.0:       sigma_audio ≈ 0.273 > denoise=0.25 → IS held
+        At sigma_video=0.5 and denoise=0.1:
+          - default shifts (12.0, 3.0): sigma_audio ≈ 0.200
+            audio threshold = denoise_to_sigma_threshold(0.1, 3.0) = 0.25
+            0.200 < 0.25 → NOT held
+          - override shift_v=8.0: sigma_audio ≈ 0.273
+            0.273 > 0.25 → IS held
 
         The test asserts that WITH the transformer_options override, audio tick 0 is
         held (its value differs from the background fill of 200.0).
 
         FAILS against code that ignores transformer_options (hardcoded 12.0 keeps
-        sigma_audio ≈ 0.200, below denoise=0.25, so no audio tick is ever held).
+        sigma_audio ≈ 0.200, below the threshold 0.25, so no audio tick is ever held).
         PASSES once the wrapper reads the override key and calls time_shift_sigma with
-        shift_v=8.0, raising sigma_audio above the 0.25 threshold.
+        shift_v=8.0, raising sigma_audio above the threshold.
         """
         sigma_video = 0.5
-        denoise = 0.25  # audio held only when sigma_audio > 0.25
+        denoise = 0.1  # audio threshold = denoise_to_sigma_threshold(0.1, 3.0) = 0.25
         (
             schedule,
             per_row_original,
@@ -990,12 +999,13 @@ class TestSigmaRecovery:
         tick0_value = audio_in[:, :, :, 0].mean().item()
         assert tick0_value != 200.0, (
             f"Audio tick 0 must be held when transformer_options sets shift_v=8.0 "
-            f"(sigma_audio ≈ 0.273 > denoise=0.25), but got fill value {tick0_value:.3f}. "
+            f"(sigma_audio ≈ 0.273 > threshold=0.25 [denoise=0.1, shift_a=3.0]), "
+            f"but got fill value {tick0_value:.3f}. "
             "Ensure the wrapper reads transformer_options['minimax_h3_sigma_shift_video']."
         )
 
         # Also confirm that WITHOUT the override (default shift 12.0, sigma_audio ≈ 0.200),
-        # the same tick is NOT held.
+        # the same tick is NOT held (0.200 < threshold=0.25).
         received.clear()
         args_no_override = _args_dict(packed_input, sigma_video)  # "c": {}
         wrapper(mock_apply_model, args_no_override)
@@ -1005,7 +1015,7 @@ class TestSigmaRecovery:
         tick0_no = audio_no[:, :, :, 0].mean().item()
         assert tick0_no == 200.0, (
             f"Audio tick 0 must NOT be held with default shifts (sigma_audio ≈ 0.200 < "
-            f"denoise=0.25), but got {tick0_no:.3f}."
+            f"threshold=0.25 [denoise=0.1, shift_a=3.0]), but got {tick0_no:.3f}."
         )
 
 
@@ -1310,9 +1320,9 @@ class TestWrapperHoldRowRegion:
     """
 
     def test_hold_row_input_written_when_sigma_above_d(self, fake_comfy: types.ModuleType) -> None:
-        """Hold row at sigma > d: apply_model receives hold_value in the input."""
+        """Hold row at sigma > threshold: apply_model receives hold_value in the input."""
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 → held
         (
             schedule,
             per_row_original,
@@ -1398,9 +1408,9 @@ class TestWrapperHoldRowRegion:
     def test_hold_row_prediction_overwritten_with_original_when_sigma_above_d(
         self, fake_comfy: types.ModuleType
     ) -> None:
-        """Hold row at sigma > d: prediction row is overwritten with original."""
+        """Hold row at sigma > threshold: prediction row is overwritten with original."""
         denoise = 0.3
-        sigma = 0.7
+        sigma = 0.9  # above denoise_to_sigma_threshold(0.3, 12.0) ≈ 0.837 → held
         (
             schedule,
             per_row_original,
@@ -1848,7 +1858,7 @@ class TestWrapperDeviceAlignment:
         PASSES after fix: per-row dicts aligned to meta before hold logic executes.
         """
         denoise = 0.3
-        sigma = 0.7  # sigma > d → is_held True → hold input-write and pred overwrite active
+        sigma = 0.9  # above threshold ≈ 0.837 → is_held True → hold input-write active
         (
             schedule,
             per_row_original,
@@ -1880,3 +1890,205 @@ class TestWrapperDeviceAlignment:
         assert result.device.type == "meta", (
             f"Result must be on meta device (matches working stream), got {result.device}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for threshold-fix (task #29):
+# map user d (schedule position) to shifted sigma threshold.
+# ---------------------------------------------------------------------------
+# All tests in this class are FAIL-THEN-PASS verified:
+#   - FAIL on the pre-fix code where the wrapper compared sigma directly to raw d.
+#   - PASS on the post-fix code where the wrapper uses denoise_to_sigma_threshold(d, shift).
+# ---------------------------------------------------------------------------
+
+
+class TestDenoiseThresholdFix:
+    """Regression tests for the hold-release threshold fix (task #29).
+
+    Pre-fix: ``is_held(sigma, d)`` compared raw sigma against raw user denoise ``d``.
+    Post-fix: threshold = ``denoise_to_sigma_threshold(d, shift)`` — the shifted sigma at
+    schedule position ``t=d`` — is used, so video and audio both release at ``t=d``.
+    """
+
+    # -----------------------------------------------------------------------
+    # (a) Numeric value + is_held gating witness for d=0.6, shift=12
+    # -----------------------------------------------------------------------
+
+    def test_threshold_value_d06_shift12(self) -> None:
+        """denoise_to_sigma_threshold(0.6, 12.0) == 12*0.6/(1+11*0.6) == 7.2/7.6 ≈ 0.9474.
+
+        Pre-fix this would compare sigma against raw d=0.6; at sigma=0.8 the row was HELD
+        (0.8 > 0.6).  Post-fix the threshold is ≈0.9474; at sigma=0.8 the row is RELEASED
+        (0.8 < 0.9474) — so the frame gets denoised rather than frozen.
+
+        FAILS pre-fix: denoise_to_sigma_threshold does not exist.
+        PASSES post-fix: function exists and returns the correct value.
+        """
+        expected = 12.0 * 0.6 / (1.0 + 11.0 * 0.6)  # 7.2 / 7.6 ≈ 0.94736842...
+        thresh = denoise_to_sigma_threshold(0.6, 12.0)
+        assert abs(thresh - expected) < 1e-9, (
+            f"denoise_to_sigma_threshold(0.6, 12.0): expected {expected:.9f}, got {thresh:.9f}"
+        )
+
+    def test_is_held_gating_witness_d06_shift12(self) -> None:
+        """Behavior-change witness for d=0.6, shift=12.0 at sigma=0.8.
+
+        Pre-fix: is_held(0.8, raw_d=0.6) = True  — row HELD (frozen, no denoising).
+        Post-fix: is_held(0.8, thresh≈0.947) = False — row RELEASED (denoising allowed).
+
+        This is the exact symptom reported: a single-frame inject at min_denoise=0.6
+        came out identical to the input because the row was held for ~89% of the schedule.
+
+        FAILS pre-fix: no denoise_to_sigma_threshold; raw-d comparison gives True for sigma=0.8.
+        PASSES post-fix: threshold≈0.947 > 0.8 — row released at sigma=0.8.
+        """
+        d = 0.6
+        sigma = 0.8
+        thresh = denoise_to_sigma_threshold(d, 12.0)
+        # Post-fix: sigma=0.8 is BELOW the threshold -> released
+        assert not is_held(sigma, thresh), (
+            f"Post-fix: is_held({sigma}, thresh={thresh:.4f}) must be False "
+            f"(sigma < threshold -> row released, denoising allowed)"
+        )
+        # Verify the pre-fix behavior that caused the bug (direct d comparison)
+        assert is_held(sigma, d), (
+            f"Pre-fix witness: is_held({sigma}, raw_d={d}) = True "
+            f"(row incorrectly held at sigma=0.8 under old direct-d comparison)"
+        )
+
+    # -----------------------------------------------------------------------
+    # (b) AV sync: both thresholds map back to the same schedule position t=d
+    # -----------------------------------------------------------------------
+
+    def test_av_sync_thresholds_recover_same_schedule_position(self) -> None:
+        """For any d, both video and audio thresholds correspond to the same t=d.
+
+        The analytic inverse of time_snr_shift is t = sigma / (shift + sigma*(1-shift)).
+        Applying this inverse to each stream's threshold must recover t=d exactly,
+        proving both streams release at the same schedule position regardless of shift.
+
+        This is a pure-math test (no wrapper or tensors) that confirms AV sync.
+
+        FAILS pre-fix: denoise_to_sigma_threshold does not exist.
+        PASSES post-fix: inverse maps both thresholds back to d within floating-point tolerance.
+        """
+        for d in [0.1, 0.3, 0.6, 0.9]:
+            shift_v, shift_a = 12.0, 3.0
+            thresh_v = denoise_to_sigma_threshold(d, shift_v)
+            thresh_a = denoise_to_sigma_threshold(d, shift_a)
+            # Analytic inverse: t = sigma / (shift + sigma*(1 - shift))
+            t_from_v = thresh_v / (shift_v + thresh_v * (1.0 - shift_v))
+            t_from_a = thresh_a / (shift_a + thresh_a * (1.0 - shift_a))
+            assert abs(t_from_v - d) < 1e-9, f"d={d}: video inverse {t_from_v:.12f} != d={d:.12f}"
+            assert abs(t_from_a - d) < 1e-9, f"d={d}: audio inverse {t_from_a:.12f} != d={d:.12f}"
+
+    # -----------------------------------------------------------------------
+    # (c) Boundary conditions
+    # -----------------------------------------------------------------------
+
+    def test_boundary_d0_returns_zero(self) -> None:
+        """d=0 -> threshold=0 for all shifts (0-denoise row is trivially always released)."""
+        for shift in [1.0, 3.0, 12.0]:
+            assert denoise_to_sigma_threshold(0.0, shift) == 0.0, (
+                f"shift={shift}: d=0.0 must return 0.0"
+            )
+
+    def test_boundary_d1_returns_one(self) -> None:
+        """d=1 -> threshold=1.0 for all shifts (full-denoise row is held for entire schedule)."""
+        for shift in [1.0, 3.0, 12.0]:
+            thresh = denoise_to_sigma_threshold(1.0, shift)
+            assert abs(thresh - 1.0) < 1e-9, f"shift={shift}: d=1.0 must return 1.0, got {thresh}"
+
+    def test_shift_one_returns_d_unchanged(self) -> None:
+        """shift=1.0 (unshifted schedule) returns d unchanged — identity guard."""
+        for d in [0.0, 0.1, 0.3, 0.6, 0.9, 1.0]:
+            result = denoise_to_sigma_threshold(d, 1.0)
+            assert result == d, f"shift=1.0: must return d={d} unchanged, got {result}"
+
+    # -----------------------------------------------------------------------
+    # (d) End-to-end wrapper behavior-change test (sigma=0.8, d=0.6)
+    # -----------------------------------------------------------------------
+
+    def test_wrapper_hold_row_released_at_sigma_08_d06(self, fake_comfy: types.ModuleType) -> None:
+        """End-to-end wrapper: hold row with d=0.6 is RELEASED at sigma=0.8 post-fix.
+
+        Behavior-change witness:
+          Pre-fix: is_held(0.8, raw_d=0.6) = True -> hold_value written to input;
+          prediction overwritten with original -> frame frozen (reported bug symptom).
+          Post-fix: is_held(0.8, thresh=0.947) = False -> input untouched; prediction
+          untouched -> frame denoised normally.
+
+        FAILS pre-fix: video input contains hold_value (not the sampler input) and
+        video prediction contains per_row_original (not the sentinel 999.0).
+        PASSES post-fix: input unchanged; prediction passes through as sentinel 999.
+        """
+        denoise = 0.6
+        sigma = 0.8  # witness: pre-fix held (0.8 > 0.6); post-fix released (0.8 < 0.947)
+        (
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            packed_input,
+            latent_shapes,
+        ) = _make_wrapper_fixtures(denoise=denoise, region="hold")
+
+        sentinel_val = 999.0
+        flat_sentinel, _ = _fake_pack_latents(
+            [
+                torch.full((1, _C_V, _T, _HL, _WL), sentinel_val),
+                torch.full((1, _C_A, 2, _AUDIO_T), sentinel_val),
+            ]
+        )
+
+        received: list[torch.Tensor] = []
+
+        def mock_apply_model(input_x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            received.append(input_x.detach().clone())
+            return flat_sentinel.clone()
+
+        wrapper = build_model_function_wrapper(
+            schedule,
+            per_row_original,
+            per_row_noise,
+            audio_orig,
+            audio_noise,
+            audio_scale_factor=1.0,
+            latent_shapes=latent_shapes,
+            target_rows=_T,
+            audio_ticks=_AUDIO_T,
+            # default_shift_video=12.0 -> threshold = 12*0.6/(1+11*0.6) = 7.2/7.6 ≈ 0.947
+        )
+        result = wrapper(mock_apply_model, _args_dict(packed_input, sigma))
+
+        assert len(received) == 1
+
+        # Post-fix: rows are RELEASED at sigma=0.8 (below threshold ≈ 0.947).
+        # INPUT: wrapper must NOT write hold_value (input passes through unmodified).
+        unpacked_in = _fake_unpack_latents(received[0], latent_shapes)
+        video_in = unpacked_in[0]
+        unpacked_orig = _fake_unpack_latents(packed_input, latent_shapes)
+        original_video = unpacked_orig[0]
+
+        for i in range(_T):
+            assert torch.allclose(
+                video_in[:, :, i, :, :], original_video[:, :, i, :, :], atol=1e-7
+            ), (
+                f"Post-fix: hold row {i} released at sigma=0.8 < threshold≈0.947 "
+                f"(d=0.6, shift=12.0) — input must be UNCHANGED. "
+                f"Pre-fix: is_held(0.8, raw_d=0.6)=True would have written hold_value."
+            )
+
+        # Post-fix: PREDICTION must also pass through unchanged (no overwrite).
+        # The mock returns sentinel=999.0; post-fix this is left as-is.
+        unpacked_result = _fake_unpack_latents(result, latent_shapes)
+        result_video = unpacked_result[0]
+
+        for i in range(_T):
+            actual = result_video[:, :, i, :, :].mean().item()
+            assert abs(actual - sentinel_val) < 1e-6, (
+                f"Post-fix: hold row {i} released — prediction must be sentinel {sentinel_val}, "
+                f"got {actual:.4f}. "
+                f"Pre-fix: prediction would have been overwritten with per_row_original."
+            )
