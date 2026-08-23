@@ -190,7 +190,11 @@ def _run_sampler(  # pragma: no cover
                     _video[:, :, row_s.row_idx, :, :] = inj.video_latent[:, :, _clip_row, :, :]
                     _wrote_any = True
             # Audio: write clip tick slices into the audio component for this row.
-            if _audio is not None and inj.audio_latent is not None:
+            # Guard on audio_frozen (audio_mode=="keep") to mirror the mask preserve set
+            # exactly — only ticks that derive_mask sets to 0 should be composited here.
+            # For fade-mode audio, the hold-and-release wrapper handles preservation; the
+            # mask leaves those ticks at 1 (generate), so we must not pre-fill them.
+            if _audio is not None and inj.audio_latent is not None and row_s.audio_frozen:
                 _n_clip_ticks = int(inj.audio_latent.shape[-1])
                 for _tick, _clip_tick in constants.inject_audio_ticks_for_row(
                     row_s.row_idx, inj.inject_at, _n_clip_ticks, target_rows, audio_ticks
