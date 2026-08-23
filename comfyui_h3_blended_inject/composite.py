@@ -65,14 +65,24 @@ def build_clean_reference(
     clean_video = video.clone() if video is not None else None
     clean_audio = audio.clone() if audio is not None else None
 
+    # Cache inject_row_map per inject object (Inject uses identity equality, eq=False, so
+    # the same Inject instance is the same key — safe to use as a dict key directly).
+    # Avoids rebuilding the full clip→target row mapping on every scheduled row of the same
+    # inject (can be many rows per inject).
+    _row_map_cache: dict[object, dict[int, int]] = {}
+
     for row_s in schedule:
         inj = row_s.inject
         if inj is None:
             continue
 
         if clean_video is not None and inj.video_latent is not None:
+            # int(): shape[2] may be a SymInt in traced/compiled contexts; Python range/dict
+            # ops require a concrete int.
             n_clip_rows = int(inj.video_latent.shape[2])
-            row_map = dict(inject_row_map(inj.inject_at, n_clip_rows, target_rows))
+            if inj not in _row_map_cache:
+                _row_map_cache[inj] = dict(inject_row_map(inj.inject_at, n_clip_rows, target_rows))
+            row_map = _row_map_cache[inj]
             if row_s.row_idx in row_map:
                 clip_row = row_map[row_s.row_idx]
                 clean_video[:, :, row_s.row_idx, :, :] = inj.video_latent[:, :, clip_row, :, :].to(
@@ -80,7 +90,7 @@ def build_clean_reference(
                 )
 
         if clean_audio is not None and inj.audio_latent is not None and inj.audio_mode != "drop":
-            n_clip_ticks = int(inj.audio_latent.shape[-1])
+            n_clip_ticks = int(inj.audio_latent.shape[-1])  # int(): guard against SymInt
             for tick, clip_tick in inject_audio_ticks_for_row(
                 row_s.row_idx, inj.inject_at, n_clip_ticks, target_rows, audio_ticks
             ):
