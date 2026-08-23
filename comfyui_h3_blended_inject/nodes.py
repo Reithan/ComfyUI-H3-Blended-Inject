@@ -178,11 +178,15 @@ def _run_sampler(  # pragma: no cover
     m_packed, _ = _comfy_utils.pack_latents(frac_components)
     m_packed = m_packed.to(device=clean_packed.device)
 
-    # --- 4. Install the fractional-denoise conditioning wrapper on the cloned model. ---
+    # --- 4. Install the fractional-denoise conditioning + denoised-correction wrapper. ---
+    # The wrapper injects the pooled per-row timestep conditioning AND corrects the denoised
+    # (m*denoised + (1-m)*input) so the sampler integrates each row over its compressed
+    # m*sigma interval — H3's process_timestep only compresses the network's timestep, while
+    # calculate_denoised still divides by the outer sigma. See build_conditioning_wrapper.
     pooled = m.model._denoise_mask_values(m_packed, latent_shapes)
     m.model_options = {
         **m.model_options,
-        "model_function_wrapper": build_conditioning_wrapper(pooled),
+        "model_function_wrapper": build_conditioning_wrapper(pooled, m_packed),
     }
 
     # --- 5. Wrap the base sampler_function for per-row img2img. ---

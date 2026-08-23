@@ -135,20 +135,38 @@ def _default_noise_sampler_factory(
 
 def build_conditioning_wrapper(
     pooled_conds: dict[str, torch.Tensor],
+    m_packed: torch.Tensor | None = None,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
-    """Return a ``model_function_wrapper`` that injects per-row denoise conditioning.
+    """Return a ``model_function_wrapper`` that injects per-row conditioning *and* corrects
+    the denoised prediction so the sampler integrates each row at its compressed rate.
 
-    The per-row img2img sampler passes ``noise_mask=None`` to the sampler (so no compositing
-    happens), and instead feeds the DiT its fractional per-row schedule directly.  This
-    wrapper injects the pooled, token-grid denoise mask tensors — produced once at wiring time
-    via ``model._denoise_mask_values(packed_mask, latent_shapes)`` — as **named keys** in the
-    conditioning dict ``c`` (e.g. ``"denoise_mask"``, ``"audio_denoise_mask"``), so they flow
-    through ``apply_model(**c)`` → ``extra_conds`` kwargs → the DiT ``_forward`` named params.
+    Two jobs, both required for per-row img2img:
 
-    Crucially the tensors go into ``c`` directly, *not* into ``c["transformer_options"]`` —
-    only named conditioning keys reach the DiT forward.  Each tensor is device/dtype-aligned to
-    the current ``input`` per step (cond-batched inference may vary device/precision), and the
-    original ``c`` dict is copied rather than mutated.
+    **1. Inject the pooled per-row denoise conditioning.**  The sampler passes
+    ``noise_mask=None`` (no compositing), so the DiT is fed its fractional per-row schedule
+    directly.  This wrapper injects the pooled, token-grid denoise mask tensors — produced once
+    at wiring time via ``model._denoise_mask_values(packed_mask, latent_shapes)`` — as **named
+    keys** in the conditioning dict ``c`` (e.g. ``"denoise_mask"``, ``"audio_denoise_mask"``),
+    so they flow through ``apply_model(**c)`` → ``extra_conds`` kwargs → the DiT ``_forward``
+    named params.  The tensors go into ``c`` directly, *not* into ``c["transformer_options"]``;
+    each is device/dtype-aligned to the current ``input`` per step, and ``c`` is copied not
+    mutated.  This makes the network's *velocity prediction* valid for the row's true (low)
+    noise level.
+
+    **2. Correct the denoised toward the input by the per-row fraction ``m``.**  This is the
+    fix for the "noise runs in reverse / low-denoise rows end up as static" bug.  H3's
+    ``process_timestep`` compresses only the timestep *embedding* fed to the network
+    (``v_timestep = m * t``), but ``model_base._apply_model`` still converts the network output
+    to a denoised via ``calculate_denoised(sigma, v, x) = x - sigma * v`` using the **outer**
+    (uncompressed) sigma.  So without correction the sampler computes ``d = (x - denoised)/sigma
+    = v`` and integrates each row's velocity over the *full* global interval — a low-``m`` row
+    is stepped ``1/m`` too far and lands off-distribution (pixelation / grey static).  Blending
+    ``corrected = m * denoised + (1 - m) * x`` makes ``d = (x - corrected)/sigma = m * v``, so
+    the sampler integrates each row over exactly its compressed ``m * sigma`` interval — true
+    per-row img2img, for any sampler.  ``m == 1`` rows are unchanged (full generation);
+    ``m == 0`` rows are frozen at their (clean) init value.  The correction is affine in the
+    denoised, so it commutes with CFG (correcting cond and uncond identically is equivalent to
+    correcting the CFG-combined denoised).
 
     The wrapper matches ComfyUI's ``model_function_wrapper`` contract:
     ``(apply_model, args_dict) -> prediction``, where ``args_dict`` carries ``"input"``,
@@ -158,8 +176,13 @@ def build_conditioning_wrapper(
     ----------
     pooled_conds:
         Mapping of DiT conditioning key → raw pooled mask tensor, as returned by
-        ``MiniMaxH3._denoise_mask_values``.  May be empty (nothing to preserve/compress), in
-        which case the wrapper is a transparent pass-through.
+        ``MiniMaxH3._denoise_mask_values``.  May be empty (nothing to preserve/compress).
+    m_packed:
+        Per-row denoise fractions in the sampler's packed latent layout, broadcastable to the
+        model input/output (``derive_fractional_mask`` expands each row's ``m_r`` across all
+        channels and spatial dims, so this matches the packed latent element-for-element).
+        When ``None`` the denoised correction is skipped (transparent pass-through) — used by
+        conditioning-injection unit tests; production always supplies it.
 
     Returns
     -------
@@ -172,7 +195,11 @@ def build_conditioning_wrapper(
         c = dict(args_dict["c"])
         for key, value in pooled_conds.items():
             c[key] = value.to(device=inp.device, dtype=inp.dtype)
-        return apply_model(inp, args_dict["timestep"], **c)
+        denoised = apply_model(inp, args_dict["timestep"], **c)
+        if m_packed is None:
+            return denoised
+        m = m_packed.to(device=denoised.device, dtype=denoised.dtype)
+        return m * denoised + (1.0 - m) * inp
 
     return wrapper
 

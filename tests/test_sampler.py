@@ -318,3 +318,76 @@ class TestBuildConditioningWrapper:
         wrapper(am, self._args(torch.randn(1, 4, 3)))
         assert "denoise_mask" not in am.kwargs
         assert "audio_denoise_mask" not in am.kwargs
+
+
+class _ConstApplyModel:
+    """Fake bound apply_model that returns a fixed denoised tensor regardless of input."""
+
+    def __init__(self, denoised: torch.Tensor) -> None:
+        self._denoised = denoised
+
+    def __call__(self, input_: Any, timestep: Any, **kwargs: Any) -> torch.Tensor:
+        return self._denoised
+
+
+class TestConditioningWrapperDenoisedCorrection:
+    """The wrapper must blend the denoised toward the input by the per-row fraction m.
+
+    Regression for the "noise runs in reverse / low-denoise rows decode as grey static" bug:
+    H3's process_timestep compresses only the network timestep, but calculate_denoised still
+    divides by the outer sigma, so without ``corrected = m*denoised + (1-m)*input`` the sampler
+    integrates every row over the full global interval and low-m rows blow up.
+    """
+
+    def _args(self, input_: torch.Tensor) -> dict[str, Any]:
+        return {
+            "input": input_,
+            "timestep": torch.tensor([0.5]),
+            "c": {"transformer_options": {}},
+            "cond_or_uncond": [0],
+        }
+
+    def test_correction_blends_denoised_toward_input(self) -> None:
+        inp = torch.randn(1, 4, 3)
+        denoised = torch.randn(1, 4, 3)
+        m = torch.full((1, 4, 3), 0.25)
+        wrapper = build_conditioning_wrapper({}, m)
+        out = wrapper(_ConstApplyModel(denoised), self._args(inp))
+        expected = m * denoised + (1.0 - m) * inp
+        assert torch.allclose(out, expected)
+
+    def test_m_one_returns_denoised_unchanged(self) -> None:
+        """m == 1 rows (full generation) pass the raw denoised straight through."""
+        inp = torch.randn(1, 4, 3)
+        denoised = torch.randn(1, 4, 3)
+        m = torch.ones(1, 4, 3)
+        wrapper = build_conditioning_wrapper({}, m)
+        out = wrapper(_ConstApplyModel(denoised), self._args(inp))
+        assert torch.allclose(out, denoised)
+
+    def test_m_zero_freezes_row_at_input(self) -> None:
+        """m == 0 rows (preserve) return the input, so the sampler's d = (x-out)/sigma == 0."""
+        inp = torch.randn(1, 4, 3)
+        denoised = torch.randn(1, 4, 3)
+        m = torch.zeros(1, 4, 3)
+        wrapper = build_conditioning_wrapper({}, m)
+        out = wrapper(_ConstApplyModel(denoised), self._args(inp))
+        assert torch.allclose(out, inp)
+
+    def test_per_row_m_applies_independently(self) -> None:
+        """Different m per row → each row blended by its own fraction."""
+        inp = torch.zeros(1, 1, 3)
+        denoised = torch.ones(1, 1, 3)
+        m = torch.tensor([[[0.0, 0.5, 1.0]]])
+        wrapper = build_conditioning_wrapper({}, m)
+        out = wrapper(_ConstApplyModel(denoised), self._args(inp))
+        # out = m*1 + (1-m)*0 = m
+        assert torch.allclose(out, m)
+
+    def test_correction_aligns_m_dtype_to_denoised(self) -> None:
+        inp = torch.randn(1, 4, 3, dtype=torch.float16)
+        denoised = torch.randn(1, 4, 3, dtype=torch.float16)
+        m = torch.full((1, 4, 3), 0.5, dtype=torch.float32)
+        wrapper = build_conditioning_wrapper({}, m)
+        out = wrapper(_ConstApplyModel(denoised), self._args(inp))
+        assert out.dtype == torch.float16
