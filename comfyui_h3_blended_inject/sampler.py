@@ -30,6 +30,9 @@ Stochastic samplers are unsupported/deferred; see ``bugs.md`` Bug B and
 ``stochastic-recovery-theory.md``.
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.
+
+This module is imported lazily inside ``nodes._run_sampler`` (a ``# pragma: no cover`` GPU
+path), so it has no module-level importers at load time — that is intentional, not an orphan.
 """
 
 from __future__ import annotations
