@@ -254,6 +254,10 @@ def is_row_exactly_zero(
 ) -> bool:
     """Return True only if the row's averaged denoise is exactly 0.0.
 
+    No production callers — superseded by :func:`classify_row_region` (``'preserve'``
+    region), which uses integer clip-frame membership instead of float comparison and
+    avoids FP averaging issues.  Kept for documentation and cross-consistency tests.
+
     A row qualifies as ``d = 0`` (exact preserve, routed via the derived noise mask)
     iff ``min_denoise == 0.0`` *and* **every** clip-frame center of the row lies within
     the hold region ``[start_keyframes, end_keyframes - 1]`` (exclusive upper bound).
@@ -383,22 +387,3 @@ def classify_row_region(
         return "fade" if crossfade else "hold"
 
     return "free"
-
-
-def still_inject_denoise(min_denoise: float) -> list[float]:
-    """Return the single-element denoise list for a still (single-image) inject.
-
-    A still inject is a degenerate envelope where all four fade indices are equal.
-    The resulting schedule is one row with ``d = min_denoise``.
-
-    Parameters
-    ----------
-    min_denoise:
-        Denoise value for the single injected frame.  In [0.0, 1.0].
-
-    Returns
-    -------
-    list[float]
-        A one-element list ``[min_denoise]``.
-    """
-    return [min_denoise]

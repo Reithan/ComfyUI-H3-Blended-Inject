@@ -22,7 +22,6 @@ from comfyui_h3_blended_inject.envelope import (
     evaluate_curve,
     evaluate_envelope,
     is_row_exactly_zero,
-    still_inject_denoise,
 )
 from comfyui_h3_blended_inject.grid import frame_to_row, row_center_times
 
@@ -779,18 +778,6 @@ def test_is_row_exactly_zero_consistent_with_averaged_denoise(
             f"is_row_exactly_zero={zero_check} but denoise={row_map[row_idx]} "
             f"at row {row_idx} (inject_at={inject_at}, skf={skf}, ekf={ekf})"
         )
-
-
-# ---------------------------------------------------------------------------
-# still_inject_denoise
-# ---------------------------------------------------------------------------
-
-
-@given(st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False))
-def test_still_inject_denoise_returns_single_element_list(min_denoise):
-    """still_inject_denoise(m) == [m] for any m in [0, 1]."""
-    result = still_inject_denoise(min_denoise)
-    assert result == [min_denoise]
 
 
 # ---------------------------------------------------------------------------
