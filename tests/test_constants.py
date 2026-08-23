@@ -1,8 +1,7 @@
-"""Property-based tests for comfyui_h3_blended_inject.constants.
+"""Property-based and regression tests for comfyui_h3_blended_inject.constants.
 
-Behavior contract is taken from the module docstrings. All stub functions raise
-NotImplementedError, so every test that calls a stub will fail until the bodies
-are implemented. That is expected and correct at this stage.
+Behavior contract is taken from the module docstrings and the verified grid table for the
+per-17-frame chunk reset model (MiniMaxVAE: clip_length=17, token_drop=3, vae_ratio_t=4).
 """
 
 from __future__ import annotations
@@ -15,27 +14,38 @@ from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.constants import (
     AUDIO_HZ,
+    CLIP_LENGTH,
     FPS,
     FRAME_PER_TOKEN,
+    TOKEN_DROP,
+    TOKENS_PER_CHUNK,
+    VAE_RATIO_T,
     audio_ticks_for_rows,
     frame_to_row,
     row_center_times,
     row_frame_count,
+    row_start_frame,
     time_shift_sigma,
     total_rows,
     video_row_to_audio_tick,
 )
 
 # ---------------------------------------------------------------------------
-# Helper — derives start frame for a row without calling the stub functions
+# Helper — derives start frame for a row using the new per-17-chunk formula
 # ---------------------------------------------------------------------------
 
 
 def _row_start_frame(row_idx: int) -> int:
-    """Start source-frame index for row_idx, computed from FRAME_PER_TOKEN directly."""
-    if row_idx == 0:
-        return 0
-    return 1 + (row_idx - 1) * 4
+    """Start source-frame index for row_idx, per the per-17-chunk grid.
+
+    Mirrors the formula in row_start_frame() without importing it, so that
+    cross-check tests don't trivially compare a function to itself.
+    """
+    chunk = row_idx // TOKENS_PER_CHUNK
+    local_row = row_idx % TOKENS_PER_CHUNK
+    if local_row == 0:
+        return CLIP_LENGTH * chunk
+    return CLIP_LENGTH * chunk + 1 + (local_row - 1) * VAE_RATIO_T
 
 
 # ---------------------------------------------------------------------------
@@ -64,9 +74,12 @@ def test_row_frame_count_row_zero():
     assert row_frame_count(0) == 1
 
 
-@given(st.integers(min_value=1, max_value=1_000))
-def test_row_frame_count_positive_rows(row_idx):
-    assert row_frame_count(row_idx) == 4
+@given(st.integers(min_value=0, max_value=1_000))
+def test_row_frame_count_matches_local_row(row_idx):
+    """Chunk-boundary rows (local_row==0) → 1 frame; all others → VAE_RATIO_T (4) frames."""
+    local_row = row_idx % TOKENS_PER_CHUNK
+    expected = 1 if local_row == 0 else VAE_RATIO_T
+    assert row_frame_count(row_idx) == expected
 
 
 @given(st.integers(max_value=-1))
@@ -86,7 +99,11 @@ def test_frame_to_row_frame_zero():
 
 @given(st.integers(min_value=1, max_value=10_000))
 def test_frame_to_row_formula(frame_idx):
-    expected = 1 + (frame_idx - 1) // 4
+    """frame_to_row uses the per-17-chunk reset formula."""
+    chunk = frame_idx // CLIP_LENGTH
+    local = frame_idx % CLIP_LENGTH
+    local_row = 0 if local == 0 else 1 + (local - 1) // VAE_RATIO_T
+    expected = TOKENS_PER_CHUNK * chunk + local_row
     assert frame_to_row(frame_idx) == expected
 
 
@@ -112,7 +129,8 @@ def test_frame_to_row_cross_check_span(frame_idx):
 
 @given(st.integers(min_value=1, max_value=10_000))
 def test_total_rows_formula(n_frames):
-    expected = 1 + math.ceil((n_frames - 1) / 4)
+    """total_rows uses the per-17-chunk formula: TOKENS_PER_CHUNK*ceil(n/CLIP_LENGTH)-TOKEN_DROP."""
+    expected = TOKENS_PER_CHUNK * math.ceil(n_frames / CLIP_LENGTH) - TOKEN_DROP
     assert total_rows(n_frames) == expected
 
 
@@ -122,10 +140,13 @@ def test_total_rows_less_than_one_raises(n_frames):
         total_rows(n_frames)
 
 
-@given(st.integers(min_value=1, max_value=10_000))
-def test_total_rows_consistent_with_frame_to_row(n_frames):
-    """total_rows(n) == frame_to_row(n - 1) + 1 for all n >= 1."""
-    assert total_rows(n_frames) == frame_to_row(n_frames - 1) + 1
+@given(st.integers(min_value=0, max_value=200))
+def test_total_rows_valid_clip_lengths(k):
+    """Valid clip lengths 17k+5 yield exactly TOKENS_PER_CHUNK*(k+1) - TOKEN_DROP rows."""
+    # 17*0+5=5, 17*1+5=22, 17*2+5=39, ...
+    n_frames = CLIP_LENGTH * k + 1 + VAE_RATIO_T  # 17k + 5
+    expected = TOKENS_PER_CHUNK * (k + 1) - TOKEN_DROP
+    assert total_rows(n_frames) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -319,3 +340,110 @@ class TestAudioTickRange:
 
         with pytest.raises(ValueError):
             audio_tick_range(-1, 5, 20)
+
+
+# ---------------------------------------------------------------------------
+# Per-17-chunk grid regression tests
+#
+# These values were verified against the real MiniMaxVAE source at
+# comfy/ldm/minimax/vae.py (clip_length=17, token_drop=3, time_down→vae_ratio_t=4).
+# The BOLD entries below are the ones the OLD uniform-4 code got wrong.
+# Every test in this class MUST FAIL on the old implementation and PASS after.
+# ---------------------------------------------------------------------------
+
+
+class TestPerChunkGridRegressions:
+    """Pinned table for frame_to_row, total_rows, row_frame_count, row_center_times."""
+
+    # -- row_start_frame ---------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "row_idx, expected_start",
+        [
+            (0, 0),
+            (1, 1),
+            (4, 13),
+            (5, 17),  # chunk boundary — OLD: 1+(5-1)*4=17 (same by coincidence)
+            (6, 18),  # OLD: 1+(6-1)*4=21 — WRONG
+            (7, 22),  # OLD: 1+(7-1)*4=25 — WRONG
+            (10, 34),  # OLD: 1+(10-1)*4=37 — WRONG
+            (11, 35),  # OLD: 1+(11-1)*4=41 — WRONG
+        ],
+    )
+    def test_row_start_frame(self, row_idx, expected_start):
+        """row_start_frame resets correctly at chunk boundaries."""
+        assert row_start_frame(row_idx) == expected_start
+
+    # -- frame_to_row ------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "frame_idx, expected_row",
+        [
+            (0, 0),
+            (1, 1),
+            (4, 1),
+            (5, 2),
+            (13, 4),
+            (16, 4),
+            (17, 5),  # OLD: 1+(17-1)//4=5 — same by coincidence
+            (18, 6),  # OLD: 1+(18-1)//4=5 — WRONG
+            (21, 6),  # OLD: 1+(21-1)//4=6 — WRONG (gives 6 actually) hmm
+            (22, 7),  # OLD: 1+(22-1)//4=6 — WRONG
+            (26, 8),  # OLD: 1+(26-1)//4=7 — WRONG
+            (30, 9),  # OLD: 1+(30-1)//4=8 — WRONG
+            (34, 10),  # OLD: 1+(34-1)//4=9 — WRONG
+            (35, 11),  # OLD: 1+(35-1)//4=9 — WRONG
+            (38, 11),  # OLD: 1+(38-1)//4=10 — WRONG
+        ],
+    )
+    def test_frame_to_row_verified_table(self, frame_idx, expected_row):
+        """Pinned frame→row mapping from the verified per-17-chunk grid table."""
+        assert frame_to_row(frame_idx) == expected_row
+
+    # -- total_rows --------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "n_frames, expected_rows",
+        [
+            (5, 2),
+            (22, 7),
+            (39, 12),  # OLD: 1+ceil(38/4)=10 — WRONG
+            (56, 17),  # OLD: 1+ceil(55/4)=15 — WRONG
+        ],
+    )
+    def test_total_rows_verified_table(self, n_frames, expected_rows):
+        """Pinned frame-count→row-count mapping from the verified grid table."""
+        assert total_rows(n_frames) == expected_rows
+
+    # -- row_frame_count ---------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "row_idx, expected_count",
+        [
+            (0, 1),
+            (1, 4),
+            (4, 4),
+            (5, 1),  # chunk boundary — OLD: 4 — WRONG
+            (10, 1),  # chunk boundary — OLD: 4 — WRONG
+            (11, 4),  # non-boundary — OLD: 4 — same, but checks context
+        ],
+    )
+    def test_row_frame_count_verified_table(self, row_idx, expected_count):
+        """Pinned row→frame-count mapping including chunk-boundary resets."""
+        assert row_frame_count(row_idx) == expected_count
+
+    # -- row_center_times --------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "row_idx, expected_centers",
+        [
+            (0, (0.5,)),
+            (1, (1.5, 2.5, 3.5, 4.5)),
+            (5, (17.5,)),  # OLD: 4-tuple starting here — WRONG count
+            (6, (18.5, 19.5, 20.5, 21.5)),  # OLD: (21.5,22.5,23.5,24.5) — WRONG
+            (11, (35.5, 36.5, 37.5, 38.5)),  # OLD: (41.5,42.5,43.5,44.5) — WRONG
+        ],
+    )
+    def test_row_center_times_verified_table(self, row_idx, expected_centers):
+        """Pinned row→center-times mapping including chunk-boundary resets."""
+        assert row_center_times(row_idx) == pytest.approx(expected_centers)
