@@ -168,7 +168,7 @@ def build_model_function_wrapper(
 
     Wrapper body (see plan for authoritative description):
 
-    1. Recover sigma via ``timestep / 1000`` (same convention as the H3 engine).
+    1. Recover sigma directly from ``timestep`` (raw k-diffusion sigma in [0, 1]).
     2. Call ``comfy.utils.unpack_latents(input, latent_shapes)`` to separate the packed AV
        latent into its video and audio streams.  ``latent_shapes`` comes from the model
        instance at call time and must be threaded in through the closure.
@@ -230,8 +230,8 @@ def build_model_function_wrapper(
 
     Notes
     -----
-    The wrapper must handle both flow directions of the sigma convention; ``timestep / 1000``
-    is the recovery path verified against the H3 engine source.
+    The wrapper receives the raw k-diffusion sigma in [0, 1] as ``args_dict["timestep"]``; the
+    ×1000 model-timestep conversion happens later inside ``_apply_model``.
 
     Cond-batching: ``args_dict["input"]`` batch dim may be > 1 when cond/uncond are
     concatenated by ``calc_cond_batch``.  Held-row writes use ``[:, :, t:t+1, :, :]``
@@ -257,8 +257,8 @@ def build_model_function_wrapper(
     ) -> Any:
         import comfy.utils
 
-        # Step 1: Recover sigma from timestep (convention: timestep / 1000).
-        sigma_video = float(args_dict["timestep"].flatten()[0].item() / 1000.0)
+        # Step 1: Recover sigma from timestep (raw k-diffusion sigma in [0, 1]).
+        sigma_video = float(args_dict["timestep"].flatten()[0].item())
         sigma_audio = _constants.time_shift_sigma(sigma_video)
 
         # Step 2: Unpack the packed AV latent into video and audio streams.
