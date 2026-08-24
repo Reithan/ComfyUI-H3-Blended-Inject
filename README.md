@@ -46,7 +46,7 @@ Restart ComfyUI. This pack targets MiniMax H3 and relies on ComfyUI's bundled
 
 ## Development
 
-Tooling is managed with [uv](https://docs.astral.sh/uv/).
+Tooling is managed with [uv](https://docs.astral.sh/uv/). The dev group includes `torch`, `numpy`, and `hypothesis` so CPU-side tensor tests can run without a ComfyUI install.
 
 ```bash
 uv sync --group dev        # create the environment and install dev tools
