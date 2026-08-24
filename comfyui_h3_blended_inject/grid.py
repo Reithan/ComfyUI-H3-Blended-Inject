@@ -55,17 +55,20 @@ VAE_RATIO_T: int = 4
 TOKENS_PER_CHUNK: int = 5  # ceil(17 / 4)
 
 # ---------------------------------------------------------------------------
-# Timestep constants sourced from comfy/ldm/minimax/model.py
-# TODO: verify exact values against ComfyUI source before shipping
+# Timestep constants — confirmed from comfy/ldm/minimax/model.py `_forward` 553-626
+# (video pin ~589, audio pin ~601-609).
+# See wiki: .claude/docs/per-row-img2img/native-h3-mechanism/dit-forward.md
 # ---------------------------------------------------------------------------
 
 #: Conditioning timestep pinned for visual-stream preserved rows (near-clean label).
-#: From ``VISUAL_COND_TIMESTEP`` in ``comfy/ldm/minimax/model.py``.
-VISUAL_COND_TIMESTEP: float = 0.999  # sourced from comfy/ldm/minimax/model.py
+#: Confirmed: ``t_pin_v = max(t_v, VISUAL_COND_TIMESTEP)`` at ``_forward`` ~589 in
+#: ``comfy/ldm/minimax/model.py``.
+VISUAL_COND_TIMESTEP: float = 0.999
 
 #: Conditioning timestep pinned for audio-stream preserved ticks (near-clean label).
-#: From ``AUDIO_COND_TIMESTEP`` in ``comfy/ldm/minimax/model.py``.
-AUDIO_COND_TIMESTEP: float = 1.0  # sourced from comfy/ldm/minimax/model.py
+#: Confirmed: audio row-label clamp at ``_forward`` ~601-609 in
+#: ``comfy/ldm/minimax/model.py``.
+AUDIO_COND_TIMESTEP: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -260,24 +263,24 @@ def video_row_to_audio_tick(row_idx: int) -> int:
     return round(row_start_frame(row_idx) * AUDIO_HZ / FPS)
 
 
-def audio_tick_range(row_idx: int, total_rows: int, audio_ticks: int) -> range:
+def audio_tick_range(row_idx: int, n_rows: int, audio_ticks: int) -> range:
     """Return the range of audio tick indices owned by video row ``row_idx``.
 
     Row ``r`` owns the half-open interval ``[start, end)`` where:
 
     - ``start = video_row_to_audio_tick(row_idx)``, clamped to ``[0, audio_ticks)``.
     - ``end = video_row_to_audio_tick(row_idx + 1)`` for all rows except the last.
-    - ``end = audio_ticks`` for the final row (``row_idx == total_rows - 1``).
+    - ``end = audio_ticks`` for the final row (``row_idx == n_rows - 1``).
     - ``end`` is further clamped to ``audio_ticks``.
 
     Adjacent rows' ranges are contiguous (no gap, no overlap), and together they tile
-    ``[0, audio_ticks)`` exactly when ``audio_ticks == audio_ticks_for_rows(total_rows)``.
+    ``[0, audio_ticks)`` exactly when ``audio_ticks == audio_ticks_for_rows(n_rows)``.
 
     Parameters
     ----------
     row_idx:
         Zero-based latent video row index.  Must be non-negative.
-    total_rows:
+    n_rows:
         Total number of latent video rows (the ``target_rows`` from the sampler).
     audio_ticks:
         Total number of audio ticks (the ``audio_ticks`` from the sampler).
@@ -296,7 +299,7 @@ def audio_tick_range(row_idx: int, total_rows: int, audio_ticks: int) -> range:
     if row_idx < 0:
         raise ValueError(f"row_idx must be non-negative, got {row_idx}")
     start = max(0, video_row_to_audio_tick(row_idx))
-    if row_idx >= total_rows - 1:
+    if row_idx >= n_rows - 1:
         end = audio_ticks
     else:
         end = video_row_to_audio_tick(row_idx + 1)
@@ -411,38 +414,3 @@ def inject_audio_ticks_for_row(
         if 0 <= clip_tick < n_clip_ticks:
             result.append((tick, clip_tick))
     return result
-
-
-def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
-    """Return the shifted audio sigma for a given video sigma.
-
-    Mirrors ``time_shift_sigma`` from ``comfy/ldm/minimax/model.py``.  Audio rows release
-    against this shifted sigma, not the raw video sigma, to keep audio and video fades
-    temporally aligned.
-
-    Parameters
-    ----------
-    sigma:
-        Current video sigma value (scalar, in [0, 1] space).
-    from_shift:
-        Video sigma shift (``sigma_shift_video``).  Defaults to 12.0, the H3 DiT
-        constructor default.  In production, pass the runtime value from
-        ``transformer_options["minimax_h3_sigma_shift_video"]`` so audio timing stays
-        aligned when the user changes the video shift via the ``MiniMax H3 Sigma Shift``
-        node.
-    to_shift:
-        Audio sigma shift (``sigma_shift_audio``).  Defaults to 3.0, the H3 DiT
-        constructor default.  Pass the runtime value from
-        ``transformer_options["minimax_h3_sigma_shift_audio"]`` when available.
-
-    Returns
-    -------
-    float
-        Shifted sigma value appropriate for the audio stream.
-    """
-    # Two-step warp from comfy/ldm/minimax/model.py: invert the video shift to
-    # recover the base grid, then re-apply the audio shift.
-    # This module returns the raw warp value; ComfyUI applies `1.0 - warp` at the model
-    # boundary as the audio conditioning timestep.  The contract here is f(0)=0, f(1)=1.
-    base = sigma / (from_shift + sigma * (1.0 - from_shift))
-    return float(to_shift * base / (1.0 + (to_shift - 1.0) * base))

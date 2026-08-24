@@ -1,0 +1,1 @@
+# No dependencies beyond ComfyUI itself (see pyproject.toml).

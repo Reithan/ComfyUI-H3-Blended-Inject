@@ -20,10 +20,10 @@ from comfyui_h3_blended_inject.sanitize import (
     check_resolution,
     sanitize_audio,
     snap_inject_at,
-    snap_inject_at_audio_tick,
     snap_length_down,
     validate_envelope_indices,
     warn_audio_tail_alignment,
+    warn_audio_tick_alignment,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,67 +166,59 @@ class TestSnapInjectAt:
 
 
 # ---------------------------------------------------------------------------
-# snap_inject_at_audio_tick
+# warn_audio_tick_alignment
 # ---------------------------------------------------------------------------
 
 
-class TestSnapInjectAtAudioTick:
-    """snap_inject_at_audio_tick: returns x unchanged; warns with ms error for 17n-not-51n."""
+class TestWarnAudioTickAlignment:
+    """warn_audio_tick_alignment: pure side-effect; warns with ms error for 17n-not-51n."""
 
-    # -- Multiples of 51 (exact audio tick): return unchanged, no warning -------
+    # -- Multiples of 51 (exact audio tick): no warning -------------------------
 
     def test_zero_no_warning(self):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = snap_inject_at_audio_tick(0)
-        assert result == 0
+            warn_audio_tick_alignment(0)
         assert not any(issubclass(x.category, UserWarning) for x in w)
 
     def test_51_no_warning(self):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = snap_inject_at_audio_tick(51)
-        assert result == 51
+            warn_audio_tick_alignment(51)
         assert not any(issubclass(x.category, UserWarning) for x in w)
 
     def test_102_no_warning(self):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = snap_inject_at_audio_tick(102)
-        assert result == 102
+            warn_audio_tick_alignment(102)
         assert not any(issubclass(x.category, UserWarning) for x in w)
 
     def test_153_no_warning(self):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = snap_inject_at_audio_tick(153)
-        assert result == 153
+            warn_audio_tick_alignment(153)
         assert not any(issubclass(x.category, UserWarning) for x in w)
 
-    # -- 17n but not 51n: return x unchanged, warn with ms error ----------------
+    # -- 17n but not 51n: warn with ms error ------------------------------------
 
-    def test_17_warns_with_ms_and_returns_17(self):
+    def test_17_warns_with_ms(self):
         with pytest.warns(UserWarning) as record:
-            result = snap_inject_at_audio_tick(17)
-        assert result == 17
+            warn_audio_tick_alignment(17)
         assert "ms" in str(record[0].message).lower()
 
-    def test_34_warns_with_ms_and_returns_34(self):
+    def test_34_warns_with_ms(self):
         with pytest.warns(UserWarning) as record:
-            result = snap_inject_at_audio_tick(34)
-        assert result == 34
+            warn_audio_tick_alignment(34)
         assert "ms" in str(record[0].message).lower()
 
-    def test_68_warns_with_ms_and_returns_68(self):
+    def test_68_warns_with_ms(self):
         with pytest.warns(UserWarning) as record:
-            result = snap_inject_at_audio_tick(68)
-        assert result == 68
+            warn_audio_tick_alignment(68)
         assert "ms" in str(record[0].message).lower()
 
-    def test_85_warns_with_ms_and_returns_85(self):
+    def test_85_warns_with_ms(self):
         with pytest.warns(UserWarning) as record:
-            result = snap_inject_at_audio_tick(85)
-        assert result == 85
+            warn_audio_tick_alignment(85)
         assert "ms" in str(record[0].message).lower()
 
     # -- Property: all 51n values produce no warning ----------------------------
@@ -236,11 +228,10 @@ class TestSnapInjectAtAudioTick:
         x = n * 51
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = snap_inject_at_audio_tick(x)
-        assert result == x
+            warn_audio_tick_alignment(x)
         assert not any(issubclass(uw.category, UserWarning) for uw in w)
 
-    # -- Property: 17n-not-51n always warns and always returns x ----------------
+    # -- Property: 17n-not-51n always warns -------------------------------------
 
     @given(n=st.integers(min_value=1, max_value=588))
     def test_17n_not_51n_always_warns(self, n):
@@ -249,8 +240,7 @@ class TestSnapInjectAtAudioTick:
             return
         x = n * 17
         with pytest.warns(UserWarning):
-            result = snap_inject_at_audio_tick(x)
-        assert result == x
+            warn_audio_tick_alignment(x)
 
 
 # ---------------------------------------------------------------------------
@@ -978,3 +968,50 @@ class TestWarnAudioTailAlignment:
                 has_audio=True,
             )
         assert not [x for x in w if issubclass(x.category, UserWarning)]
+
+
+# ---------------------------------------------------------------------------
+# Regression: sanitize._FPS / _AUDIO_HZ track constants, not hardcoded literals
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeConstantsTrackModule:
+    """Verify that sanitize uses FPS/AUDIO_HZ from constants, not redeclared literals.
+
+    These tests would fail if someone re-hardcoded drifted values in sanitize.py.
+    """
+
+    def test_fps_tracks_constants(self):
+        import comfyui_h3_blended_inject.sanitize as _sanitize
+        from comfyui_h3_blended_inject import grid
+
+        assert _sanitize._FPS is grid.FPS or _sanitize._FPS == grid.FPS, (
+            f"sanitize._FPS={_sanitize._FPS!r} does not match grid.FPS={grid.FPS!r}. "
+            "Import FPS from grid instead of redeclaring."
+        )
+
+    def test_audio_hz_tracks_constants(self):
+        import comfyui_h3_blended_inject.sanitize as _sanitize
+        from comfyui_h3_blended_inject import grid
+
+        assert _sanitize._AUDIO_HZ == grid.AUDIO_HZ, (
+            f"sanitize._AUDIO_HZ={_sanitize._AUDIO_HZ!r} does not match "
+            f"grid.AUDIO_HZ={grid.AUDIO_HZ!r}. "
+            "Import AUDIO_HZ from grid instead of redeclaring."
+        )
+
+    def test_fps_value_unchanged(self):
+        """Catch drift: if grid.FPS changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import grid
+
+        assert grid.FPS == 24, (
+            f"grid.FPS changed to {grid.FPS!r}; update sanitize tests if intentional."
+        )
+
+    def test_audio_hz_value_unchanged(self):
+        """Catch drift: if grid.AUDIO_HZ changes, tests should surface it explicitly."""
+        from comfyui_h3_blended_inject import grid
+
+        assert grid.AUDIO_HZ == 40.0, (
+            f"grid.AUDIO_HZ changed to {grid.AUDIO_HZ!r}; update sanitize tests if intentional."
+        )

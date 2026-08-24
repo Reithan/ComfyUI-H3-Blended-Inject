@@ -5,7 +5,7 @@ These cover the CPU-testable pieces of the per-row img2img redesign:
   - build_per_row_sampler_function: wraps a base k-diffusion sampler, applies the
     lerp to x on entry, optionally injects a per-row-scaling noise_sampler
   - sampler_accepts_noise_sampler: signature probe
-  - make_per_row_noise_sampler: scales injected noise per-row by m
+  - _make_per_row_noise_sampler: scales injected noise per-row by m (deferred shim, Bug B)
 
 The model_function_wrapper (conditioning injection) is covered separately once the
 _denoise_mask_values pooling contract is pinned.
@@ -20,9 +20,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.sampler import (
+    _make_per_row_noise_sampler,
     build_conditioning_wrapper,
     build_per_row_sampler_function,
-    make_per_row_noise_sampler,
     per_row_init_lerp,
     quantize_denoise,
     sampler_accepts_noise_sampler,
@@ -113,7 +113,7 @@ class TestSamplerAcceptsNoiseSampler:
 
 
 # ---------------------------------------------------------------------------
-# make_per_row_noise_sampler
+# _make_per_row_noise_sampler (deferred stochastic shim, Bug B)
 # ---------------------------------------------------------------------------
 
 
@@ -122,7 +122,7 @@ class TestMakePerRowNoiseSampler:
         """Injected noise is scaled per-row by m (so m*sigma_up*noise is correct)."""
         base = lambda s, sn: torch.ones(1, 3, 2)  # noqa: E731
         m_t = torch.tensor([0.0, 0.5, 1.0]).reshape(1, 3, 1)
-        ns = make_per_row_noise_sampler(base, m_t)
+        ns = _make_per_row_noise_sampler(base, m_t)
         out = ns(1.0, 0.5)
         assert torch.allclose(out[0, 0], torch.zeros(2))
         assert torch.allclose(out[0, 1], torch.full((2,), 0.5))
@@ -394,6 +394,46 @@ class TestConditioningWrapperDenoisedCorrection:
         wrapper = build_conditioning_wrapper({}, m)
         out = wrapper(_ConstApplyModel(denoised), self._args(inp))
         assert out.dtype == torch.float16
+
+
+class TestConditioningWrapperCombinedPath:
+    """Combined path: pooled_conds non-empty AND m_packed non-None.
+
+    Neither TestBuildConditioningWrapper nor TestConditioningWrapperDenoisedCorrection covers
+    this branch directly — one always passes empty pooled_conds, the other always passes
+    m_packed=None.  This class exercises both levers simultaneously.
+    """
+
+    def _args(self, input_: torch.Tensor) -> dict[str, Any]:
+        return {
+            "input": input_,
+            "timestep": torch.tensor([0.5]),
+            "c": {"transformer_options": {}},
+            "cond_or_uncond": [0],
+        }
+
+    def test_combined_injects_cond_and_applies_correction(self) -> None:
+        """With both pooled_conds and m_packed supplied, the wrapper injects the cond key
+        into c AND applies the denoised correction — both levers active at once."""
+        inp = torch.zeros(1, 4, 3)
+        denoised = torch.ones(1, 4, 3)
+        m = torch.full((1, 4, 3), 0.5)
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+
+        # Spy: record which kwargs reached apply_model, and return the denoised tensor.
+        received_kwargs: dict[str, Any] = {}
+
+        def apply_model_spy(input_: Any, timestep: Any, **kwargs: Any) -> torch.Tensor:
+            received_kwargs.update(kwargs)
+            return denoised
+
+        wrapper = build_conditioning_wrapper(pooled, m)
+        out = wrapper(apply_model_spy, self._args(inp))
+
+        # Cond key was injected into c before the apply_model call.
+        assert "denoise_mask" in received_kwargs
+        # Correction applied: m*denoised + (1-m)*inp = 0.5*1 + 0.5*0 = 0.5
+        assert torch.allclose(out, torch.full((1, 4, 3), 0.5))
 
 
 class TestScalePackedAudio:

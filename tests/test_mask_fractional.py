@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import torch
 
-from comfyui_h3_blended_inject.constants import audio_tick_range, video_row_to_audio_tick
+from comfyui_h3_blended_inject.grid import audio_tick_range, video_row_to_audio_tick
 from comfyui_h3_blended_inject.mask import derive_fractional_mask
 from comfyui_h3_blended_inject.schedule import Inject, RowSchedule
 
@@ -187,3 +187,34 @@ class TestFractionalMaskNestedPath:
         for tick in audio_tick_range(0, _V_SHAPE[2], _A_SHAPE[3]):
             a_slice = result.tensors[1][:, :, :, tick]
             assert torch.allclose(a_slice, torch.full_like(a_slice, 0.4))
+
+
+# ---------------------------------------------------------------------------
+# Regression: audio_component_shape required on nested path (Task #55)
+# ---------------------------------------------------------------------------
+
+
+class TestMissingAudioComponentShapeRaisesValueError:
+    """derive_fractional_mask must raise ValueError (not assert) when
+    video_component_shape is given but audio_component_shape is omitted.
+
+    Before the fix, this was guarded by ``assert audio_component_shape is not None``,
+    which is stripped silently under ``python -O`` — producing undefined behavior instead
+    of a clear error.  The fix uses ``raise ValueError``, which is never stripped.
+
+    Fail-then-pass: with the old assert code a ``pytest.raises(ValueError)`` block
+    catches nothing (assert raises AssertionError, not ValueError) and the test fails.
+    With the fix it passes.
+    """
+
+    def test_raises_value_error_when_audio_shape_missing(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="audio_component_shape"):
+            derive_fractional_mask(
+                [],
+                video_rows=_V_SHAPE[2],
+                audio_ticks=_A_SHAPE[3],
+                video_component_shape=_V_SHAPE,
+                # audio_component_shape intentionally omitted
+            )

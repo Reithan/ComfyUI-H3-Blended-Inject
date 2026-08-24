@@ -22,7 +22,7 @@ For deterministic samplers (euler, res_multistep, dpmpp_2m, ...) the per-step up
 invariant under scaling all sigmas by ``m_r``, so running the global sampler on the global
 schedule with per-row-conditioned ``x0`` and per-row initial noise reproduces per-row
 img2img exactly — no sampler modification needed.  Stochastic samplers (ancestral/SDE,
-euler s_churn>0) add fresh noise per step; :func:`make_per_row_noise_sampler` scales that
+euler s_churn>0) add fresh noise per step; :func:`_make_per_row_noise_sampler` scales that
 noise per-row, but this is INSUFFICIENT for H3's RF-ancestral path (Bug B): the
 ``sample_euler_ancestral_RF`` renoise sub-step is affine (not linear) in sigma via its
 ``alpha = 1 - sigma`` terms, so no noise-magnitude shim alone can make it scale-invariant.
@@ -30,6 +30,9 @@ Stochastic samplers are unsupported/deferred; see ``bugs.md`` Bug B and
 ``stochastic-recovery-theory.md``.
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.
+
+This module is imported lazily inside ``nodes._run_sampler`` (a ``# pragma: no cover`` GPU
+path), so it has no module-level importers at load time — that is intentional, not an orphan.
 """
 
 from __future__ import annotations
@@ -92,8 +95,12 @@ def scale_packed_audio(
     garble under deterministic samplers).
 
     ``packed`` is a flat ``[B, video_elems + audio_elems]`` latent; ``video_element_count`` is
-    ``prod(video_shape[1:])`` — the packed video-prefix length.  Modifies ``packed`` in place
-    and returns it.  A no-op when ``audio_scale == 1.0`` or there is no audio tail.
+    ``prod(video_shape[1:])`` — the packed video-prefix length.  A no-op when
+    ``audio_scale == 1.0`` or there is no audio tail.
+
+    **Dual contract:** mutates ``packed`` in place *and* returns the same tensor.  Both are
+    relied on: call sites use the return value for assignment, and tests assert ``out is packed``
+    (identity) to confirm no copy was made.
 
     Parameters
     ----------
@@ -107,7 +114,7 @@ def scale_packed_audio(
     Returns
     -------
     torch.Tensor
-        ``packed`` (scaled in place).
+        ``packed`` — the same object, audio tail scaled in place.
     """
     if audio_scale != 1.0 and video_element_count < packed.shape[-1]:
         packed[..., video_element_count:] *= audio_scale
@@ -154,12 +161,19 @@ def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Deferred stochastic shim (Bug B)
+# ---------------------------------------------------------------------------
+
+
 def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
     """Return ``True`` iff ``fn`` declares an explicit ``noise_sampler`` parameter.
 
     A bare ``**kwargs`` does *not* count: only samplers that name ``noise_sampler`` actually
     consume an injected noise source (stochastic ancestral/SDE samplers).  Deterministic
-    samplers omit it, so we skip the shim for them.
+    samplers omit it, so the shim is skipped for them.  When this returns ``True``,
+    ``build_per_row_sampler_function`` installs ``_make_per_row_noise_sampler`` — a shim
+    that is currently deferred (Bug B: insufficient for H3's RF-ancestral path).
     """
     try:
         return "noise_sampler" in inspect.signature(fn).parameters
@@ -167,7 +181,7 @@ def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
         return False
 
 
-def make_per_row_noise_sampler(
+def _make_per_row_noise_sampler(
     base_noise_sampler: Callable[[Any, Any], torch.Tensor],
     m: torch.Tensor,
 ) -> Callable[[Any, Any], torch.Tensor]:
@@ -205,78 +219,63 @@ def make_per_row_noise_sampler(
     return noise_sampler
 
 
-def _default_noise_sampler_factory(
+def _default_noise_sampler_factory(  # pragma: no cover
     x: torch.Tensor, seed: int | None = None
 ) -> Callable[[Any, Any], torch.Tensor]:
     """Lazily build ComfyUI's ``default_noise_sampler(x, seed=seed)``.
 
     Imported lazily so this module stays importable without ``comfy`` present (tests inject
-    their own factory).  Falls back to a plain ``randn_like`` source if the seed-aware API
-    is unavailable.
+    their own factory).  Falls back to the no-seed call when the API does not declare a
+    ``seed`` parameter (older ComfyUI builds).
     """
     from comfy.k_diffusion import sampling as k_sampling  # noqa: PLC0415
 
     try:
-        return k_sampling.default_noise_sampler(x, seed=seed)
-    except TypeError:
+        sig = inspect.signature(k_sampling.default_noise_sampler)
+    except (TypeError, ValueError):
+        # Uninspectable (C extension or similar); skip the seed-aware path.
         return k_sampling.default_noise_sampler(x)
+    if "seed" in sig.parameters:
+        return k_sampling.default_noise_sampler(x, seed=seed)
+    return k_sampling.default_noise_sampler(x)
 
 
 def build_conditioning_wrapper(
     pooled_conds: dict[str, torch.Tensor],
     m_packed: torch.Tensor | None = None,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
-    """Return a ``model_function_wrapper`` that injects per-row conditioning *and* corrects
-    the denoised prediction so the sampler integrates each row at its compressed rate.
+    """Return a ``model_function_wrapper`` that injects per-row conditioning and corrects
+    the denoised prediction so each row integrates at its compressed rate.
 
     Two jobs, both required for per-row img2img:
 
-    **1. Inject the pooled per-row denoise conditioning.**  The sampler passes
-    ``noise_mask=None`` (no compositing), so the DiT is fed its fractional per-row schedule
-    directly.  This wrapper injects the pooled, token-grid denoise mask tensors — produced once
-    at wiring time via ``model._denoise_mask_values(packed_mask, latent_shapes)`` — as **named
-    keys** in the conditioning dict ``c`` (e.g. ``"denoise_mask"``, ``"audio_denoise_mask"``),
-    so they flow through ``apply_model(**c)`` → ``extra_conds`` kwargs → the DiT ``_forward``
-    named params.  The tensors go into ``c`` directly, *not* into ``c["transformer_options"]``;
-    each is device/dtype-aligned to the current ``input`` per step, and ``c`` is copied not
-    mutated.  This makes the network's *velocity prediction* valid for the row's true (low)
-    noise level.
+    **1. Inject pooled per-row conditioning.**  Each key/tensor in ``pooled_conds`` is placed
+    directly into a copy of ``c`` (device/dtype-aligned to the current ``input``) so it flows
+    through ``apply_model(**c)`` → DiT ``extra_conds`` params.  ``c`` is copied, never mutated.
 
-    **2. Correct the denoised toward the input by the per-row fraction ``m``.**  This is the
-    fix for the "noise runs in reverse / low-denoise rows end up as static" bug.  H3's
-    ``process_timestep`` compresses only the timestep *embedding* fed to the network
-    (``v_timestep = m * t``), but ``model_base._apply_model`` still converts the network output
-    to a denoised via ``calculate_denoised(sigma, v, x) = x - sigma * v`` using the **outer**
-    (uncompressed) sigma.  So without correction the sampler computes ``d = (x - denoised)/sigma
-    = v`` and integrates each row's velocity over the *full* global interval — a low-``m`` row
-    is stepped ``1/m`` too far and lands off-distribution (pixelation / grey static).  Blending
-    ``corrected = m * denoised + (1 - m) * x`` makes ``d = (x - corrected)/sigma = m * v``, so
-    the sampler integrates each row over exactly its compressed ``m * sigma`` interval — true
-    per-row img2img, for any sampler.  ``m == 1`` rows are unchanged (full generation);
-    ``m == 0`` rows are frozen at their (clean) init value.  The correction is affine in the
-    denoised, so it commutes with CFG (correcting cond and uncond identically is equivalent to
-    correcting the CFG-combined denoised).
+    **2. Denoised correction.**  H3's ``process_timestep`` compresses the *embedding*
+    (``v_timestep = m*t``) but ``calculate_denoised`` still uses the outer sigma, so the
+    sampler would integrate every row over the full global interval.  Blending
+    ``corrected = m*denoised + (1-m)*x`` makes the effective velocity ``m*v`` and confines
+    each row's integral to its compressed ``m*sigma`` interval.  ``m==1`` → raw denoised;
+    ``m==0`` → frozen at the (clean) init.  The correction commutes with CFG.
 
-    The wrapper matches ComfyUI's ``model_function_wrapper`` contract:
-    ``(apply_model, args_dict) -> prediction``, where ``args_dict`` carries ``"input"``,
-    ``"timestep"``, ``"c"``, ``"cond_or_uncond"``.
+    Matches ComfyUI's ``model_function_wrapper`` contract:
+    ``(apply_model, args_dict) -> prediction``.
 
     Parameters
     ----------
     pooled_conds:
-        Mapping of DiT conditioning key → raw pooled mask tensor, as returned by
-        ``MiniMaxH3._denoise_mask_values``.  May be empty (nothing to preserve/compress).
+        DiT conditioning key → pooled mask tensor from ``MiniMaxH3._denoise_mask_values``.
+        May be empty (pure denoised-correction pass-through).
     m_packed:
-        Per-row denoise fractions in the sampler's packed latent layout, broadcastable to the
-        model input/output (``derive_fractional_mask`` expands each row's ``m_r`` across all
-        channels and spatial dims, so this matches the packed latent element-for-element).
-        When ``None`` the denoised correction is skipped (transparent pass-through) — used by
-        conditioning-injection unit tests; production always supplies it.
+        Per-row denoise fractions broadcastable to the model input/output.  ``None`` skips
+        the denoised correction (used by conditioning-injection unit tests).
 
     Returns
     -------
     Callable
-        A ``model_function_wrapper`` suitable for ``model_options["model_function_wrapper"]``.
+        A ``model_function_wrapper`` for ``model_options["model_function_wrapper"]``.
     """
 
     def wrapper(apply_model: Callable[..., Any], args_dict: dict[str, Any]) -> Any:
@@ -348,7 +347,7 @@ def build_per_row_sampler_function(
         if scale_stochastic_noise and kwargs.get("noise_sampler") is None:
             seed = (extra_args or {}).get("seed")
             base_ns = factory(x0, seed=seed)
-            kwargs["noise_sampler"] = make_per_row_noise_sampler(base_ns, m_packed)
+            kwargs["noise_sampler"] = _make_per_row_noise_sampler(base_ns, m_packed)
         return base_fn(
             model,
             x0,
@@ -360,3 +359,44 @@ def build_per_row_sampler_function(
         )
 
     return sampler_function
+
+
+# ---------------------------------------------------------------------------
+# Audio sigma shift — lives here (not grid.py) because it is a scheduling
+# formula used at sample time, not a grid geometry helper.
+# ---------------------------------------------------------------------------
+
+
+def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
+    """Return the shifted audio sigma for a given video sigma.
+
+    Mirrors ``time_shift_sigma`` from ``comfy/ldm/minimax/model.py``.  Audio rows release
+    against this shifted sigma, not the raw video sigma, to keep audio and video fades
+    temporally aligned.
+
+    Parameters
+    ----------
+    sigma:
+        Current video sigma value (scalar, in [0, 1] space).
+    from_shift:
+        Video sigma shift (``sigma_shift_video``).  Defaults to 12.0, the H3 DiT
+        constructor default.  In production, pass the runtime value from
+        ``transformer_options["minimax_h3_sigma_shift_video"]`` so audio timing stays
+        aligned when the user changes the video shift via the ``MiniMax H3 Sigma Shift``
+        node.
+    to_shift:
+        Audio sigma shift (``sigma_shift_audio``).  Defaults to 3.0, the H3 DiT
+        constructor default.  Pass the runtime value from
+        ``transformer_options["minimax_h3_sigma_shift_audio"]`` when available.
+
+    Returns
+    -------
+    float
+        Shifted sigma value appropriate for the audio stream.
+    """
+    # Two-step warp from comfy/ldm/minimax/model.py ~36-38: invert the video shift to
+    # recover the base grid, then re-apply the audio shift.
+    # Returns the raw warp value; ComfyUI applies `1.0 - warp` at the model
+    # boundary as the audio conditioning timestep.  Contract: f(0)=0, f(1)=1.
+    base = sigma / (from_shift + sigma * (1.0 - from_shift))
+    return float(to_shift * base / (1.0 + (to_shift - 1.0) * base))

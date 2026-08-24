@@ -22,11 +22,11 @@ repos:
         always_run: true
         pass_filenames: false
 
-      # Heavy check: run the test suite before pushing (mirrors CI).
+      # Heavy check: run tests + diff-coverage before pushing (mirrors CI).
       - id: pytest
-        name: run tests before push
-        entry: uv run pytest
-        language: system
+        name: run tests +coverage before push
+        entry: scripts/pre-push-tests.sh
+        language: script
         stages: [pre-push]
         always_run: true
         pass_filenames: false
