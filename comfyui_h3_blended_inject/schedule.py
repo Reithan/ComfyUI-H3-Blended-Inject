@@ -70,8 +70,8 @@ class Inject:
         Number of source frames in the inject content (used to validate envelope indices).
     video_latent:
         Pre-encoded video latent tensor (from the video VAE), or ``None`` if no VAE was
-        supplied to ``H3AddInject``.  Used by ``H3InjectSampler`` to populate the per-row
-        ``original`` tensors for hold-and-release without re-encoding during sampling.
+        supplied to ``H3AddInject``.  Used by ``H3InjectSampler`` to build the clean
+        reference latent for the per-row img2img sampler without re-encoding at sample time.
     audio_latent:
         Pre-encoded audio latent tensor (from the audio VAE), or ``None`` if no audio VAE
         was supplied.  Used analogously to ``video_latent`` for the audio stream.
@@ -97,16 +97,16 @@ class Inject:
 class RowSchedule:
     """The resolved schedule entry for one target latent video row.
 
-    Produced by :func:`merge_schedule`; consumed by :mod:`~comfyui_h3_blended_inject.mask`
-    and :mod:`~comfyui_h3_blended_inject.hold_release`.
+    Produced by :func:`merge_schedule`; consumed by :mod:`~comfyui_h3_blended_inject.mask`,
+    :mod:`~comfyui_h3_blended_inject.composite`, and :mod:`~comfyui_h3_blended_inject.sampler`.
 
     Attributes
     ----------
     row_idx:
         Zero-based index of this row in the target latent.
     denoise:
-        Resolved denoise value for this row in [0.0, 1.0].  0.0 = exact preserve (routes to
-        derived mask); 1.0 = fully generated; fractional = hold-and-release.
+        Resolved denoise value for this row in [0.0, 1.0].  0.0 = exact preserve; 1.0 = fully
+        generated; fractional = per-row img2img start (the row's ``m_r``).
     inject:
         The winning :class:`Inject` for this row, or ``None`` if no inject covers it.
     audio_frozen:
@@ -146,11 +146,28 @@ class RowSchedule:
             return True
         return self.inject is not None and self.inject.audio_mode == "fade" and self.denoise == 0.0
 
+    @property
+    def audio_denoise(self) -> float:
+        """The per-row fractional audio denoise ``m_r`` for the per-row img2img sampler.
+
+        Fractional generalization of :attr:`audio_preserve`:
+
+        - **keep** mode (``audio_frozen``): ``0.0`` everywhere — audio is frozen/preserved.
+        - **fade** mode: follows the video envelope, so it equals this row's ``denoise``.
+        - **drop** mode / no inject: ``1.0`` — audio is generated from scratch.
+
+        Consistency: ``audio_preserve`` is ``True`` exactly when ``audio_denoise == 0.0``.
+        """
+        if self.audio_frozen:
+            return 0.0
+        if self.inject is not None and self.inject.audio_mode == "fade":
+            return self.denoise
+        return 1.0
+
 
 def merge_schedule(
     inject_list: InjectList,
     target_rows: int,
-    crossfade: bool = False,
 ) -> list[RowSchedule]:
     """Merge a list of injects into a flat per-row schedule using last-in-wins semantics.
 
@@ -171,11 +188,6 @@ def merge_schedule(
         ``H3AddInject`` chain order; later entries win on overlap.
     target_rows:
         Total number of rows in the target latent.
-    crossfade:
-        Passed through to :func:`~comfyui_h3_blended_inject.envelope.classify_row_region`.
-        When ``False`` (default), fade-ramp rows are classified as ``'hold'`` and use the
-        ordinary fractional hold-and-release path.  When ``True``, ramp rows classify as
-        ``'fade'`` and activate the legacy persistent prediction-blend path.
 
     Returns
     -------
@@ -217,7 +229,6 @@ def merge_schedule(
                 inj.end_keyframes,
                 inj.end_fade_out,
                 inj.min_denoise,
-                crossfade,
             ),
         )
         for row_idx, (inj, d) in sorted(row_map.items())

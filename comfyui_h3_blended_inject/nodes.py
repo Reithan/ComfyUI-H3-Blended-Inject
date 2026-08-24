@@ -4,7 +4,7 @@ Two nodes are defined:
 
 - :class:`H3AddInject`: Appends one inject to an ``INJECT_LIST`` chain.  Chainable.
 - :class:`H3InjectSampler`: KSampler Advanced clone that accepts an ``INJECT_LIST`` and
-  applies the hold-and-release mechanism during sampling.
+  applies per-row img2img inject during sampling.
 
 ``comfy`` imports are lazy (inside methods) so this module imports without ComfyUI present,
 enabling CPU-side unit tests.
@@ -19,7 +19,6 @@ from typing import Any
 
 from comfyui_h3_blended_inject import constants
 from comfyui_h3_blended_inject.guidance import resolve_guidance
-from comfyui_h3_blended_inject.mask import apply_derived_mask
 from comfyui_h3_blended_inject.sanitize import (
     check_resolution,
     sanitize_audio,
@@ -60,12 +59,15 @@ def _encode_ref_audio(audio_vae: Any, audio: Any) -> tuple[Any, int]:  # pragma:
     ``torchaudio`` is imported lazily here.  This function requires a real
     H3 audio VAE and is therefore not exercised in CPU unit tests.
     """
-    import torchaudio  # noqa: PLC0415
-
     waveform = audio["waveform"]
     sr = audio["sample_rate"]
     vae_sr = getattr(audio_vae, "audio_sample_rate", 32000)
     if sr != vae_sr:
+        # Lazy import: torchaudio is only present in the ComfyUI runtime; when the
+        # waveform is already at the VAE rate (sanitize_audio resamples upstream)
+        # this path — and the dependency — is skipped entirely.
+        import torchaudio  # noqa: PLC0415
+
         waveform = torchaudio.functional.resample(waveform, sr, vae_sr)
     z = audio_vae.encode(waveform[:1].movedim(1, -1))  # [1, 32, 2, T]
     return z, z.shape[-1]
@@ -76,7 +78,6 @@ def _run_sampler(  # pragma: no cover
     schedule: Any,
     latent_image: dict[str, Any],
     noise_seed: int,
-    add_noise: str,
     steps: int,
     cfg: float,
     sampler_name: str,
@@ -84,225 +85,221 @@ def _run_sampler(  # pragma: no cover
     positive: Any,
     negative: Any | None,
     samples: Any,
-    start_at_step: int,
-    end_at_step: int,
-    return_with_leftover_noise: str,
     target_rows: int,
     audio_ticks: int,
 ) -> tuple[dict[str, Any]]:
-    """GPU/ComfyUI sampling pipeline — not CPU-testable.
+    """GPU/ComfyUI per-row img2img sampling pipeline — not CPU-testable.
 
-    Builds per-row original/noise tensors from the inject latents, installs the
-    hold-and-release ``model_function_wrapper``, and runs the sampler.
+    Implements the per-row img2img design (see ``sampler.py`` and ``composite.py``):
+
+    1. Build the *clean reference* — the target latent with all inject video/audio content
+       composited in (:func:`~comfyui_h3_blended_inject.composite.build_clean_reference`).
+       This is passed to ``sample_custom`` as the ``latent_image`` so ComfyUI's global
+       ``noise_scaling`` produces ``x_global = sigma_max*eps + (1-sigma_max)*clean``.
+    2. Build the *fractional per-row denoise mask*
+       (:func:`~comfyui_h3_blended_inject.mask.derive_fractional_mask`) and pack it to the
+       sampler's flat layout.  Its pooled token-grid values are injected as DiT conditioning
+       via the :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`, so each
+       row runs its own compressed schedule.
+    3. Wrap the base k-diffusion ``sampler_function`` with
+       :func:`~comfyui_h3_blended_inject.sampler.build_per_row_sampler_function`, which lerps
+       the initial ``x`` toward the clean reference per row (``m*x + (1-m)*clean``) and — for
+       stochastic samplers — installs a per-row-scaling noise_sampler shim.
+    4. Run ``comfy.sample.sample_custom`` with ``noise_mask=None`` (no native compositing → no
+       compounding re-pin ghost), then apply the binary exact-preserve overwrite
+       (:func:`~comfyui_h3_blended_inject.composite.post_composite_preserve`) for ``m == 0``
+       rows and audio-preserve ticks.
 
     Notes
     -----
-    This function is pragma'd because it requires real H3 latents, a running
-    ComfyUI environment, and (typically) a GPU.  The ``audio_scale_factor``
-    derivation from ``model.model.model_sampling`` also needs GPU verification.
+    This function is pragma'd because it requires real H3 latents, a running ComfyUI
+    environment, and (typically) a GPU.  GPU verification is tracked as task #19.
     """
-    from comfyui_h3_blended_inject.hold_release import build_model_function_wrapper, draw_row_noise
-
-    # --- Step 6: Build per-row original and noise tensors from inject latents. ---
-    # H3 video latent: [1, C_v, T, Hl, Wl]; clip row axis is dim 2.
-    # H3 audio latent: [1, C_a, 2, audio_t]; clip tick axis is dim 3.
-    #
-    # Row-offset: row_s.row_idx is the ABSOLUTE target latent row.  Under task #24's
-    # per-17-chunk grid fix, inject_at (always a multiple of 17 after snapping) lands
-    # exactly on a chunk-boundary row: frame_to_row(17k) = 5k.  Clip row 0 therefore
-    # aligns to target row 5k with no sub-row offset.
-    # Audio-tick alignment for inject_at values that are not multiples of 51 may still
-    # incur up to ~12.5 ms rounding error (see snap_inject_at_audio_tick warning).
-    #
-    # inject_row_map / inject_audio_ticks_for_row encapsulate the clip↔target bounds
-    # logic and are shared with the d==0 composite in Step 6.5 below.
-    per_row_original: dict[int, Any] = {}
-    per_row_noise: dict[int, Any] = {}
-    audio_row_original: dict[int, Any] = {}
-    audio_row_noise: dict[int, Any] = {}
-
-    for row_s in schedule:
-        inj = row_s.inject
-        if inj is None or inj.video_latent is None:
-            continue
-        n_clip_rows = int(inj.video_latent.shape[2])
-        row_map = dict(constants.inject_row_map(inj.inject_at, n_clip_rows, target_rows))
-        if row_s.row_idx not in row_map:
-            continue
-        clip_row = row_map[row_s.row_idx]
-        per_row_original[row_s.row_idx] = inj.video_latent[:, :, clip_row : clip_row + 1, :, :]
-        per_row_noise[row_s.row_idx] = draw_row_noise(
-            noise_seed,
-            per_row_original[row_s.row_idx].shape,
-            device=per_row_original[row_s.row_idx].device,
-            dtype=per_row_original[row_s.row_idx].dtype,
-        )
-
-    for row_s in schedule:
-        inj = row_s.inject
-        if inj is None or inj.audio_latent is None:
-            continue
-        n_clip_ticks = int(inj.audio_latent.shape[-1])
-        for tick, clip_tick in constants.inject_audio_ticks_for_row(
-            row_s.row_idx, inj.inject_at, n_clip_ticks, target_rows, audio_ticks
-        ):
-            audio_row_original[tick] = inj.audio_latent[:, :, :, clip_tick : clip_tick + 1]
-            audio_row_noise[tick] = draw_row_noise(
-                noise_seed,
-                audio_row_original[tick].shape,
-                device=audio_row_original[tick].device,
-                dtype=audio_row_original[tick].dtype,
-            )
-
-    # --- Step 6.5: Composite injected content at d==0 preserve rows. ---
-    # Rows with denoise==0.0 are routed through the derived noise mask (H3's
-    # scale_latent_inpaint trained path), which expects the latent at those positions
-    # to already hold the injected content.  Write clip rows/ticks directly into
-    # a copy of the target latent for every d==0 schedule entry that has video/audio
-    # latents attached.
-    #
-    # Fractional-denoise (fade) rows and d==1.0 (free-gen) rows are NOT touched here;
-    # fractional rows are handled by the hold-and-release wrapper (Step 8), and the
-    # fade fix (task #26) will handle fade rows separately.
-    #
-    # GPU-only assumption: inj.video_latent / inj.audio_latent must already reside on
-    # the same device as latent_image["samples"]'s components.  No device transfer is
-    # performed here.  The NestedTensor components are cloned before writing to avoid
-    # mutating the original input.
-    _samples = latent_image["samples"]
-    if getattr(_samples, "is_nested", False):
-        from comfy.nested_tensor import NestedTensor as _NestedTensor  # noqa: PLC0415
-
-        _components = list(_samples.unbind())
-        _video = _components[0].clone()  # [1, C_v, T, Hl, Wl]; row axis dim 2
-        _audio = _components[1].clone() if len(_components) > 1 else None  # [1, C_a, 2, audio_t]
-        _wrote_any = False
-        for row_s in schedule:
-            if row_s.denoise != 0.0:
-                continue
-            inj = row_s.inject
-            if inj is None:
-                continue
-            # Video: write clip row slice into target row.
-            if inj.video_latent is not None:
-                _n_clip_rows = int(inj.video_latent.shape[2])
-                _row_map = dict(constants.inject_row_map(inj.inject_at, _n_clip_rows, target_rows))
-                if row_s.row_idx in _row_map:
-                    _clip_row = _row_map[row_s.row_idx]
-                    _video[:, :, row_s.row_idx, :, :] = inj.video_latent[:, :, _clip_row, :, :]
-                    _wrote_any = True
-            # Audio: write clip tick slices into the audio component for this row.
-            # Guard on audio_preserve to mirror the mask preserve set exactly — only ticks
-            # that derive_mask sets to 0 should be composited here.  audio_preserve is True
-            # for keep-mode (audio_frozen) everywhere and for fade-mode rows where
-            # denoise==0.0, mirroring the video-preserve set so audio follows the video
-            # envelope through the hold region.
-            if _audio is not None and inj.audio_latent is not None and row_s.audio_preserve:
-                _n_clip_ticks = int(inj.audio_latent.shape[-1])
-                for _tick, _clip_tick in constants.inject_audio_ticks_for_row(
-                    row_s.row_idx, inj.inject_at, _n_clip_ticks, target_rows, audio_ticks
-                ):
-                    _audio[:, :, :, _tick] = inj.audio_latent[:, :, :, _clip_tick]
-                    _wrote_any = True
-        if _wrote_any:
-            _new_samples = _NestedTensor((_video,) if _audio is None else (_video, _audio))
-            latent_image = {**latent_image, "samples": _new_samples}
-
-    # --- Step 7: Derive audio_scale_factor from model_sampling if available. ---
-    # audio_scale = sigma_shift_video / sigma_shift_audio = 12.0 / 3.0 = 4.0
-    # We prefer the computed property .audio_scale when present.
-    try:
-        audio_scale_factor = float(model.model.model_sampling.audio_scale)
-    except AttributeError:
-        try:
-            audio_scale_factor = (
-                model.model.model_sampling.shift / model.model.model_sampling.audio_shift
-            )
-        except AttributeError:
-            audio_scale_factor = 4.0  # default; needs GPU verification
-
-    # --- Step 8: Clone model and install the hold-and-release wrapper. ---
-    # model.clone() is called before the comfy.* imports so that a plain-object model
-    # (used in CPU tests) raises AttributeError before any import of the unavailable
-    # comfy package is attempted.
+    # model.clone() is called before any comfy.* import so a plain-object model (CPU tests)
+    # raises AttributeError before an unavailable comfy package would be imported.
     m = model.clone()
 
-    # Derive latent_shapes by packing the input nested latent's components.
-    # CFGGuider will have done the same pack before calling our wrapper, so
-    # these shapes are correct for unpack_latents inside the wrapper.
+    import comfy.sample
+    import comfy.samplers
+    from comfy.nested_tensor import NestedTensor
+
+    from comfyui_h3_blended_inject.composite import (
+        build_clean_reference,
+        post_composite_preserve,
+    )
+    from comfyui_h3_blended_inject.mask import derive_fractional_mask
+    from comfyui_h3_blended_inject.sampler import (
+        build_conditioning_wrapper,
+        build_per_row_sampler_function,
+        quantize_denoise,
+        sampler_accepts_noise_sampler,
+        sampler_is_stochastic,
+        scale_packed_audio,
+    )
+
+    # --- 1. Split the target latent into components (H3 FLOW_AV is NestedTensor). ---
+    _samples = latent_image["samples"]
+    is_nested = getattr(_samples, "is_nested", False)
+    if is_nested:
+        _components = list(_samples.unbind())
+        video = _components[0]  # [1, C_v, T, Hl, Wl]; row axis dim 2
+        audio = _components[1] if len(_components) > 1 else None  # [1, C_a, 2, audio_t]
+    else:
+        video = _samples
+        audio = None
+
+    # --- 2. Clean reference: target with all inject content composited in. ---
+    # Fractional rows img2img *from* this content; m==1 rows ignore it; m==0 rows are
+    # restored from it after sampling by post_composite_preserve.
+    clean_video, clean_audio = build_clean_reference(
+        video, audio, schedule, target_rows, audio_ticks
+    )
+    clean_components = (clean_video,) if clean_audio is None else (clean_video, clean_audio)
+    clean_nested = NestedTensor(clean_components) if is_nested else clean_video
+
+    # The clean reference is used in TWO spaces that do NOT match:
+    #   - sample_custom's latent_image: passed RAW (clean_nested); comfy applies
+    #     MiniMaxH3.process_latent_in internally, which scales the AUDIO slice by audio_scale
+    #     (shift/audio_shift = 4.0; video scale_factor is 1.0) → x_global carries scaled audio.
+    #   - the per-row init lerp's clean term (clean_packed): must live in that SAME scaled
+    #     space, since the lerp blends x_global toward it. So scale clean_packed's audio slice
+    #     by audio_scale here (see sampler.scale_packed_audio). Skipping this left fractional
+    #     (0<m<1) audio rows img2img-ing from a 4x-mismatched reference → decoded static.
     import comfy.utils as _comfy_utils
 
-    _, latent_shapes = _comfy_utils.pack_latents(latent_image["samples"].unbind())
+    clean_packed, latent_shapes = _comfy_utils.pack_latents(clean_components)
+    if clean_audio is not None:
+        audio_scale = float(getattr(m.model.model_sampling, "audio_scale", 1.0))
+        n_video_elems = 1
+        for _dim in latent_shapes[0][1:]:
+            n_video_elems *= int(_dim)
+        clean_packed = scale_packed_audio(clean_packed, n_video_elems, audio_scale)
 
-    # Read DiT sigma-shift constructor defaults from the live model.  These are the
-    # fallback values used when transformer_options does not supply the runtime keys
-    # "minimax_h3_sigma_shift_video" / "_audio" (model.py:533-534).
-    # m.model is the BaseModel subclass (MiniMaxH3); .diffusion_model is the DiT.
-    _dit = getattr(m.model, "diffusion_model", None)
-    default_shift_video = float(getattr(_dit, "sigma_shift_video", 12.0))
-    default_shift_audio = float(getattr(_dit, "sigma_shift_audio", 3.0))
-
-    wrapper = build_model_function_wrapper(
+    # --- 3. Fractional per-row denoise mask, packed to the same flat layout. ---
+    video_shape = tuple(int(d) for d in video.shape)
+    audio_shape = tuple(int(d) for d in audio.shape) if audio is not None else None
+    frac_components = derive_fractional_mask(
         schedule,
-        per_row_original,
-        per_row_noise,
-        audio_row_original,
-        audio_row_noise,
-        audio_scale_factor,
-        latent_shapes=latent_shapes,
-        target_rows=target_rows,
-        audio_ticks=audio_ticks,
-        default_shift_video=default_shift_video,
-        default_shift_audio=default_shift_audio,
+        target_rows,
+        audio_ticks,
+        video_component_shape=video_shape,
+        audio_component_shape=audio_shape,
+        nested_factory=lambda v, a: (v, a),
     )
-    m.model_options = {**m.model_options, "model_function_wrapper": wrapper}
+    if isinstance(frac_components, dict):
+        frac_components = (frac_components["video_mask"],)
+    m_packed, _ = _comfy_utils.pack_latents(frac_components)
+    # Snap m to the native 1/256 mask grid BEFORE it feeds any lever: the DiT's
+    # _token_grid_masks quantizes with ceil(m*256)/256, so pre-quantizing keeps the
+    # init lerp (lever 1), the DiT labels (lever 2), and the denoised correction
+    # (lever 3) on the *identical* per-row m. See sampler.quantize_denoise.
+    m_packed = quantize_denoise(m_packed).to(device=clean_packed.device)
 
-    # --- Step 9: Run the sampler (KSamplerAdvanced / common_ksampler pattern). ---
-    import comfy.sample
-    import comfy.samplers  # noqa: F401 — imported for KSampler registration side-effects
+    # --- 4. Install the fractional-denoise conditioning + denoised-correction wrapper. ---
+    # The wrapper injects the pooled per-row timestep conditioning AND corrects the denoised
+    # (m*denoised + (1-m)*input) so the sampler integrates each row over its compressed
+    # m*sigma interval — H3's process_timestep only compresses the network's timestep, while
+    # calculate_denoised still divides by the outer sigma. See build_conditioning_wrapper.
+    pooled = m.model._denoise_mask_values(m_packed, latent_shapes)
+    m.model_options = {
+        **m.model_options,
+        "model_function_wrapper": build_conditioning_wrapper(pooled, m_packed),
+    }
 
-    disable_noise = add_noise == "disable"
-    force_full_denoise = return_with_leftover_noise == "disable"
+    # --- 5. Wrap the base sampler_function for per-row img2img. ---
+    base_ks = comfy.samplers.sampler_object(sampler_name)
+    base_fn = base_ks.sampler_function
+    if sampler_is_stochastic(base_fn) and any(r.denoise < 1.0 for r in schedule):
+        import warnings as _warnings
 
-    noise = None
-    if not disable_noise:
-        noise = comfy.sample.prepare_noise(samples, noise_seed)
+        _warnings.warn(
+            f"H3InjectSampler: sampler '{sampler_name}' is stochastic (ancestral/SDE). "
+            "Per-row img2img compression is NOT scale-invariant under stochastic "
+            "renoise on H3's rectified-flow path; fractional/preserved rows will "
+            "come out corrupted (grey static). Use a deterministic sampler "
+            "(euler, res_multistep, dpmpp_2m).",
+            UserWarning,
+            stacklevel=2,
+        )
+    wrapped_fn = build_per_row_sampler_function(
+        base_fn,
+        m_packed,
+        clean_packed,
+        scale_stochastic_noise=sampler_accepts_noise_sampler(base_fn),
+    )
+    sampler = comfy.samplers.KSAMPLER(
+        wrapped_fn,
+        extra_options=base_ks.extra_options,
+        inpaint_options=base_ks.inpaint_options,
+    )
 
-    # Resolve optional-negative guidance per the H3 NRS-agnostic rule:
-    #   - negative wired → forward it; set disable_cfg1_optimization so the uncond
-    #     pass runs even at cfg==1.0 (required for cfg-independent hooks like NRS).
-    #   - negative None + sampler_cfg_function present → warn (hook runs without a
-    #     real uncond); pass [] and leave cfg and model_options unchanged.
-    #   - negative None + no hook → force effective_cfg=1.0 (avoids silent cond*cfg
-    #     gain); warn if the user's cfg was not already 1.0.
-    # See comfyui_h3_blended_inject/guidance.py for the full rule and samplers.py
-    # line references.
+    # --- 6. Resolve optional-negative guidance (H3 NRS-agnostic rule). ---
+    #   - negative wired → forward it; set disable_cfg1_optimization so the uncond pass runs
+    #     even at cfg==1.0 (required for cfg-independent hooks like NRS).
+    #   - negative None + sampler_cfg_function present → warn; pass [] unchanged.
+    #   - negative None + no hook → force effective_cfg=1.0 (avoids silent cond*cfg gain).
     effective_negative, effective_cfg, m.model_options = resolve_guidance(
         negative, cfg, m.model_options
     )
 
-    out_samples = comfy.sample.sample(
+    # --- 7. Prepare noise and the full-range sigma schedule. ---
+    # Chaining (add_noise=disable / partial step range / leftover noise) is intentionally
+    # unsupported: per-row compression makes those per-row-incorrect (see INPUT_TYPES note).
+    import comfy.model_management
+
+    noise = comfy.sample.prepare_noise(samples, noise_seed)
+
+    device = comfy.model_management.get_torch_device()
+    ksampler_obj = comfy.samplers.KSampler(
+        m,
+        steps=steps,
+        device=device,
+        sampler=sampler_name,
+        scheduler=scheduler,
+        denoise=1.0,
+        model_options=m.model_options,
+    )
+    sigmas = ksampler_obj.sigmas.to(device)
+
+    # --- 8. Sample with noise_mask=None (no native compositing → no compounding ghost). ---
+    # Standard custom-sampler preview callback (same wiring as SamplerCustom): drives the
+    # official latent preview + progress; previewer-override nodes patch inside this path.
+    import latent_preview
+
+    callback = latent_preview.prepare_callback(m, sigmas.shape[-1] - 1)
+    out_samples = comfy.sample.sample_custom(
         m,
         noise,
-        steps,
         effective_cfg,
-        sampler_name,
-        scheduler,
+        sampler,
+        sigmas,
         positive,
         effective_negative,
-        latent_image["samples"],
-        denoise=1.0,
-        disable_noise=disable_noise,
-        start_step=start_at_step,
-        last_step=end_at_step,
-        force_full_denoise=force_full_denoise,
-        noise_mask=latent_image.get("noise_mask"),
-        callback=None,
+        clean_nested,
+        noise_mask=None,
+        callback=callback,
         disable_pbar=False,
         seed=noise_seed,
     )
+
+    # --- 9. Exact-preserve overwrite of m==0 rows / audio-preserve ticks. ---
+    if getattr(out_samples, "is_nested", False):
+        _out_components = list(out_samples.unbind())
+        out_video = _out_components[0]
+        out_audio = _out_components[1] if len(_out_components) > 1 else None
+    else:
+        out_video = out_samples
+        out_audio = None
+    out_video, out_audio = post_composite_preserve(
+        out_video, out_audio, clean_video, clean_audio, schedule, target_rows, audio_ticks
+    )
+    if is_nested:
+        final = NestedTensor((out_video,) if out_audio is None else (out_video, out_audio))
+    else:
+        final = out_video
+
     out = latent_image.copy()
-    out["samples"] = out_samples
+    out["samples"] = final
     return (out,)
 
 
@@ -577,6 +574,20 @@ class H3AddInject:
                 "Must satisfy start_fade_in <= start_keyframes <= end_keyframes <= end_fade_out."
             )
 
+        # b2. Content without a matching VAE would be SILENTLY dropped downstream
+        #     (build_clean_reference skips injects whose latents are None) — error early.
+        if images is not None and vae is None:
+            raise ValueError(
+                "images were provided but no vae is wired; the inject content cannot be "
+                "encoded and would be silently ignored. Connect the video VAE."
+            )
+        if audio is not None and audio_mode != "drop" and audio_vae is None:
+            raise ValueError(
+                f"audio was provided with audio_mode={audio_mode!r} but no audio_vae is "
+                "wired; the inject audio cannot be encoded and would be silently ignored. "
+                "Connect the audio VAE or set audio_mode='drop'."
+            )
+
         # c. Derive source_length and resolution from images if present.
         #    Snap source content length down to the nearest valid H3 inject length.
         #    Valid set: {1} ∪ {17n+5}.  Raises ValueError for lengths 2-4 or < 1;
@@ -675,27 +686,26 @@ class H3AddInject:
 
 
 class H3InjectSampler:
-    """KSampler Advanced clone that applies hold-and-release inject during sampling.
+    """KSampler Advanced clone that applies per-row img2img inject during sampling.
 
-    Mirrors the KSampler Advanced surface (model, seed, steps, cfg, sampler, scheduler,
-    start/end step, latent, conditioning, add_noise, return_with_leftover_noise) and adds an
-    ``inject_list`` input.
+    Mirrors the core KSampler surface (model, seed, steps, cfg, sampler, scheduler, latent,
+    conditioning) and adds an ``inject_list`` input.  The KSampler-Advanced chaining widgets
+    (add_noise / start-end step / leftover noise) are deliberately hidden — per-row
+    compression makes partial runs per-row-incorrect (see the INPUT_TYPES note).
 
     Responsibilities:
 
-    1. VAE-encode inject content into per-row ``original`` tensors.
+    1. VAE-encode inject content into per-inject video/audio latents (done by ``H3AddInject``).
     2. Build the per-row schedule from the inject list (last-in-wins merge via
        :func:`~comfyui_h3_blended_inject.schedule.merge_schedule`).
-    3. Derive the nested AV noise mask for exact ``d = 0`` rows and ``frozen`` audio ticks
-       (via :func:`~comfyui_h3_blended_inject.mask.apply_derived_mask`).
-    4. Install the ``model_function_wrapper`` from
-       :func:`~comfyui_h3_blended_inject.hold_release.build_model_function_wrapper` on a
-       cloned model.
-    5. Run the sampler **once, normally** (does not own the step loop; compatible with all
-       samplers including ``res_multistep`` and ``euler_a``).
-
-    If the incoming latent already has a ``noise_mask``, a warning is issued and it is
-    replaced by the derived mask.
+    3. Build the *clean reference* (target + composited inject content) and the *fractional
+       per-row denoise mask*, then run a **custom sampler** that lerps each row's initial noise
+       toward the clean reference and feeds the fractional schedule to the DiT as conditioning
+       (see :func:`_run_sampler`).  ``noise_mask=None`` — no native compositing — so there is
+       no compounding re-pin ghost; exact ``m == 0`` rows are restored by a post-sampling
+       composite.
+    4. Compatible with all samplers: deterministic ones (res_multistep, dpmpp_2m, euler) need
+       no change; stochastic ones get a per-row noise-scaling shim.
     """
 
     @classmethod
@@ -719,10 +729,13 @@ class H3InjectSampler:
         return {
             "required": {
                 "model": ("MODEL",),
-                "add_noise": (
-                    ["enable", "disable"],
-                    {"tooltip": "Whether to add noise before sampling (disable for img2img)."},
-                ),
+                # NOTE (prototype): the KSampler-Advanced chaining surface (add_noise,
+                # start_at_step, end_at_step, return_with_leftover_noise) is HIDDEN, not
+                # supported: per-row compressed schedules make partial runs / leftover
+                # noise per-row-incorrect (fractional rows end at m*sigma_end, but the
+                # sampler's final inverse_noise_scaling divides all rows by (1-sigma_end)).
+                # Internally hardcoded to add_noise=enable / full step range / no leftover.
+                # Revisit post-prototype: see wiki status-and-open-paths.
                 "noise_seed": (
                     "INT",
                     {
@@ -741,12 +754,6 @@ class H3InjectSampler:
                 "scheduler": (schedulers,),
                 "positive": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
-                "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
-                "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
-                "return_with_leftover_noise": (
-                    ["disable", "enable"],
-                    {"tooltip": "Return the latent with leftover noise (for chained samplers)."},
-                ),
                 "inject_list": (INJECT_LIST,),
             },
             "optional": {
@@ -757,17 +764,6 @@ class H3InjectSampler:
                             "Optional. H3 is CFG-distilled and runs with no uncond by default — "
                             "leave unconnected for standard H3 sampling. Connect a negative "
                             "conditioning to enable CFG / NRS-style guidance."
-                        ),
-                    },
-                ),
-                "crossfade": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": (
-                            "Off (default): fade-ramp rows use fractional hold-and-release "
-                            "(staggered release across the timeline). "
-                            "On: use the legacy persistent prediction-blend for ramp rows."
                         ),
                     },
                 ),
@@ -782,7 +778,6 @@ class H3InjectSampler:
     def sample(
         self,
         model: Any,
-        add_noise: str,
         noise_seed: int,
         steps: int,
         cfg: float,
@@ -790,23 +785,17 @@ class H3InjectSampler:
         scheduler: str,
         positive: Any,
         latent_image: dict[str, Any],
-        start_at_step: int,
-        end_at_step: int,
-        return_with_leftover_noise: str,
         inject_list: InjectList,
         negative: Any | None = None,
-        crossfade: bool = False,
     ) -> tuple[dict[str, Any]]:
-        """Run the H3 sampler with hold-and-release inject.
+        """Run the H3 sampler with per-row img2img inject.
 
         Parameters
         ----------
         model:
             ComfyUI MODEL object (a ``MiniMaxH3`` instance is expected).
-        add_noise:
-            ``"enable"`` to add noise before sampling; ``"disable"`` for img2img.
         noise_seed:
-            RNG seed.  Used for both the sampler's noise and :func:`draw_row_noise` calls.
+            RNG seed for the sampler's initial noise (and the stochastic per-row noise shim).
         steps:
             Total number of sampling steps.
         cfg:
@@ -819,22 +808,12 @@ class H3InjectSampler:
             Positive conditioning tensor.
         latent_image:
             ComfyUI LATENT dict with ``"samples"`` key.
-        start_at_step:
-            First step index to sample (for step-range chaining).
-        end_at_step:
-            Last step index to sample (exclusive).
-        return_with_leftover_noise:
-            ``"enable"`` to return the latent without final denoising (for chained samplers).
         inject_list:
             Ordered list of :class:`~comfyui_h3_blended_inject.schedule.Inject` instances.
         negative:
             Optional negative conditioning.  ``None`` (the default) means "no uncond" —
             the H3 CFG-distilled default.  When provided, it is forwarded verbatim to the
             sampler for CFG / NRS-style guidance.
-        crossfade:
-            When ``False`` (default), fade-ramp rows use the ordinary fractional
-            hold-and-release path — staggered per-row release is the fade.  When ``True``,
-            ramp rows activate the legacy persistent prediction-blend path.
 
         Returns
         -------
@@ -862,25 +841,20 @@ class H3InjectSampler:
             target_h = int(_video.shape[-2]) * 16
             target_w = int(_video.shape[-1]) * 16
             # Read the real audio tick count directly from the audio latent shape.
+            # _run_sampler re-derives the component shapes from the latent itself.
             _audio_ticks_from_latent: int | None = int(_audio.shape[-1])
-            _video_component_shape: tuple[int, ...] | None = tuple(int(d) for d in _video.shape)
-            _audio_component_shape: tuple[int, ...] | None = tuple(int(d) for d in _audio.shape)
         elif samples.dim() == 5:  # pragma: no cover
             # Plain 5-dim tensor: [N, C, T, H/16, W/16] (non-nested GPU latent).
             target_rows = int(samples.shape[2])
             target_h = int(samples.shape[-2]) * 16
             target_w = int(samples.shape[-1]) * 16
             _audio_ticks_from_latent = None
-            _video_component_shape = None
-            _audio_component_shape = None
         else:
             # 4-dim synthetic tensor used in CPU tests: [N, rows, H, W].
             target_rows = int(samples.shape[1])
             target_h = int(samples.shape[-2]) * 16
             target_w = int(samples.shape[-1]) * 16
             _audio_ticks_from_latent = None
-            _video_component_shape = None
-            _audio_component_shape = None
 
         # 2. Validate all injects: resolution first (so the CPU test can raise before
         #    touching the model), then envelope indices.
@@ -898,7 +872,7 @@ class H3InjectSampler:
             )
 
         # 3. Merge inject list into a flat per-row schedule (last-in-wins).
-        schedule = merge_schedule(inject_list, target_rows, crossfade=crossfade)
+        schedule = merge_schedule(inject_list, target_rows)
 
         # 4. Derive audio tick count (real value from nested latent when available;
         #    computed from row count as fallback for plain-tensor paths).
@@ -907,24 +881,14 @@ class H3InjectSampler:
         else:
             audio_ticks = constants.audio_ticks_for_rows(target_rows)
 
-        # 5. Derive and apply the nested AV noise mask.
-        latent_image = apply_derived_mask(
-            latent_image,
-            schedule,
-            target_rows,
-            audio_ticks,
-            video_component_shape=_video_component_shape,
-            audio_component_shape=_audio_component_shape,
-        )
-
-        # 6–9. GPU/ComfyUI-dependent: per-row tensor construction, model clone,
-        #       model_function_wrapper installation, and sampler execution.
+        # 5–9. GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference
+        #      and fractional denoise mask, install the conditioning wrapper, wrap the base
+        #      sampler for per-row init lerp, run sample_custom, and exact-preserve composite.
         return _run_sampler(  # pragma: no cover
             model=model,
             schedule=schedule,
             latent_image=latent_image,
             noise_seed=noise_seed,
-            add_noise=add_noise,
             steps=steps,
             cfg=cfg,
             sampler_name=sampler_name,
@@ -932,9 +896,6 @@ class H3InjectSampler:
             positive=positive,
             negative=negative,
             samples=samples,
-            start_at_step=start_at_step,
-            end_at_step=end_at_step,
-            return_with_leftover_noise=return_with_leftover_noise,
             target_rows=target_rows,
             audio_ticks=audio_ticks,
         )
