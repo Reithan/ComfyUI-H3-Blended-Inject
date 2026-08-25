@@ -1,13 +1,16 @@
 <!-- provenance: status (top-level index & direction; child docs carry their own tags) -->
-<!-- verified: 2026-08-23 · repo @72b61c6 -->
+<!-- verified: 2026-08-24 · repo @72b61c6 -->
 # Per-Row img2img for H3 — Index & Direction
 
 **Purpose:** the durable, token-lean map of this effort. Read THIS file first every session;
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-23 (branch `cleanup-audit-tail-tasks-49-60`). Mode: **prototype / move
-fast** (memory `prototype-goal-fade-mask-parity`).
+Last updated: 2026-08-24 (branch `migrate-debug-wiki-findings`). Latest thread: two parallel
+tracks — H3AddGuide settled design (cond-channel, builds first) + latent-resident hold-and-release
+still an active goal; see
+[timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md),
+[status-and-open-paths](per-row-img2img/status-and-open-paths.md) path 1.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -87,6 +90,36 @@ single engine* via a per-row ancestral step — see
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md) — how Motion Context
   does it (composite-blend; ghost diagnosis) & why it's stochastic-robust; the 3 design points. *Read
   when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
+- [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md) — MC's non-masked "H3
+  Custom Keyframes" injects `minimax_keyframes` cond rows (native context tokens, no denoise/preserve);
+  verdict = different tool, not a substitute; interop is already free through our sampler. *Read when
+  considering a conditioning-target inject variant/toggle.*
+- [highres-singleframe-underdenoise.md](per-row-img2img/highres-singleframe-underdenoise.md) —
+  **THEORY (UNVERIFIED):** single-frame stills at fractional `min_denoise` come out
+  source-identical @1MP but clean @0.2MP; leading cause = fixed sigma-shift → resolution-dependent
+  effective denoise (H1), fix = resolution-corrected effective-m. *Read when debugging the
+  high-res single-frame pop.*
+- [highres-underdenoise-model.md](per-row-img2img/highres-underdenoise-model.md) — **THEORY + 1MP
+  GPU validation (Fable):** α=ρ up-map FALSIFIED (0.83=chaos, 0.45=lock); refit single-exponent
+  **γ≈1.6 → d\*≈0.75-0.78 @1MP**; FOUR régimes (lock→coherent→chaos→generic-gen). Discriminator: Ψ &
+  p-cross-1 DEAD → **seam z-score** primary gate + ρ_ret (lock) / φ̄ (chaos) tellers; content &
+  anchor-spacing confounds; anchor-then-release fallback if the window is closed. *Read when
+  building/calibrating the resolution-corrected effective-m fix.*
+- [keyframe-two-views-and-knobs.md](per-row-img2img/keyframe-two-views-and-knobs.md) — **JOINT MODEL:**
+  the two questions (neighbor-view vs anchor-resolution) + four knobs (A latent-content / B mask / C cond-aug
+  / D composite); maps the user's "neighbors see clean, keyframe denoises full-time" ideal onto
+  hybrid/route-2/route-3 (route-1 = worst fit). *Read to reason about cond+latent composition.*
+- [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md) — **DESIGN (build-first):**
+  timed cond-removal — route-1 on knob C; mechanism source-verified (payload COPY + layout drop); gating,
+  surface (`cond_hold_frac`). *Read when building/tuning the timed-removal prototype.*
+- [lanpaint-langevin-corrector.md](per-row-img2img/lanpaint-langevin-corrector.md) — **REFERENCE
+  (external code read):** LanPaint's training-free Langevin inpainting corrector. Verdict: NOT a
+  fractional-anchor fix (it binarizes masks → hard-preserves known = the m=0 case we already solve;
+  fractionalized it becomes our ghost), but a new **route 4 (per-σ inner-loop equilibration)** and two
+  transplants — BiG model-consistency counterweight on Fable's continuous spring (FREE, deterministic)
+  + early-step-only re-equilibration. KILL RISK: if neighbor conditioning is t_row-label-gated not
+  content-gated, both collapse to single-pass. *Read when considering a corrector/equilibration
+  mechanism or the continuous λ(σ) spring.*
 - [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md) — confirmed-working +
   what's next. *Read when planning.*
 - [file-line-index.md](per-row-img2img/file-line-index.md) — bare source locations. *Read when
@@ -97,12 +130,13 @@ single engine* via a per-row ancestral step — see
 
 ## comfy-ref access (meta)
 
-`/home/reithan/projects/comfy-ref` is a SPARSE checkout kept lean — only files we reference. Add
-one: `cd /home/reithan/projects/comfy-ref && git sparse-checkout add /path/to/file` (leading
-slash for a single file). `k_diffusion/sampling.py` and `latent_formats.py` are tracked but NOT
-on disk — read via `git show HEAD:comfy/<path>`. Checked out now: `comfy/{sample,samplers,utils,
-nested_tensor,model_base,model_sampling}.py`, `comfy/ldm/minimax/`, `comfy_extras/{nodes_minimax,
-nodes_differential_diffusion}.py`.
+`/home/reithan/projects/comfy-ref` is a SPARSE checkout — files we reference, ON DISK. When a
+needed file is missing, ADD it (user-confirmed policy 2026-08-24):
+`cd /home/reithan/projects/comfy-ref && git sparse-checkout add /path/to/file` (leading slash
+for a single file). Checked out now:
+`comfy/{sample,samplers,utils,nested_tensor,model_base,model_sampling,latent_formats}.py`,
+`comfy/k_diffusion/sampling.py`, `comfy/ldm/minimax/`,
+`comfy_extras/{nodes_differential_diffusion,nodes_minimax_h3}.py`.
 
 **Verification stamps:** every wiki doc carries a `<!-- verified: <date> · <source> @<sha> -->`
 comment on line 2. It names the date and the exact HEAD SHA(s) of each source repo its file:line

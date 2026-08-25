@@ -1,6 +1,6 @@
 <!-- provenance: status (current state / open paths) -->
-<!-- verified: 2026-08-23 · repo @72b61c6 -->
-<!-- last updated: 2026-08-23, branch: rework-sampler-to-per-row-img2img -->
+<!-- verified: 2026-08-24 · repo @72b61c6 -->
+<!-- last updated: 2026-08-24, branch: migrate-debug-wiki-findings -->
 <!-- anchoring: reference commits/PRs, never task numbers — the task list is cleared/churned
      during prototyping and is not a durable artifact -->
 # Status & open paths
@@ -43,15 +43,30 @@ correction confirmed ([our-architecture](our-architecture.md)).
 
 ## Open paths
 
-1. ~~GPU-verify the current build~~ **DONE** — full checklist passed (see Confirmed WORKING
+1. **Isolated-single-frame fractional-keyframe underdenoise bug** — isolated single frame at `0<d<1` pops at
+   high res (works at 0.2MP; d-only latent-noise-boost window **CLOSED @1MP**, DATA); neighbor-blend half
+   FIXED by support/clean cond; anchor-resolution must be denoised IN-CONTEXT. Falsified approaches:
+   bake-beforehand (paradox), single-pass decouple (freeze+contagion), self-duplication (freeze), per-frame
+   latent-only aug (lever 1). Surviving: **timed-removal (build first)**, route-2 two-pass. Instrumentation
+   (Ψ/seam-z/k_comp) on branch `debug-single-frame-underdenoise`. See
+   [isolated-frame-attention-support](isolated-frame-attention-support.md),
+   [highres-underdenoise-model](highres-underdenoise-model.md),
+   [keyframe-two-views-and-knobs](keyframe-two-views-and-knobs.md).
+   **TWO PARALLEL TRACKS (user decision, 2026-08-24):** the H3AddGuide node (per-guide timed cond
+   removal) is being built first — it is a COND-channel solution AND useful functionality in its own
+   right — but it does NOT retire this problem. A **LATENT-resident solution is still an active goal**:
+   likely one of the hold-and-release strategies on the latent/mask side (knob B), needing new tests
+   and possibly a new node. OPEN: whether 1-frame keyframe injects stay in `H3AddInject` or get a
+   dedicated node — decide when the latent-resident work starts.
+2. ~~GPU-verify the current build~~ **DONE** — full checklist passed (see Confirmed WORKING
    above).
-2. **Stochastic: warning shipped (@06c6bda), hard gate deferred.** `sampler_is_stochastic`
+3. **Stochastic: warning shipped (@06c6bda), hard gate deferred.** `sampler_is_stochastic`
    (eta-default>0 signature heuristic, no hardcoded list) drives a `UserWarning` when fractional
    rows meet an ancestral/SDE sampler. The dead magnitude shim (`make_per_row_noise_sampler`,
    `scale_stochastic_noise`) can still be deleted when hardening. **Alternative to gating:** the
    per-row ancestral step in [stochastic-recovery-theory](stochastic-recovery-theory.md) would
    instead SUPPORT stochastic (spike euler_ancestral first, after the GPU pass).
-3. **Chaining widgets — RESOLVED: hidden (@72b61c6), revisit post-prototype.** User decision:
+4. **Chaining widgets — RESOLVED: hidden (@72b61c6), revisit post-prototype.** User decision:
    returning leftover noise is pointless if no follow-up node can consume it, and the resume side
    (add_noise=disable feeding init-lerp an already-noised x) is the hard part — so the whole
    surface (`add_noise`, `start_at_step`, `end_at_step`, `return_with_leftover_noise`) is removed
@@ -59,9 +74,9 @@ correction confirmed ([our-architecture](our-architecture.md)).
    If chained sampling is ever wanted: output side is a cheap per-row rescale
    `×(1−σ_end)/(1−m·σ_end)`; resume side is substantially harder (see
    [our-architecture · sampler-surface limitations](our-architecture.md)).
-4. **DD path — RESOLVED, dead end for our goal.** See [differential-diffusion](differential-diffusion.md):
+5. **DD path — RESOLVED, dead end for our goal.** See [differential-diffusion](differential-diffusion.md):
    it's the dual of ours (stochastic-only on H3). Not worth building unless we decide to support
    stochastic via a separate engine.
-5. **Cleanup (independent):** remove unused `derive_mask`/`apply_derived_mask` (+ their tests)
+6. **Cleanup (independent):** remove unused `derive_mask`/`apply_derived_mask` (+ their tests)
    and the dead `region`/`classify_row_region` schedule leftovers — dead since the per-row
    rework (PR #4).
