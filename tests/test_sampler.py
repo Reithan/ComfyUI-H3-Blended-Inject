@@ -563,3 +563,144 @@ class TestSamplerIsStochastic:
     def test_unsignaturable_callable_is_deterministic(self):
         # Builtins without introspectable signatures must not crash.
         assert sampler_is_stochastic(max) is False
+
+
+# ---------------------------------------------------------------------------
+# conditioning wrapper: per-guide timed cond removal
+# ---------------------------------------------------------------------------
+
+
+class TestConditioningWrapperGuideRelease:
+    """The wrapper strips released guide keyframes from minimax_payload below threshold."""
+
+    def _payload(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Returns (payload, kf_official, kf_ours)."""
+        kf_official = {"resolved_frame_index": 0, "latent": "OFFICIAL"}
+        kf_ours = {"resolved_frame_index": 40, "latent": "OURS"}
+        payload = {
+            "keyframes": [kf_official, kf_ours],
+            "refs": [{"latent": "REF"}],
+            "cond_video_latents": ["OFFICIAL", "OURS", "REF"],
+            "cond_audio_latents": [],
+            "layout": object(),
+        }
+        return payload, kf_official, kf_ours
+
+    def _args(self, payload: dict[str, Any], sigma: float) -> dict[str, Any]:
+        return {
+            "input": torch.randn(1, 4, 3),
+            "timestep": torch.tensor([sigma]),
+            "c": {"transformer_options": {}, "minimax_payload": payload},
+            "cond_or_uncond": [0],
+        }
+
+    def test_no_guide_release_passes_payload_through(self) -> None:
+        payload, _, _ = self._payload()
+        wrapper = build_conditioning_wrapper({})
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.1))
+        assert am.kwargs["minimax_payload"] is payload
+
+    def test_empty_entries_passes_payload_through(self) -> None:
+        payload, _, _ = self._payload()
+        wrapper = build_conditioning_wrapper({}, guide_release={})
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.1))
+        assert am.kwargs["minimax_payload"] is payload
+
+    def test_sigma_above_threshold_holds_payload(self) -> None:
+        payload, _, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.5))
+        assert am.kwargs["minimax_payload"] is payload
+        assert "layout" in payload
+
+    def test_sigma_below_threshold_releases_guide(self) -> None:
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.2))
+        filtered = am.kwargs["minimax_payload"]
+        assert filtered is not payload
+        assert filtered["keyframes"] == [kf_official]
+        assert "layout" not in filtered
+        assert filtered["cond_video_latents"] == ["OFFICIAL", "REF"]
+        # original untouched (the other cond stream may still be holding)
+        assert payload["keyframes"] == [kf_official, kf_ours]
+        assert "layout" in payload
+
+    def test_repeat_call_reuses_cached_filtered_payload(self) -> None:
+        payload, _, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.2))
+        first = am.kwargs["minimax_payload"]
+        wrapper(am, self._args(payload, sigma=0.1))
+        assert am.kwargs["minimax_payload"] is first
+
+    def test_distinct_payload_dicts_get_distinct_cache_entries(self) -> None:
+        """cond and uncond streams carry different payload dicts; they must not cross."""
+        payload_a, _, kf_ours = self._payload()
+        payload_b = dict(payload_a)
+        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload_a, sigma=0.2))
+        filtered_a = am.kwargs["minimax_payload"]
+        wrapper(am, self._args(payload_b, sigma=0.2))
+        filtered_b = am.kwargs["minimax_payload"]
+        assert filtered_a is not filtered_b
+        assert filtered_a["keyframes"] == filtered_b["keyframes"]
+
+    def test_inf_threshold_releases_at_any_sigma(self) -> None:
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_ours), float("inf"))]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.999))
+        assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
+
+    def test_all_guides_released_removes_keyframes_key(self) -> None:
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_official), 0.45), (id(kf_ours), 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload, sigma=0.2))
+        filtered = am.kwargs["minimax_payload"]
+        assert "keyframes" not in filtered
+        assert filtered["cond_video_latents"] == ["REF"]
+
+    def test_release_without_payload_is_a_noop(self) -> None:
+        """A released guide with no minimax_payload in c (e.g. uncond=None stream) is safe."""
+        guide_release = {"entries": [(1234, 0.45)]}
+        wrapper = build_conditioning_wrapper({}, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        args = {
+            "input": torch.randn(1, 4, 3),
+            "timestep": torch.tensor([0.2]),
+            "c": {"transformer_options": {}},
+            "cond_or_uncond": [0],
+        }
+        result = wrapper(am, args)
+        assert result is am.sentinel
+        assert "minimax_payload" not in am.kwargs
+
+    def test_composes_with_pooled_conds_and_correction(self) -> None:
+        """Release path coexists with pooled-cond injection and the denoised correction."""
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
+        m = torch.full((1, 4, 3), 0.25)
+        wrapper = build_conditioning_wrapper(pooled, m, guide_release=guide_release)
+        am = _RecordingApplyModel()
+        am.sentinel = torch.randn(1, 4, 3)  # correction path multiplies the return value
+        args = self._args(payload, sigma=0.2)
+        out = wrapper(am, args)
+        assert "denoise_mask" in am.kwargs
+        assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
+        expected = m * am.sentinel + (1.0 - m) * args["input"]
+        assert torch.allclose(out, expected)
