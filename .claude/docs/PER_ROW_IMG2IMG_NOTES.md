@@ -6,11 +6,11 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-24 (branch `add-h3-guide-node`). Latest thread: H3AddGuide + per-guide
-timed cond removal GPU-CONFIRMED @0.5MP (PR #2; official-guide coexistence + audio/clip/1MP
-untested); latent-resident hold-and-release still an active parallel goal; see
-[timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md) build section,
-[status-and-open-paths](per-row-img2img/status-and-open-paths.md) path 1.
+Last updated: 2026-08-24 (branch `record-coexistence-gpu-result`). Latest thread: H3AddGuide +
+per-guide timed cond removal GPU-CONFIRMED @0.5MP incl. official-guide coexistence, MERGED (PR
+#8; audio/clip/1MP defer to first use); latent-resident hold-and-release is now the active goal;
+see [timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md) build
+section, [status-and-open-paths](per-row-img2img/status-and-open-paths.md) path 1.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
