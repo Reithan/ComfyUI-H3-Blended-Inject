@@ -43,6 +43,8 @@ from typing import Any
 
 import torch
 
+from comfyui_h3_blended_inject.guides import filter_released_keyframes
+
 
 def per_row_init_lerp(
     x: torch.Tensor,
@@ -243,6 +245,8 @@ def _default_noise_sampler_factory(  # pragma: no cover
 def build_conditioning_wrapper(
     pooled_conds: dict[str, torch.Tensor],
     m_packed: torch.Tensor | None = None,
+    *,
+    guide_release: dict[str, Any] | None = None,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
     """Return a ``model_function_wrapper`` that injects per-row conditioning and corrects
     the denoised prediction so each row integrates at its compressed rate.
@@ -260,6 +264,12 @@ def build_conditioning_wrapper(
     each row's integral to its compressed ``m*sigma`` interval.  ``m==1`` → raw denoised;
     ``m==0`` → frozen at the (clean) init.  The correction commutes with CFG.
 
+    A third, optional job — **per-guide timed cond removal** — is armed via
+    ``guide_release`` (see below): once the per-step sigma drops below a guide's release
+    threshold, that guide's native keyframe cond row is stripped from a COPY of
+    ``minimax_payload`` so a co-located fractional latent inject can finish denoising
+    without the cond-token attractor re-pulling it toward the source.
+
     Matches ComfyUI's ``model_function_wrapper`` contract:
     ``(apply_model, args_dict) -> prediction``.
 
@@ -271,6 +281,20 @@ def build_conditioning_wrapper(
     m_packed:
         Per-row denoise fractions broadcastable to the model input/output.  ``None`` skips
         the denoised correction (used by conditioning-injection unit tests).
+    guide_release:
+        Mutable state dict for per-guide timed cond removal, shared with ``_run_sampler``
+        (which fills it in once the sigma schedule exists — after this wrapper is built).
+        Keys:
+
+        - ``"entries"``: list of ``(keyframe_id, threshold)`` pairs — ``id()`` of a
+          keyframe dict appended by our sampler, and the sigma below which it releases
+          (from :func:`~comfyui_h3_blended_inject.guides.release_threshold`).  Matching
+          is by OBJECT IDENTITY, so official-node / fl2va keyframes are never caught.
+        - ``"cache"``: filled here; released payload copies keyed by
+          ``(id(payload), frozenset(released_ids))`` so the cond and uncond streams —
+          distinct payload dicts — never cross, and each released-set is built once.
+
+        ``None`` or an empty/missing ``"entries"`` list → fully inert (native behavior).
 
     Returns
     -------
@@ -283,6 +307,26 @@ def build_conditioning_wrapper(
         c = dict(args_dict["c"])
         for key, value in pooled_conds.items():
             c[key] = value.to(device=inp.device, dtype=inp.dtype)
+        # --- Per-guide timed cond removal (release keyframe cond rows past threshold) ---
+        if guide_release is not None and guide_release.get("entries"):
+            sig_now = float(args_dict["timestep"].flatten()[0])
+            released_ids = frozenset(
+                kf_id for kf_id, threshold in guide_release["entries"] if sig_now < threshold
+            )
+            payload = c.get("minimax_payload")
+            if released_ids and isinstance(payload, dict) and payload.get("keyframes"):
+                cache = guide_release.setdefault("cache", {})
+                cache_key = (id(payload), released_ids)
+                filtered = cache.get(cache_key)
+                if filtered is None:
+                    filtered = filter_released_keyframes(payload, released_ids)
+                    cache[cache_key] = filtered
+                    print(
+                        f"[H3_INJECT] timed cond removal: {len(released_ids)} guide cond "
+                        f"row(s) released at sigma={sig_now:.4f}",
+                        flush=True,
+                    )
+                c["minimax_payload"] = filtered
         denoised = apply_model(inp, args_dict["timestep"], **c)
         if m_packed is None:
             return denoised

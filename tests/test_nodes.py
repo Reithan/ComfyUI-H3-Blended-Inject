@@ -13,15 +13,17 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from comfyui_h3_blended_inject import grid
 from comfyui_h3_blended_inject.nodes import (
     INJECT_LIST,
     NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS,
+    H3AddGuide,
     H3AddInject,
     H3InjectSampler,
     _unpack_av,
 )
-from comfyui_h3_blended_inject.schedule import Inject
+from comfyui_h3_blended_inject.schedule import Guide, Inject
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1656,3 +1658,260 @@ class TestF1SingleFrameInject:
         assert not audio_tick_warns, (
             f"%51 warning must NOT fire when audio=None; fired: {audio_tick_warns}"
         )
+
+
+# ---------------------------------------------------------------------------
+# H3AddGuide
+# ---------------------------------------------------------------------------
+
+
+class RecordingVAE:
+    """VAE stand-in that records the batch passed to encode()."""
+
+    def __init__(self) -> None:
+        self.encoded: Any = None
+        self.latent = object()
+
+    def encode(self, x: Any) -> Any:
+        self.encoded = x
+        return self.latent
+
+
+class TestH3AddGuideInputTypes:
+    def test_required_inputs_order(self):
+        required = H3AddGuide.INPUT_TYPES()["required"]
+        assert list(required.keys()) == ["frame_idx", "hold_frac"]
+
+    def test_frame_idx_allows_negative(self):
+        opts = H3AddGuide.INPUT_TYPES()["required"]["frame_idx"][1]
+        assert opts["min"] < 0
+
+    def test_frame_idx_tooltip_disambiguates_from_inject_at(self):
+        """The tooltip must call out pixel-frame semantics vs inject_at's latent-frame."""
+        tooltip = H3AddGuide.INPUT_TYPES()["required"]["frame_idx"][1]["tooltip"]
+        assert "PIXEL" in tooltip.upper()
+        assert "inject_at" in tooltip
+
+    def test_hold_frac_defaults_to_official_behavior(self):
+        opts = H3AddGuide.INPUT_TYPES()["required"]["hold_frac"][1]
+        assert opts["default"] == 1.0
+        assert opts["min"] == 0.0
+        assert opts["max"] == 1.0
+
+    def test_optional_inputs(self):
+        optional = H3AddGuide.INPUT_TYPES()["optional"]
+        assert set(optional.keys()) == {"inject_list", "image", "audio", "vae", "audio_vae"}
+        assert optional["inject_list"][0] == INJECT_LIST
+        assert optional["image"][0] == "IMAGE"
+        assert optional["audio"][0] == "AUDIO"
+        assert optional["vae"][0] == "VAE"
+        assert optional["audio_vae"][0] == "VAE"
+
+    def test_class_attrs(self):
+        assert H3AddGuide.RETURN_TYPES == (INJECT_LIST,)
+        assert H3AddGuide.RETURN_NAMES == ("inject_list",)
+        assert H3AddGuide.FUNCTION == "add_guide"
+        assert H3AddGuide.CATEGORY == "H3 Blended Inject"
+
+    def test_node_registration(self):
+        assert NODE_CLASS_MAPPINGS["H3AddGuide"] is H3AddGuide
+        assert NODE_DISPLAY_NAME_MAPPINGS["H3AddGuide"] == "H3 Add Guide"
+
+
+class TestH3AddGuideBehavior:
+    def test_no_content_raises(self):
+        with pytest.raises(ValueError, match="image or an audio"):
+            H3AddGuide().add_guide(frame_idx=0, hold_frac=1.0)
+
+    def test_image_without_vae_raises(self):
+        with pytest.raises(ValueError, match="vae"):
+            H3AddGuide().add_guide(frame_idx=0, hold_frac=1.0, image=FakeImages(1, 64, 64))
+
+    def test_audio_without_audio_vae_raises(self):
+        with pytest.raises(ValueError, match="audio_vae"):
+            H3AddGuide().add_guide(frame_idx=0, hold_frac=1.0, audio=object())
+
+    def test_single_image_guide_fields(self):
+        vae = RecordingVAE()
+        (result,) = H3AddGuide().add_guide(
+            frame_idx=-1, hold_frac=0.6, image=FakeImages(1, 64, 96), vae=vae
+        )
+        assert len(result) == 1
+        g = result[0]
+        assert isinstance(g, Guide)
+        assert g.frame_idx == -1  # raw, unresolved — negative kept as entered
+        assert g.hold_frac == 0.6
+        assert g.guide_frames == 1
+        assert g.resolution == (96, 64)  # (width, height) from [frames, H, W, C]
+        assert g.video_latent is vae.latent
+        assert g.audio_latent is None
+
+    def test_long_batch_snaps_down_before_encode(self):
+        vae = RecordingVAE()
+        with pytest.warns(UserWarning, match="snapped down"):
+            (result,) = H3AddGuide().add_guide(
+                frame_idx=0, hold_frac=1.0, image=FakeImages(8, 64, 64), vae=vae
+            )
+        assert result[0].guide_frames == 5
+        assert vae.encoded.shape[0] == 5  # trimmed batch is what gets encoded
+
+    def test_short_batch_uses_first_image_only(self):
+        vae = RecordingVAE()
+        with pytest.warns(UserWarning, match="snapped down"):
+            (result,) = H3AddGuide().add_guide(
+                frame_idx=0, hold_frac=1.0, image=FakeImages(3, 64, 64), vae=vae
+            )
+        assert result[0].guide_frames == 1
+        assert vae.encoded.shape[0] == 1
+
+    def test_valid_clip_length_kept_without_warning(self):
+        vae = RecordingVAE()
+        (result,) = H3AddGuide().add_guide(
+            frame_idx=0, hold_frac=1.0, image=FakeImages(22, 64, 64), vae=vae
+        )
+        assert result[0].guide_frames == 22
+
+    def test_chaining_appends_without_mutating_input(self):
+        (chain,) = H3AddInject().add_inject(**_make_add_inject_args())
+        snapshot = list(chain)
+        (result,) = H3AddGuide().add_guide(
+            frame_idx=0,
+            hold_frac=1.0,
+            image=FakeImages(1, 64, 64),
+            vae=RecordingVAE(),
+            inject_list=chain,
+        )
+        assert chain == snapshot  # input list untouched
+        assert result[:1] == snapshot
+        assert isinstance(result[0], Inject)
+        assert isinstance(result[1], Guide)
+
+
+class TestH3InjectSamplerGuideBehavior:
+    """Sample-time guide resolution: partition, resolution gate, bounds, keyframe build.
+
+    _run_sampler is monkeypatched to capture its kwargs — everything before it is the
+    CPU-testable contract under test.
+    """
+
+    LATENT_ROWS = 32  # → 107 pixel frames, 128x128 target
+
+    def _sample(self, inject_list: list[Any], monkeypatch: pytest.MonkeyPatch | None = None):
+        import torch
+
+        import comfyui_h3_blended_inject.nodes as nodes_module
+
+        captured: dict[str, Any] = {}
+        if monkeypatch is not None:
+
+            def fake_run_sampler(**kwargs: Any) -> tuple[dict[str, Any]]:
+                captured.update(kwargs)
+                return ({"samples": None},)
+
+            monkeypatch.setattr(nodes_module, "_run_sampler", fake_run_sampler)
+
+        result = H3InjectSampler().sample(
+            model=object(),
+            noise_seed=0,
+            steps=20,
+            cfg=7.0,
+            sampler_name="euler",
+            scheduler="normal",
+            positive=[],
+            negative=None,
+            latent_image={"samples": torch.zeros(1, self.LATENT_ROWS, 8, 8)},
+            inject_list=inject_list,
+        )
+        return captured, result
+
+    def _video_guide(self, **overrides: Any) -> Guide:
+        defaults: dict[str, Any] = {
+            "frame_idx": 0,
+            "hold_frac": 1.0,
+            "video_latent": object(),
+            "resolution": (128, 128),
+            "guide_frames": 1,
+        }
+        defaults.update(overrides)
+        return Guide(**defaults)
+
+    def test_resolution_mismatch_raises_with_resize_hint(self):
+        guide = self._video_guide(resolution=(64, 64))
+        with pytest.raises(ValueError, match="Resize Image v2"):
+            self._sample([guide])
+
+    def test_audio_only_guide_skips_resolution_check(self, monkeypatch):
+        import torch
+
+        guide = Guide(
+            frame_idx=0,
+            hold_frac=1.0,
+            audio_latent=torch.zeros(1, 32, 2, 4),
+            resolution=(0, 0),
+        )
+        captured, _ = self._sample([guide], monkeypatch)
+        assert len(captured["guide_entries"]) == 1
+
+    def test_frame_idx_out_of_bounds_raises(self):
+        # 32 rows → 107 pixel frames; index 107 is one past the end.
+        guide = self._video_guide(frame_idx=107)
+        with pytest.raises(ValueError, match="107 frames"):
+            self._sample([guide])
+
+    def test_clip_that_does_not_fit_raises(self):
+        guide = self._video_guide(frame_idx=100, guide_frames=22)
+        with pytest.raises(ValueError, match="does not fit"):
+            self._sample([guide])
+
+    def test_negative_frame_idx_resolves_from_end(self, monkeypatch):
+        guide = self._video_guide(frame_idx=-1, hold_frac=0.6)
+        captured, _ = self._sample([guide], monkeypatch)
+        (kf, hold_frac) = captured["guide_entries"][0]
+        assert kf["resolved_frame_index"] == 106  # 107 frames, -1 → last
+        assert kf["latent"] is guide.video_latent
+        assert hold_frac == 0.6
+
+    def test_audio_latent_cropped_to_video_duration(self, monkeypatch):
+        import torch
+
+        audio_ticks = grid.audio_ticks_for_rows(self.LATENT_ROWS)
+        guide = Guide(
+            frame_idx=0,
+            hold_frac=1.0,
+            audio_latent=torch.zeros(1, 32, 2, audio_ticks + 100),
+        )
+        captured, _ = self._sample([guide], monkeypatch)
+        (kf, _) = captured["guide_entries"][0]
+        assert kf["audio_latent"].shape[-1] == audio_ticks
+
+    def test_mixed_chain_partitions_injects_and_guides(self, monkeypatch):
+        # Degenerate still-inject (no images) + one guide: the inject feeds the per-row
+        # schedule, the guide feeds guide_entries; neither path sees the other's entry.
+        inject = Inject(
+            inject_at=0,
+            start_fade_in=0,
+            start_keyframes=0,
+            end_keyframes=0,
+            end_fade_out=0,
+            min_denoise=0.5,
+            interpolation_type="linear",
+            audio_mode="drop",
+            images=None,
+            audio=None,
+            resolution=(0, 0),
+            source_length=1,
+        )
+        guide = self._video_guide(frame_idx=40)
+        captured, _ = self._sample([inject, guide], monkeypatch)
+        assert len(captured["guide_entries"]) == 1
+        assert all(rs.inject is inject for rs in captured["schedule"])
+
+    def test_guide_only_chain_yields_empty_schedule(self, monkeypatch):
+        guide = self._video_guide()
+        captured, _ = self._sample([guide], monkeypatch)
+        assert captured["schedule"] == []
+        assert len(captured["guide_entries"]) == 1
+
+    def test_foreign_entry_in_chain_raises_type_error(self):
+        with pytest.raises(TypeError, match="Inject or Guide"):
+            self._sample([object()])
