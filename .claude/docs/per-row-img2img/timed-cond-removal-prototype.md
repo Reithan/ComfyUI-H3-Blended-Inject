@@ -1,4 +1,4 @@
-<!-- provenance: confirmed (BUILT @b0efef8 — global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide design UNVERIFIED) -->
+<!-- provenance: confirmed (global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide H3AddGuide BUILT on branch add-h3-guide-node, GPU-UNVERIFIED) -->
 <!-- verified: 2026-08-24 · comfy-ref @b78cec87 model_base.py:2162-2212, minimax/model.py:318-360,499-524,559-585 · repo @b0efef8 -->
 # Timed cond-removal prototype — design + build
 
@@ -139,3 +139,23 @@ inject_at's latent-frame/17-snap — tooltips must be loud about the distinction
 
 **Testability:** filter logic factored into pure `filter_released_keyframes(payload,
 released_ids)` — CPU-unit-testable dict manipulation; only the thin wrapper glue is pragma'd.
+
+## Build (branch `add-h3-guide-node`, PR #2) — per-guide, GPU-UNVERIFIED
+
+Implemented as designed above; awaiting GPU verify (two guides, distinct fracs, + official-guide
+isolation control). Layout:
+- `schedule.py` — `Guide` dataclass (`eq=False`: identity IS the release key); `InjectList`
+  widened to `list[Inject | Guide]`.
+- `guides.py` (NEW, pure) — `partition_inject_list`, `snap_guide_length` (warns on trim, unlike
+  the silent official node), `frame_count_for_rows`, `resolve_frame_index`, `crop_audio_latent`,
+  `release_threshold` (per-guide; same midpoint math as prototype), `build_keyframe`,
+  `filter_released_keyframes` (held-keyframes-then-refs, exact model_base predicates incl. refs
+  video `"latent" in r`; layout popped; input never mutated).
+- `sampler.py` — wrapper takes `guide_release={entries: [(id(kf), threshold)], cache}`; filters
+  per step, cache keyed `(id(payload), frozenset(released))` so cond/uncond never cross. NOT
+  pragma'd — covered by CPU tests with fake apply_model.
+- `nodes.py` — `H3AddGuide` node (encode at node time; snap/trim); `sample()` partitions chain,
+  resolves guides vs target (exact-resolution gate, bounds, audio crop), builds keyframe dicts
+  ONCE (identity!); `_run_sampler` appends them to positive via `conditioning_set_values` and
+  arms thresholds after sigmas exist. Run markers: same `[H3_INJECT] timed cond removal` prints,
+  now with per-guide counts.
