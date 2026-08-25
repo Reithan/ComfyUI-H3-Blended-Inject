@@ -6,10 +6,11 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-24 (branch `migrate-debug-wiki-findings`). Latest thread: H3AddGuide
-settled design (per-guide timed removal); impl next; see
-[timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md) and the local
-execution plan `.claude/plans/add-h3-guide-node.md` (gitignored, session-local).
+Last updated: 2026-08-24 (branch `migrate-debug-wiki-findings`). Latest thread: two parallel
+tracks — H3AddGuide settled design (cond-channel, builds first) + latent-resident hold-and-release
+still an active goal; see
+[timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md),
+[status-and-open-paths](per-row-img2img/status-and-open-paths.md) path 1.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust

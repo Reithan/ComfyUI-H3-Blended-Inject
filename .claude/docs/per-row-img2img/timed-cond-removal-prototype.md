@@ -108,6 +108,11 @@ differs from the previous step; cache keyed by released-set so cond/uncond strea
 
 See also: local execution plan `.claude/plans/add-h3-guide-node.md` (gitignored, session-local).
 
+**Scope note (user, 2026-08-24):** H3AddGuide is a COND-channel mechanism and useful functionality
+in its own right — it does NOT retire the latent-resident pursuit of the same anchor-resolution
+problem (likely a hold-and-release variant; new tests + possibly a new node). Track in
+[status-and-open-paths](status-and-open-paths.md) open path 1.
+
 **H3AddGuide** ("H3 Add Guide") — third non-prototype node; outward clone of comfy's
 MiniMaxH3AddGuide but monadic. Drops `positive` + `latent` inputs; chains through `INJECT_LIST`
 like H3AddInject. Sampler partitions the list (Inject vs Guide entries) and appends keyframe cond

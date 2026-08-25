@@ -1,6 +1,6 @@
 <!-- provenance: status (current state / open paths) -->
 <!-- verified: 2026-08-24 · repo @72b61c6 -->
-<!-- last updated: 2026-08-24, branch: debug-single-frame-underdenoise -->
+<!-- last updated: 2026-08-24, branch: migrate-debug-wiki-findings -->
 <!-- anchoring: reference commits/PRs, never task numbers — the task list is cleared/churned
      during prototyping and is not a durable artifact -->
 # Status & open paths
@@ -52,6 +52,12 @@ correction confirmed ([our-architecture](our-architecture.md)).
    [isolated-frame-attention-support](isolated-frame-attention-support.md),
    [highres-underdenoise-model](highres-underdenoise-model.md),
    [keyframe-two-views-and-knobs](keyframe-two-views-and-knobs.md).
+   **TWO PARALLEL TRACKS (user decision, 2026-08-24):** the H3AddGuide node (per-guide timed cond
+   removal) is being built first — it is a COND-channel solution AND useful functionality in its own
+   right — but it does NOT retire this problem. A **LATENT-resident solution is still an active goal**:
+   likely one of the hold-and-release strategies on the latent/mask side (knob B), needing new tests
+   and possibly a new node. OPEN: whether 1-frame keyframe injects stay in `H3AddInject` or get a
+   dedicated node — decide when the latent-resident work starts.
 2. ~~GPU-verify the current build~~ **DONE** — full checklist passed (see Confirmed WORKING
    above).
 3. **Stochastic: warning shipped (@06c6bda), hard gate deferred.** `sampler_is_stochastic`
