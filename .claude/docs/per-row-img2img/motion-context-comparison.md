@@ -112,3 +112,10 @@ composite-blend double-exposes: invisible on transient fades, a visible ghost on
 keyframe (`0<min_denoise<1`). Ours removes the ghost via TRUE per-row img2img (no composite) at
 the cost of stochastic; the theory aims for both. "Become MC" would re-introduce the exact ghost
 this repo was built to kill.
+
+## MC's OTHER inject path — conditioning rows
+
+The two nodes above are the *latent* paths. MC also ships a **conditioning-row** inject (non-masked
+`H3 Custom Keyframes` → `minimax_keyframes` native cond rows, no denoise/preserve). That's a
+different tool, not a substitute for our latent anchor, and it already interops through our sampler
+for free — full analysis in [conditioning-row-inject.md](conditioning-row-inject.md).
