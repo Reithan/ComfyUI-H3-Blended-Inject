@@ -17,10 +17,11 @@ from typing import Any, Literal
 
 from comfyui_h3_blended_inject.envelope import classify_row_region, evaluate_envelope
 
-# Type alias for the list of injects that flows between H3AddInject nodes and into
-# H3InjectSampler.  Defined here for use by callers; the ComfyUI type *string* is defined
-# separately in nodes.py as INJECT_LIST = "INJECT_LIST".
-InjectList = list["Inject"]
+# Type alias for the list that flows between H3AddInject / H3AddGuide nodes and into
+# H3InjectSampler.  It may hold both :class:`Inject` and :class:`Guide` entries; the sampler
+# partitions by type.  The ComfyUI type *string* is defined separately in nodes.py as
+# INJECT_LIST = "INJECT_LIST".
+InjectList = list["Inject | Guide"]
 
 
 # eq=False: identity equality — the same Inject object IS the same inject (no value-based dedup).
@@ -92,6 +93,54 @@ class Inject:
     source_length: int
     video_latent: Any | None = None
     audio_latent: Any | None = None
+
+
+# eq=False: identity equality — the same Guide object IS the same guide.  The sampler's
+# timed cond removal tracks the keyframe dicts built from guides by object identity, so
+# value-based equality would be actively wrong here.
+@dataclass(eq=False)
+class Guide:
+    """One native keyframe/guide cond entry added to the chain by ``H3AddGuide``.
+
+    A guide is the monadic counterpart of comfy's ``MiniMaxH3AddGuide``: it anchors an
+    image / short clip / audio as a native H3 keyframe cond row (re-injected every step,
+    never denoised), but rides in the ``INJECT_LIST`` chain instead of being applied to
+    conditioning at node time.  ``H3InjectSampler`` partitions the list, resolves each
+    guide against the target latent, and appends the keyframe dicts to the positive
+    conditioning at sample time.
+
+    Attributes
+    ----------
+    frame_idx:
+        PIXEL-frame index to anchor at (raw, as entered).  Negative values count from the
+        end of the video.  NOTE: deliberately different from :attr:`Inject.inject_at`,
+        which is a latent-frame index snapped to the 17-frame grid.
+    hold_frac:
+        Fraction of the sampling schedule for which this guide's cond row is held, in
+        [0.0, 1.0].  ``1.0`` = held for the whole run (official/native behavior, never
+        removed).  ``0.0`` = removed from step 0 (no-reference ablation).  Fractional
+        values release the cond row partway so a co-located fractional latent inject can
+        finish denoising without the cond-token attractor re-pulling it toward source.
+    video_latent:
+        Pre-encoded video latent for the anchored frame(s) (from the video VAE at node
+        time), or ``None`` for an audio-only guide.
+    audio_latent:
+        Pre-encoded audio latent (from the audio VAE at node time), or ``None``.  Cropped
+        to the video's remaining duration at sample time, once the target is known.
+    resolution:
+        ``(width, height)`` in pixels of the encoded frames; ``(0, 0)`` when audio-only.
+        Validated exact-match against the target latent at sample time (no in-node resize).
+    guide_frames:
+        Number of pixel frames anchored: 1 (single image / audio-only) or a valid clip
+        length ``17k + 5``.  Used for the sample-time bounds check.
+    """
+
+    frame_idx: int
+    hold_frac: float
+    video_latent: Any | None = None
+    audio_latent: Any | None = None
+    resolution: tuple[int, int] = (0, 0)
+    guide_frames: int = 1
 
 
 @dataclass
