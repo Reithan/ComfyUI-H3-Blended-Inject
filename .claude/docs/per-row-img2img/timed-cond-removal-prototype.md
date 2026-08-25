@@ -1,4 +1,4 @@
-<!-- provenance: confirmed (global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide H3AddGuide BUILT on branch add-h3-guide-node, GPU-UNVERIFIED) -->
+<!-- provenance: confirmed (global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide H3AddGuide GPU-CONFIRMED @0.5MP 2026-08-24 — official-guide coexistence + audio/clip guides + 1MP untested) -->
 <!-- verified: 2026-08-24 · comfy-ref @b78cec87 model_base.py:2162-2212, minimax/model.py:318-360,499-524,559-585 · repo @b0efef8 -->
 # Timed cond-removal prototype — design + build
 
@@ -140,10 +140,12 @@ inject_at's latent-frame/17-snap — tooltips must be loud about the distinction
 **Testability:** filter logic factored into pure `filter_released_keyframes(payload,
 released_ids)` — CPU-unit-testable dict manipulation; only the thin wrapper glue is pragma'd.
 
-## Build (branch `add-h3-guide-node`, PR #2) — per-guide, GPU-UNVERIFIED
+## Build (branch `add-h3-guide-node`, PR #2) — per-guide, GPU-CONFIRMED @0.5MP
 
-Implemented as designed above; awaiting GPU verify (two guides, distinct fracs, + official-guide
-isolation control). Layout:
+GPU result (2026-08-24, user): 0.5MP, two guides at DIFFERENT `hold_frac` values — working fine.
+User passed on larger sweeps for now. Still untested on GPU: official-guide coexistence (mixed
+official Add Guide + ours in one workflow — post-release layout rebuild with a held foreign
+keyframe), audio guides (`_encode_ref_audio` pragma'd), multi-frame clip guides, 1MP. Layout:
 - `schedule.py` — `Guide` dataclass (`eq=False`: identity IS the release key); `InjectList`
   widened to `list[Inject | Guide]`.
 - `guides.py` (NEW, pure) — `partition_inject_list`, `snap_guide_length` (warns on trim, unlike
