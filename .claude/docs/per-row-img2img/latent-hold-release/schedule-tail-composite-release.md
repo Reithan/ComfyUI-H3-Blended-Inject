@@ -30,8 +30,9 @@ raw-percentage labels falsified for H3; the remap is the seamless-release ingred
   `mask-drop` / `official` / `default`, plus the all-fractional-rows logging note.
 - [consistency-audit](schedule-tail-composite-release/consistency-audit.md) — source-verified
   three-channel (label/content/step) audit of `rescheduled`: exact for video under Euler; the
-  audio stream's carried coordinate breaks three ways at FRACTIONAL audio ticks (binary audio
-  masks unaffected), plus five negligible/known divergences.
+  audio stream's carried coordinate breaks three ways at FRACTIONAL audio ticks (already exercised
+  by the test video's opening fade — real but mild, fix deferred until video settles), plus five
+  negligible/known divergences.
 - [gpu-results](schedule-tail-composite-release/gpu-results.md) — the STR-1..7 run log
   (`both` underbake, `rescheduled` clean-blend series incl. the 0.5MP res-invariance test),
   the anchoring-dominates implication, and dial-calibration notes.

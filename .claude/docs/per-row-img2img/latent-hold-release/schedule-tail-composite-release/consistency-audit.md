@@ -1,4 +1,4 @@
-<!-- provenance: theory (source-verified consistency audit of 'rescheduled'; audio finding UNVERIFIED on GPU) -->
+<!-- provenance: theory (source-verified consistency audit of 'rescheduled'; audio finding EXERCISED on GPU and observed MILD, mildness-explanation still theory) -->
 <!-- verified: 2026-08-27 · comfy-ref source read (ldm/minimax/model.py, model_sampling.py, k_diffusion/sampling.py, samplers.py, model_base.py); code @34a5925 -->
 # Consistency audit of mode `rescheduled`
 
@@ -7,7 +7,8 @@ mechanism described in [design-and-mechanism](design-and-mechanism.md).
 
 Question asked: is `rescheduled` self-consistent across its three channels — the LABEL the model
 is told, the CONTENT the tensor actually holds, and the STEP each row integrates? Answer: exact
-for the video stream under Euler; one real break on the audio stream at fractional ticks.
+for the video stream under Euler; one real break on the audio stream at fractional ticks, already
+exercised on GPU and observed to be mild.
 
 ## Verified self-consistent (video stream, Euler)
 
@@ -32,7 +33,7 @@ for the video stream under Euler; one real break on the audio stream at fraction
 
 ## Inconsistencies found (ranked)
 
-### A. Audio fractional ticks — a three-way break (UNVERIFIED impact)
+### A. Audio fractional ticks — a three-way break (REAL, empirically MILD)
 
 This is the real finding. The audio stream runs in a CARRIED coordinate: the sampler carries audio
 as `(σ_v/σ_a)·x_a`, which the model undoes with `carry = σ_a/σ_v` at
@@ -49,12 +50,24 @@ tensor uniformly. For a fractional AUDIO tick that breaks three ways at once:
    combination.
 3. The ratio should be `Δσ_a_row/Δσ_a_glob`, not the video ratio.
 
-All three are EXACT at the endpoints `w ∈ {0,1}`. Binary audio masks (`audio_mode` keep) are
-therefore unaffected, which is consistent with the clean audio observed in STR-5..7
-(see [gpu-results](gpu-results.md)). Risk surfaces only with FADED (fractional) audio ticks.
+**Empirical status (user, 2026-08-27): this path HAS been exercised on GPU and the impact is
+mild.** An earlier draft of this audit claimed the fractional-audio path was untested because the
+runs used binary audio masks — that was wrong. The test video's opening fade-in carries a
+FRACTIONAL audio fade mask, so `rescheduled` has been running the broken path all along, producing
+"some artifacts, but so far audio has been much less error-prone than video."
 
-**Open item:** derive the audio-correct `w_a`/`r_a` (needs the carried-coordinate algebra) before
-relying on audio fades under `rescheduled`.
+Why it stays mild (analysis, theory — not separately verified): the errors are smooth level
+mislabels bounded by how far the shift map departs from linearity. They vanish at the endpoints
+`w ∈ {0,1}` and again at `σ_v = σ_max = 1` (time_shift fixes σ=1), they are transient over a short
+fade ramp, and critically they introduce no step discontinuity — unlike the label jump that
+falsified `mask-drop` in STR-8 (see [gpu-results](gpu-results.md)).
+
+**Planned direction (user decision, 2026-08-27):** settle the video methodology first, then extend
+it to audio. The extension is cheap in principle — `σ_a_row(i) = time_shift_sigma(σ_row(i),
+shift_v, shift_a)`, since a pointwise shift of the existing dense grid commutes with the
+tail-stretch — followed by a per-stream back-solve `m_a = σ_a_row/σ_a_glob` and per-stream step
+ratio `r_a = Δσ_a_row/Δσ_a_glob`. The carried-coordinate composite algebra still needs its own
+derivation pass before any of that is implemented.
 
 ### B. Label quantization (negligible)
 

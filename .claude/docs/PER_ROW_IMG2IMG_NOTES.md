@@ -7,7 +7,7 @@ drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when t
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
 Last updated: 2026-08-27 (branch `proto-schedule-tail-release`). Source-verified consistency audit
-of mode `rescheduled` — video-exact under Euler, audio breaks at fractional ticks — in
+of mode `rescheduled` — video-exact under Euler, audio breaks mildly at fractional ticks — in
 [schedule-tail-composite-release/consistency-audit](per-row-img2img/latent-hold-release/schedule-tail-composite-release/consistency-audit.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
