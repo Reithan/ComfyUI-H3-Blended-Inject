@@ -17,7 +17,8 @@ underbake (see [gpu-results](gpu-results.md)).
   noise-line at σ_row(0)), no per-step re-inject; labels + per-row step lerp as in `both`.
   Per-region SDEdit on the stretched tail. **Working candidate after STR-3..7.**
 - `mask-drop`: official mask mechanism (raw label m + per-step clean composite toward clean)
-  but dropped at k_d (label → 1 after); NO schedule remap, no r-lerp.
+  but dropped at k_d (label → 1 after); NO schedule remap, no r-lerp. **FAILED (STR-8):**
+  audio freak-out + fade-in color flashing + bad blending — see [gpu-results](gpu-results.md).
 - `official`: in-loop emulation of the official mask mechanism — label m + per-step clean
   composite every step, never dropped; no remap. Baseline.
 - `default`: stock per-row img2img lever path (init lerp + fractional labels + denoised
@@ -28,4 +29,4 @@ underbake (see [gpu-results](gpu-results.md)).
 - Logging: the anchor-provenance logging from the old proto branch doesn't exist on main, so the
   runtime banner/redraw logging reports over ALL fractional rows (0<d<1), not just
   keyframe-anchor rows — mechanism unchanged.
-- Ablation legs `mask-drop` and `official` not yet run (as of STR-7).
+- Ablation leg `official` not yet run (as of STR-8; `mask-drop` run and FAILED, STR-8).

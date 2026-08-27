@@ -6,9 +6,9 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-27 (branch `proto-schedule-tail-release`). Schedule-tail STR-5..7: mode
-`rescheduled` is now the WORKING candidate (clean blends 0.2/0.5MP, calibratable top-heavy dial,
-res-invariance effectively holds); doc child-split — see
+Last updated: 2026-08-27 (branch `proto-schedule-tail-release`). Schedule-tail STR-8: `mask-drop`
+FAILED (naive DD-style drop on raw labels falsified for H3; remap = the seamless-release
+ingredient), strengthening `rescheduled` as the working candidate — see
 [schedule-tail-composite-release](per-row-img2img/latent-hold-release/schedule-tail-composite-release.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release

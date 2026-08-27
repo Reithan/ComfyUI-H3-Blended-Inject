@@ -1,5 +1,5 @@
 <!-- provenance: reference (experiment pointer table — HOLD-15 onward, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER; child of experiments-run.md) -->
-<!-- verified: 2026-08-27 · STR-1 through STR-7 added; prior cross-checked against home docs @proto-latent-hold-release -->
+<!-- verified: 2026-08-27 · STR-1 through STR-8 added; prior cross-checked against home docs @proto-latent-hold-release -->
 # Experiment Run — Hold Continued + Other Series (HOLD-15 through HOLD-27, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER)
 
 Child of [experiments-run.md](../experiments-run.md). Results live in the linked home docs.
@@ -26,6 +26,7 @@ Child of [experiments-run.md](../experiments-run.md). Results live in the linked
 | STR-5 | 0.2MP · d={0.2,0.15} · schedule-tail mode `rescheduled` @1fea318 · euler | Solid, matches user intent "spot-on" — first dial-calibrated fully-satisfying result | [gpu-results.md](../latent-hold-release/schedule-tail-composite-release/gpu-results.md) |
 | STR-6 | 0.5MP · d={0.2,0.15} · schedule-tail mode `rescheduled` @1fea318 · euler | Res-invariance test: very solid; d=0.2 possibly slightly under but very close; 0.5MP notably higher quality (ordinary res reasons) → mechanism res-invariance effectively HOLDS, mild res-sensitivity of perceived denoise | [gpu-results.md](../latent-hold-release/schedule-tail-composite-release/gpu-results.md) |
 | STR-7 | 0.5MP · d={0.3,0.2} · schedule-tail mode `rescheduled` @1fea318 · euler | "Almost perfect" → `rescheduled` = WORKING candidate (clean blends 0.2/0.5MP, calibratable dial; mask-drop/official legs unrun) | [gpu-results.md](../latent-hold-release/schedule-tail-composite-release/gpu-results.md) |
+| STR-8 | settings as recent STR runs · schedule-tail mode `mask-drop` @1fea318 · euler | FAILURE: audio freak-out + fade-in color flashing + bad inject blending; theory (design-predicted): label jumps m→1 without remap = level/label lie, per-row release cascade in fades, σ-shift amplifies audio → naive DD-style drop on raw labels FALSIFIED for H3; remap = the seamless-release ingredient | [gpu-results.md](../latent-hold-release/schedule-tail-composite-release/gpu-results.md) |
 | STILL-1 | 0.5MP · r40 5f/22f repeated still · d=0.5 ease fade · — · euler | Seam blends; anchor under-denoised + freeze-read; cross-inject r60 resolved (contagion) | [gpu-test-0.5mp.md](../isolated-frame-attention-support/gpu-test-0.5mp.md) |
 | MC-1 | ~0.5MP · keyframe md>0 · Blended vs MC side-by-side · euler @06c6bda | MC pops/ghosts; Blended SMOOTH — headline raison d'être confirmed | [motion-context-comparison.md](../motion-context-comparison.md) |
 | MC-2 | 1MP · r40+r60 · MC "H3 Custom Keyframes" cond-row · stock KSampler | Neighbors blend well @1MP; anchor rows copy-clean (wrong content) | [fade-and-decoupler.md](../conditioning-row-inject/fade-and-decoupler.md) |

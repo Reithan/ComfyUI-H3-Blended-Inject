@@ -1,5 +1,5 @@
 <!-- provenance: status (index for the schedule-tail composite-release thread; children carry design/theory/results tags) -->
-<!-- verified: 2026-08-27 · GPU runs STR-1..7; design + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609) -->
+<!-- verified: 2026-08-27 · GPU runs STR-1..8; design + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609) -->
 # Schedule-tail composite release — DD-style unification of the official mask (index)
 
 Design: the official H3 clean-composite and its `1−m·σ` label are ONE self-consistent mechanism
@@ -10,12 +10,14 @@ weight `w = σ_row/σ_glob` serving as BOTH label and composite, release = drop 
 Implemented `c7afc85` on branch `proto-schedule-tail-release` (recreated FRESH from `main`
 7877d4d at the user's request; earlier sha 155c911 no longer exists); ablation combo `1fea318`.
 
-**Status (2026-08-27, after STR-1..7):** mode `rescheduled` (per-region SDEdit on the stretched
+**Status (2026-08-27, after STR-1..8):** mode `rescheduled` (per-region SDEdit on the stretched
 tail — init-only composite at σ_row(0), remapped labels + per-row step lerp, no per-step
 re-inject) is the WORKING candidate mechanism: clean blends across 0.2MP and 0.5MP, calibratable
 dial, no seams/errors in any run. Dial calibration remains top-heavy (σ_eff = sigmas[k_d]) and
 mildly resolution-dependent, but usable by eye. Mode `both` remains underbake-prone (held-phase
-composite anchoring — STR-2 vs STR-3). `mask-drop`/`official` ablation legs not yet run.
+composite anchoring — STR-2 vs STR-3). Mode `mask-drop` FAILED (STR-8: naive DD-style drop on
+raw-percentage labels falsified for H3; the remap is the seamless-release ingredient).
+`official` ablation leg not yet run.
 
 ## Child docs
 
