@@ -1,4 +1,4 @@
-<!-- provenance: theory (design — IMPLEMENTED commit 155c911 branch proto-schedule-tail-release, NOT GPU-verified) -->
+<!-- provenance: theory (design — IMPLEMENTED commit c7afc85 branch proto-schedule-tail-release, NOT GPU-verified) -->
 <!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); no GPU run yet -->
 # Schedule-tail composite release — DD-style unification of the official mask
 
@@ -60,8 +60,11 @@ Code: `sampler.py`, `schedule_tail` branch in `build_per_row_sampler_function`; 
 
 ## Status
 
-Implemented `155c911` on branch `proto-schedule-tail-release` (branched from
-proto-latent-hold-release for the loop plumbing). NOT GPU-verified. Confirmed unrun in
+Implemented `c7afc85` on branch `proto-schedule-tail-release` (recreated FRESH from `main`
+7877d4d at the user's request; the earlier sha 155c911 no longer exists on any branch). The
+anchor-provenance logging from the old proto branch doesn't exist on main, so the runtime
+banner/redraw logging reports over ALL fractional rows (0<d<1), not just keyframe-anchor rows —
+mechanism unchanged. NOT GPU-verified. Confirmed unrun in
 experiments-run before build — no prior experiment holds a descending, co-evolving composite; all
 HOLD-* pins were static states.
 

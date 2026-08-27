@@ -78,7 +78,8 @@ Schedule-matched descent is NOT the next step; failure is level-semantics and pr
 Full table + analysis: [min-free-steps-floor.md](min-free-steps-floor.md).
 
 2026-08-27 — new design [schedule-tail-composite-release](schedule-tail-composite-release.md) implemented
-(155c911, branch proto-schedule-tail-release, NOT GPU-verified), supersedes-in-spirit the falsified
+(c7afc85, branch proto-schedule-tail-release fresh off main 7877d4d, NOT GPU-verified),
+supersedes-in-spirit the falsified
 HOLD-26 floor approach.
 
 ## Child docs
@@ -123,6 +124,6 @@ HOLD-26 floor approach.
   design for per-frame scheduled release; the motivating A/B sweep (pre-refit e5996c0);
   the HOLD-27 5-run results table + failure analysis (no denoised correction + provenance-blind floor).
   *Read for the HOLD-26/27 design and its failure mode.*
-- [schedule-tail-composite-release](schedule-tail-composite-release.md) — NEW DESIGN (155c911,
+- [schedule-tail-composite-release](schedule-tail-composite-release.md) — NEW DESIGN (c7afc85,
   NOT GPU-verified): DD-style unification of the official mask composite — stretched schedule-tail
   sigmas, one weight `w=σ_row/σ_glob` as both label and composite, release = drop the composite.
