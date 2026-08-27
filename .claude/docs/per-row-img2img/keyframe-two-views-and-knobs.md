@@ -55,6 +55,11 @@ It maps onto the routes as follows (and NOT cleanly onto route-1):
   worries about hold-and-release are BOTH valid; route-1 trades the ideal's simultaneity for one cheap scalar.
   The cond-channel variant (timed-removal, knob **C**) escapes this objection — see
   [isolated-frame-attention-support](isolated-frame-attention-support.md).
+  **Empirical support (HOLD-24/25, GPU ~2026-08-25):** schedule-sigma per-frame pin blends cleanly yet breaks
+  GLOBAL structure (anchors hidden as noise in the early structure-setting window) — concrete evidence for
+  "neighbors see clean." The "neighbors see release" variant (HOLD-25) GENERALIZES "neighbors see clean" and
+  is GPU-CONFIRMED: structural coherence restored (solid blend/denoise; fade tuning open). See
+  [per-frame-scheduled-release](latent-hold-release/per-frame-scheduled-release.md).
 
 ## Takeaway
 

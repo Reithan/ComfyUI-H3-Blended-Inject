@@ -1,16 +1,13 @@
 <!-- provenance: status (top-level index & direction; child docs carry their own tags) -->
-<!-- verified: 2026-08-24 · repo @72b61c6 -->
+<!-- verified: 2026-08-25 · repo @72b61c6 -->
 # Per-Row img2img for H3 — Index & Direction
 
 **Purpose:** the durable, token-lean map of this effort. Read THIS file first every session;
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-24 (branch `add-h3-guide-node`). Latest thread: H3AddGuide + per-guide
-timed cond removal GPU-CONFIRMED @0.5MP (PR #2; official-guide coexistence + audio/clip/1MP
-untested); latent-resident hold-and-release still an active parallel goal; see
-[timed-cond-removal-prototype](per-row-img2img/timed-cond-removal-prototype.md) build section,
-[status-and-open-paths](per-row-img2img/status-and-open-paths.md) path 1.
+Last updated: 2026-08-26 (branch `proto-latent-hold-release`). HOLD-26 min-free-steps floor rewritten to decouple release LEVEL (intended-d) from TIMING + descending sub-schedule (impl `074e443`, code-confirmed, NOT GPU-verified) —
+see [min-free-steps-floor](per-row-img2img/latent-hold-release/min-free-steps-floor.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -35,6 +32,10 @@ lengths/points (mid-timeline keyframes, mid-context video guiding) via principle
 snapping; (2) **QoL** — cleaner, fewer nodes vs MC's node-sprawl/messy workflows. And MC upstream
 isn't taking PRs + has heavy churn. See
 [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md).
+
+**Prototype-drive north star:** ONE user knob mapping visually to img2img denoise `d` (via `hold`+`m`),
+resolution-invariant (IDEAL) or via `lever = f(d, res)` (ACCEPTABLE). User sets one value; must NOT re-tune
+per resolution. Full statement: [latent-hold-release/resolution-invariance-goal.md](per-row-img2img/latent-hold-release/resolution-invariance-goal.md).
 
 ## The core finding (why this isn't trivial)
 
@@ -120,8 +121,17 @@ single engine* via a per-row ancestral step — see
   + early-step-only re-equilibration. KILL RISK: if neighbor conditioning is t_row-label-gated not
   content-gated, both collapse to single-pass. *Read when considering a corrector/equilibration
   mechanism or the continuous λ(σ) spring.*
+- [latent-hold-release/](per-row-img2img/latent-hold-release/index.md) — **STATUS (prototype + GPU
+  debug log):** route-1 latent hold-and-release (branch `proto-latent-hold-release`). Subfolder:
+  index + `mechanism-and-early-findings` (design, sigma-shift knob, residency + bugs) +
+  `attraction-and-envelope` (Findings 4–6: hold-vs-no-hold A/B, freeze-blends, envelope/+0.5 fork) +
+  `hold-mechanism-and-confounds` (Findings 7–10: mechanism trace, the provenance-blind `anchor_mask`
+  confound that froze the opening fade-out and propagated to corrupt r40, + the provenance fix).
+  *Read when working the latent hold-and-release prototype.*
 - [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md) — confirmed-working +
   what's next. *Read when planning.*
+- [per-row-img2img/experiments-run.md](per-row-img2img/experiments-run.md) — run-results index (40
+  rows, stable IDs; split into two child tables); **grep this before proposing any experiment**.
 - [file-line-index.md](per-row-img2img/file-line-index.md) — bare source locations. *Read when
   you just need a file:line.*
 - [code-quality-audit-2026-08-23.md](per-row-img2img/code-quality-audit-2026-08-23.md) — module

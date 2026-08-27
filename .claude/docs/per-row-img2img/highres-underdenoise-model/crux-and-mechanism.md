@@ -43,6 +43,23 @@ render) and NO true attention-anchoring. It's route-nothing: full denoise + late
 crude route-1. **The target is route 3 (or route 1 done right); route 2 is the oracle that tells us the
 ceiling.**
 
+> **CHALLENGED BY GPU (2026-08-25) — key discriminator still pending:** the section below argues a
+> low-noise EARLY anchor is "THE latent route to attraction" and that a co-evolving anchor-row-local
+> op is "likely INCAPABLE of producing attraction." A single-variable A/B (only `latent_hold_frac`
+> toggled) showed the OPPOSITE direction: the baseline co-evolving per-row inject (NO hold) already
+> blends neighbors toward the keyframe, and the hold-release run hard-cut. So "attraction needs a
+> hold" looks wrong. The clean discriminator has RUN: `denoise=0.0` (a permanent freeze, no release)
+> with the user's `none`-interpolation config = a TRUE frozen clean m=0 anchor (envelope
+> code-verified), and it **BLENDS**. So the freeze is fine. And the hold-ON cut is now EXPLAINED
+> (2026-08-25): the provenance-blind `anchor_mask` froze the OPENING video inject's fade-out (not the
+> keyframes), and that wrong-row freeze PROPAGATED via H3's global attention to corrupt r40's blend —
+> NOT a release artifact, NOT evidence the freeze/attraction machinery fails. This still contradicts
+> "a co-evolving anchor-row-local op is INCAPABLE of attraction" below AND "attraction needs a
+> low-noise-EARLY anchor": a frozen clean anchor blends and so does a co-evolving fractional one.
+> Treat the claims below as challenged/unverified, not refuted. See
+> [latent-hold-release/hold-mechanism-and-confounds](../latent-hold-release/hold-mechanism-and-confounds.md)
+> Findings 7–10.
+
 ## Mechanism space — why re-injection can't make attraction (2026-08-24)
 
 Framing the per-step update as a design space of {denoise, re-inject-source, re-noise, decay-schedule}:
