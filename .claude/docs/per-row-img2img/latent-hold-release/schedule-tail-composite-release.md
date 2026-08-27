@@ -33,6 +33,10 @@ raw-percentage labels falsified for H3; the remap is the seamless-release ingred
   audio stream's carried coordinate breaks three ways at FRACTIONAL audio ticks (already exercised
   by the test video's opening fade — real but mild, fix deferred until video settles), plus five
   negligible/known divergences.
+- [multistep-stochastic-support](schedule-tail-composite-release/multistep-stochastic-support.md)
+  — design sketch (unimplemented): why `dpmpp_2m` silently runs Euler under the loop today, and
+  how recovering per-element `denoised` from the Euler slice lets the loop run a per-row update
+  rule for `dpmpp_2m`, `res_multistep`, and `euler_ancestral_RF` (the stochastic gap).
 - [gpu-results](schedule-tail-composite-release/gpu-results.md) — the STR-1..7 run log
   (`both` underbake, `rescheduled` clean-blend series incl. the 0.5MP res-invariance test),
   the anchoring-dominates implication, and dial-calibration notes.
