@@ -1,5 +1,5 @@
 <!-- provenance: status (prototype design + GPU debug log; route-1 latent hold-and-release, branch proto-latent-hold-release, NOT for merge) -->
-<!-- verified: 2026-08-25 · GPU runs on user test deployment + Fable audits + comfy-ref source -->
+<!-- verified: 2026-08-27 · HOLD-27 GPU run; prior: GPU runs on user test deployment + Fable audits + comfy-ref source -->
 # Route-1 latent hold-and-release — prototype & debug log (index)
 
 Quick-and-dirty prototype (branch `proto-latent-hold-release`, NOT for merge) testing whether a
@@ -78,6 +78,13 @@ provenance-filtered anchor mask and logs its realized redraw ("calibration ruler
 directly to hold runs on the same rows (read-only, fires only when fractional keyframe rows exist). See
 [knob-design-open-questions](knob-design-open-questions.md).
 
+**HOLD-27 (2026-08-27): HOLD-26 GPU-FALSIFIED.** Every run over-denoises incl. the previously-accurate
+Option-1 config (regression). Two failures: (1) per_frame path has no denoised correction — free-step
+count governs realized redraw, not the level pin; (2) floor is provenance-blind, hitting the opening
+fade-out ramp rows like keyframes (same class as Findings 7–11 confound), producing new fade pops.
+Schedule-matched descent is NOT the next step; failure is level-semantics and provenance.
+Full table + analysis: [min-free-steps-floor.md](min-free-steps-floor.md).
+
 ## Child docs
 - [amount-floor-and-step0-redesign](amount-floor-and-step0-redesign.md) — HOLD-19: the amount-floor confirmed
   (keyframe-smear vs abrupt-blend symptoms), m res-compression re-confirmed, the trilemma, and the user's
@@ -112,12 +119,11 @@ directly to hold runs on the same rows (read-only, fires only when fractional ke
   re-reading that hold=0.5/m=0.99 IS already pin-`m=1` SDEdit; the HOLD-16/17 sweep table; RETRACTION of
   "step=quality-gate" (correction block added 2026-08-25); REVERSAL to variable-m at early release.
   *Read for the sweep data and retraction trail.*
-- [per-frame-scheduled-release](per-frame-scheduled-release.md) — DESIGN (integer-quantized, NOT yet
-  GPU-verified): correlated noise pinning, per-row release step `k_row = floor(steps·(1−d))`, the unified
-  preserve/free/blend rule, structural change from global two-phase to per-step loop, and the hypothesis
-  (co-evolving rows beat static frozen anchor at low d). *Read for the next build design.*
-- [min-free-steps-floor](min-free-steps-floor.md) — THEORY (UNVERIFIED): minimum free-step floor design for
-  per-frame scheduled release; diagnostic (40-step re-run) to choose ratio vs raw-count; core tension (floor
-  alone raises L silently); floor ∘ fractional compose (floor sets budget, fractional sets level — NOT
-  alternatives); Option A vs B + d=0 exemption; sequencing (diagnostic → fractional → floor). *Read when
-  low-d smudging persists after fractional refinement.*
+- [per-frame-scheduled-release](per-frame-scheduled-release.md) — GPU-CONFIRMED (HOLD-24/25):
+  correlated noise pinning, per-row release step `k_row = floor(steps·(1−d))`, the unified
+  preserve/free/blend rule, structural change from global two-phase to per-step loop.
+  *Read for the per-frame release mechanism.*
+- [min-free-steps-floor](min-free-steps-floor.md) — GPU-FALSIFIED (HOLD-27): min-free-steps floor
+  design for per-frame scheduled release; the motivating A/B sweep (pre-refit e5996c0);
+  the HOLD-27 5-run results table + failure analysis (no denoised correction + provenance-blind floor).
+  *Read for the HOLD-26/27 design and its failure mode.*

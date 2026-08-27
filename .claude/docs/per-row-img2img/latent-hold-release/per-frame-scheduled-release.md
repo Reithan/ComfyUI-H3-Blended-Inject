@@ -1,5 +1,5 @@
 <!-- provenance: status (two GPU runs: HOLD-24 FALSIFIED schedule-sigma pin; HOLD-25 CONFIRMED neighbors-see-release; structural coherence restored; fade/denoise-level tuning open) -->
-<!-- verified: 2026-08-26 · HOLD-24/25 GPU runs; HOLD-26 min-free-steps floor code-confirmed @074e443 (NOT GPU-verified), branch proto-latent-hold-release -->
+<!-- verified: 2026-08-27 · HOLD-24/25 GPU runs; HOLD-26 floor GPU-FALSIFIED by HOLD-27 (2026-08-27) — see min-free-steps-floor.md; branch proto-latent-hold-release -->
 # Per-frame scheduled release (integer-quantized) — prototype mode
 
 **What it generalizes.** The "scheduled-hold with c=1.0" idea (from the knob-design discussion) applied to a
@@ -159,7 +159,7 @@ injects @ rows 40 & 60, per-frame release mode): blends and denoises are solid, 
 
 **Remaining honest caveats:** fade-envelope and denoise-level tuning still open (user noted); fractional refinement now CONFIRMED-NEEDED (see section above).
 
-## HOLD-26 — min-free-steps floor (design, IMPLEMENTED `074e443`, NOT GPU-verified)
+## HOLD-26 — min-free-steps floor (design, IMPLEMENTED `074e443`, GPU-FALSIFIED by HOLD-27)
 
 The min-free-steps floor decouples release LEVEL (always intended-d `sig_L`, driving content pin and
 label numerator) from release TIMING `k_rel` (the only thing `min_ratio`/`rescale_step_release`
@@ -171,4 +171,4 @@ design + the motivating A/B sweep: [min-free-steps-floor](min-free-steps-floor.m
 See also: [amount-floor-and-step0-redesign](amount-floor-and-step0-redesign.md),
 [knob-design-open-questions](knob-design-open-questions.md),
 [keyframe-two-views-and-knobs](../keyframe-two-views-and-knobs.md),
-[min-free-steps-floor](min-free-steps-floor.md) (floor depends on fractional — UNVERIFIED design).
+[min-free-steps-floor](min-free-steps-floor.md) (floor GPU-FALSIFIED by HOLD-27 — see that doc for failure analysis).
