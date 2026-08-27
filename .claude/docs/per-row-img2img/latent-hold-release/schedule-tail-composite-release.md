@@ -1,5 +1,5 @@
 <!-- provenance: theory (design — IMPLEMENTED c7afc85 + ablation combo 1fea318, branch proto-schedule-tail-release; first GPU data MIXED, NOT fully verified) -->
-<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); first GPU runs STR-1/STR-2 (mode 'both', 0.2MP) -->
+<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); GPU runs STR-1/2 (mode 'both') + STR-3/4 (mode 'rescheduled'), 0.2MP -->
 # Schedule-tail composite release — DD-style unification of the official mask
 
 ## Motivating insight (source-derived)
@@ -79,10 +79,11 @@ anchor-provenance logging from the old proto branch doesn't exist on main, so th
 banner/redraw logging reports over ALL fractional rows (0<d<1), not just keyframe-anchor rows —
 mechanism unchanged. Confirmed unrun in experiments-run before build — no prior experiment holds
 a descending, co-evolving composite; all HOLD-* pins were static states. NOT fully verified —
-first GPU data below is one positive + one negative point on mode `both`; the `prototype_mode`
-ablation combo (`1fea318`) was built to diagnose the negative.
+mode `both` has one positive + one negative point (STR-1/2); the `prototype_mode` ablation combo
+(`1fea318`) built to diagnose the negative delivered STR-3/4: mode `rescheduled` gives the first
+fully-clean blend results, with dial CALIBRATION as the open question.
 
-## First GPU results (2026-08-27, mode `both`, c7afc85, 0.2MP)
+## First GPU results (2026-08-27, 0.2MP; STR-1/2 mode `both` @c7afc85, STR-3/4 mode `rescheduled` @1fea318)
 
 Pointer rows STR-1/STR-2 in [experiments-run/hold-continued](../experiments-run/hold-continued.md).
 
@@ -93,6 +94,22 @@ Pointer rows STR-1/STR-2 in [experiments-run/hold-continued](../experiments-run/
 - **Working hypothesis (UNVERIFIED):** phase 2 gives a row only steps·d free steps to traverse
   its ENTIRE stretched tail (release at k_d = steps·(1−d), so d=0.2 @ 20 steps = 4 free steps) —
   an under-discretized tail reads as underbake; 40 steps @ d=0.5 = 20 free steps looked fine.
+- **STR-3** — mode `rescheduled`, injects d=0.4/0.2 (steps not restated by user; PRESUMED 20 as
+  in STR-2): both injects somewhat TOO denoised (overbake vs dial) but smooth and well blended —
+  no errors, no seams, no blending issues.
+- **STR-4** — mode `rescheduled`, d=0.2/0.1: d=0.2 still slightly too denoised; d=0.1 slightly
+  too LITTLE. No errors or blending issues. User notes their own denoise calibration may be a
+  factor.
+- **Implication (theory, UNVERIFIED):** STR-3/4 WEAKEN the STR-2 under-discretization hypothesis
+  as the primary underbake cause. `rescheduled` and `both` place a row at the SAME level
+  σ_row(k_d) by the release step and share an identical post-release tail discretization; they
+  differ only in whether the first k_d steps are genuine model evolution (`rescheduled` — redraw
+  accrues) or per-step clean-composite anchoring (`both` — content stays source-pinned). `both`
+  underbakes at the same dial where `rescheduled` overbakes ⇒ the held-phase composite
+  anchoring, NOT tail discretization, is the dominant driver of the `both` underbake. The open
+  question is now DIAL CALIBRATION: `rescheduled` effective img2img strength is sigmas[k_d]
+  (shift-12 top-heavy: d=0.4→σ≈0.89, d=0.2→≈0.75, d=0.1→≈0.57), which reads stronger than the
+  dial suggests at mid d — yet d=0.1 read as too WEAK, so perceived-redraw vs σ_eff is nonlinear.
 
 ## How it differs from prior attempts
 
