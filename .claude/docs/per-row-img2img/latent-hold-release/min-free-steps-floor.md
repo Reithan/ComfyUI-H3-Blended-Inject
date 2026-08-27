@@ -1,8 +1,8 @@
-<!-- provenance: theory (HOLD-26 design — IMPLEMENTED commit 074e443, code-confirmed, NOT yet GPU-verified) -->
-<!-- verified: 2026-08-26 · code-confirmed vs sampler.py ~502-570 / nodes.py 305-316 @074e443; no GPU run; branch proto-latent-hold-release -->
+<!-- provenance: theory (HOLD-26 design — IMPLEMENTED commit 074e443, GPU-FALSIFIED HOLD-27 2026-08-27) -->
+<!-- verified: 2026-08-27 · HOLD-27 GPU run (see section below); code-confirmed vs sampler.py ~502-570 / nodes.py 305-316 @074e443; branch proto-latent-hold-release -->
 # Min-free-steps floor for per-frame scheduled release
 
-**Design status:** HOLD-26 — implemented (`074e443`), code-confirmed, NOT GPU-verified.
+**Design status:** HOLD-26 — implemented (`074e443`), GPU-FALSIFIED (HOLD-27, 2026-08-27).
 Motivated by the HOLD-25 QA smudge (low-d rows lose spatial resolution) plus the pre-refinement
 A/B sweep (below). Supersedes the earlier "Option B rescales the LEVEL" design on THIS page.
 
@@ -48,13 +48,11 @@ byte-identical at `min_ratio=0`; the 580 existing tests pass unchanged. `d=0` pr
 The descent is label-only (the per_frame path sets NO denoised correction), so it carries the
 per-row-σ-vs-global-Euler mismatch — absorbed for deterministic samplers, NOT free. NOT GPU-verified.
 
-## Alternative not taken
+## Alternative not taken (verdict revised by HOLD-27)
 
-A plan artifact (`polymorphic-strolling-rossum.md`) proposed a **schedule-matched** descent —
-resampling the true `sigmas[level_step..steps_n]` tail over the free steps — rather than this
-linear-in-σ constant compression. Both are identity in the base case; they differ ONLY for clamped
-rows. The concise constant-compression version was implemented; the schedule-matched variant is the
-fallback if the linear descent looks off under GPU test.
+A plan artifact proposed a **schedule-matched** descent rather than the constant-compression
+implemented here. HOLD-27 shows the failure is level-semantics (no denoised correction) plus
+provenance-blindness, NOT descent shape — making schedule-matched descent NOT the next step.
 
 ## Empirical A/B sweep (user GPU, pre-refinement build e5996c0)
 
@@ -86,3 +84,36 @@ per_frame-OFF (hold-path) runs. In per_frame mode the intended-d refinement alon
 pop-kill.
 
 See [per-frame-scheduled-release](per-frame-scheduled-release.md) for the release mechanism this floors.
+
+## HOLD-27 GPU result (2026-08-27) — FALSIFIED
+
+Build `074e443`, `per_frame_release=True`, euler, same content/seed/steps as the e5996c0 motivating sweep.
+
+| # | Res | d | min_ratio | rescale | Result |
+|---|---|---|---|---|---|
+| 1 | 0.2MP | 0.2 | 0.1 | ON | Denoised too much; smooth and well blended |
+| 2 | 0.2MP | 0.15 | 0.1 | ON | Keyframe pops with smudged frame; neighbors contaminated |
+| 3 | 0.2MP | 0.05 | 0.2 | ON | Smooth, well blended; far too denoised |
+| 4 | 0.2MP | 0.05 | 0.3 | OFF | New pop at fade-in transition; injects far too denoised (REGRESSION — this was accurate-0.05/no-pop on e5996c0) |
+| 5 | 0.5MP | 0.05 | 0.3 | ON | Big color flash at end of video fade-in; both injects far too denoised |
+
+**Verdict:** Level/timing decoupling FAILED on GPU. Every run over-denoises including run 4's
+previously-accurate Option-1 config — the intended-d level pin did NOT restore level accuracy.
+
+**Leading suspect (mechanism, HYPOTHESIS):** the per_frame path applies NO denoised correction.
+After release each free step applies the full global Euler update with only the LABEL scaled
+(the "label-only descent" caveat on this doc). Nothing clamps total displacement to `d`, so
+realized redraw is governed by free-step COUNT (which `min_ratio` increases), not by the level
+pin. The descending sub-schedule also keeps `t_row` below global sigma for the whole free
+interval, worsening the per-row-σ-vs-global-Euler mismatch.
+
+**Second, separate bug (code-CONFIRMED):** the floor is provenance-blind. `k_rel` is computed
+from the full per-row envelope `m_dev` with no anchor-provenance filter, so the opening video
+inject's fractional fade-out ramp rows get clamped (Option 1) / rescaled (Option 2) like
+keyframes — producing run 4's new fade pop and run 5's color flash. Same bug class as the old
+provenance-blind `anchor_mask` confound (see hold-mechanism-and-confounds.md Findings 7–11).
+
+**Consequence:** the failure is level-semantics (no displacement clamp) plus provenance-blindness.
+Open question: whether adding a per-row denoised correction (`m·denoised+(1−m)·x` style) to the
+per_frame path can fix the level issue; the floor must also be provenance-filtered before any
+re-test.
