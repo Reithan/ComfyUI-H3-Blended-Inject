@@ -1,6 +1,6 @@
-<!-- provenance: reference (experiment pointer table — HOLD-15 onward, STILL, MC, AUG, AUD, BUG-B, DD, VER; child of experiments-run.md) -->
-<!-- verified: 2026-08-27 · HOLD-27 added; prior cross-checked against home docs @proto-latent-hold-release -->
-# Experiment Run — Hold Continued + Other Series (HOLD-15 through HOLD-27, STILL, MC, AUG, AUD, BUG-B, DD, VER)
+<!-- provenance: reference (experiment pointer table — HOLD-15 onward, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER; child of experiments-run.md) -->
+<!-- verified: 2026-08-27 · STR-1/STR-2 added; prior cross-checked against home docs @proto-latent-hold-release -->
+# Experiment Run — Hold Continued + Other Series (HOLD-15 through HOLD-27, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER)
 
 Child of [experiments-run.md](../experiments-run.md). Results live in the linked home docs.
 
@@ -19,6 +19,8 @@ Child of [experiments-run.md](../experiments-run.md). Results live in the linked
 | HOLD-25 | 0.2MP · fade-in f0 + r40/r60 · per-frame release · neighbors-see-release pin+label · euler | Structural coherence RESTORED; blend/denoise solid; HOLD-24 incoherence resolved — neighbors-see-release CONFIRMED | [per-frame-scheduled-release.md](../latent-hold-release/per-frame-scheduled-release.md) |
 | HOLD-26 | 0.2/0.5MP · per-frame release + min-free-steps floor · min_ratio/rescale A/B · euler | DESIGN (impl `074e443`, code-confirmed, NOT GPU-verified): decouple LEVEL (intended-d) from TIMING; L→0 sub-schedule. Sweep (pre-refit `e5996c0`): min_ratio=0 pop persists; rescale kills d=0.2 pop @0.1, floor-only ~0.3; d=0.05 clean @0.2–0.3 but rescale made it LOOK like d≈0.3 → motivated intended-d refit | [min-free-steps-floor.md](../latent-hold-release/min-free-steps-floor.md) |
 | HOLD-27 | 0.2/0.5MP · per-frame release + min-free-steps floor (`074e443`) · min_ratio/rescale 5-run sweep · euler | GPU-FALSIFIED: all 5 runs over-denoise incl. Option-1 regression (run 4 was accurate-0.05/no-pop on `e5996c0`); two failures: (1) per_frame path has no denoised correction → free-step count governs redraw, not level pin; (2) provenance-blind floor hits opening fade-out ramp rows → new fade pops (same class as Findings 7–11 confound) | [min-free-steps-floor.md](../latent-hold-release/min-free-steps-floor.md) |
+| STR-1 | 0.2MP · both injects · d=0.5 · schedule-tail mode `both` @c7afc85 · euler/40-step | Solid blend, denoise level looks correct; minor blur on part of 2nd inject (suspected prompt/inject, not mechanistic) | [schedule-tail-composite-release.md](../latent-hold-release/schedule-tail-composite-release.md) |
+| STR-2 | 0.2MP · r40 d=0.4 + r60 d=0.2 · schedule-tail mode `both` @c7afc85 · euler/20-step | BOTH under-denoise well below dial (0.4 reads ~0.2, 0.2 reads ~0.1), step-count-dependent; hypothesis (UNVERIFIED): only steps·d free steps for the whole stretched tail → under-discretized underbake | [schedule-tail-composite-release.md](../latent-hold-release/schedule-tail-composite-release.md) |
 | STILL-1 | 0.5MP · r40 5f/22f repeated still · d=0.5 ease fade · — · euler | Seam blends; anchor under-denoised + freeze-read; cross-inject r60 resolved (contagion) | [gpu-test-0.5mp.md](../isolated-frame-attention-support/gpu-test-0.5mp.md) |
 | MC-1 | ~0.5MP · keyframe md>0 · Blended vs MC side-by-side · euler @06c6bda | MC pops/ghosts; Blended SMOOTH — headline raison d'être confirmed | [motion-context-comparison.md](../motion-context-comparison.md) |
 | MC-2 | 1MP · r40+r60 · MC "H3 Custom Keyframes" cond-row · stock KSampler | Neighbors blend well @1MP; anchor rows copy-clean (wrong content) | [fade-and-decoupler.md](../conditioning-row-inject/fade-and-decoupler.md) |

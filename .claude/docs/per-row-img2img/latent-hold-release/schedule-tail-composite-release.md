@@ -1,5 +1,5 @@
-<!-- provenance: theory (design — IMPLEMENTED commit c7afc85 branch proto-schedule-tail-release, NOT GPU-verified) -->
-<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); no GPU run yet -->
+<!-- provenance: theory (design — IMPLEMENTED c7afc85 + ablation combo 1fea318, branch proto-schedule-tail-release; first GPU data MIXED, NOT fully verified) -->
+<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); first GPU runs STR-1/STR-2 (mode 'both', 0.2MP) -->
 # Schedule-tail composite release — DD-style unification of the official mask
 
 ## Motivating insight (source-derived)
@@ -53,10 +53,23 @@ Code: `sampler.py`, `schedule_tail` branch in `build_per_row_sampler_function`; 
   for this prototype that deliberately ignores the HOLD-27 provenance lesson, to test the
   mechanism universally first. Fade ramps now also ride stretched tails instead of official
   behavior — watch for fade regressions in GPU runs.
-- Surface: `schedule_tail_release` BOOLEAN toggle on H3InjectSampler (default OFF; takes
-  precedence over `per_frame_release` and `latent_hold_frac`). The per-step loop re-enters
-  base_fn one interval at a time (Euler-appropriate, deterministic samplers only). No tests
-  (prototype; user pushes with --no-validate).
+- Surface (commit `1fea318` REPLACES the earlier `schedule_tail_release` boolean): a
+  `prototype_mode` combo on H3InjectSampler (takes precedence over `per_frame_release` and
+  `latent_hold_frac`) — a 2×2-ish ablation isolating remap vs composite-drop to diagnose the
+  STR-2 underbake:
+  - `both` (default; = prior toggle-ON behavior): schedule remap + per-step clean composite
+    until release step k_d, then dropped; weight = label = σ_row/σ_glob.
+  - `rescheduled`: remap only — ONE init composite at step 0 (weight w₀ places the row on its
+    noise-line at σ_row(0)), no per-step re-inject; labels + per-row step lerp as in `both`.
+    Per-region SDEdit on the stretched tail.
+  - `mask-drop`: official mask mechanism (raw label m + per-step clean composite toward clean)
+    but dropped at k_d (label → 1 after); NO schedule remap, no r-lerp.
+  - `official`: in-loop emulation of the official mask mechanism — label m + per-step clean
+    composite every step, never dropped; no remap. Baseline.
+  - `default`: stock per-row img2img lever path (init lerp + fractional labels + denoised
+    correction), unchanged.
+- The per-step loop re-enters base_fn one interval at a time (Euler-appropriate, deterministic
+  samplers only). No tests (prototype; user pushes with --no-validate).
 
 ## Status
 
@@ -64,9 +77,22 @@ Implemented `c7afc85` on branch `proto-schedule-tail-release` (recreated FRESH f
 7877d4d at the user's request; the earlier sha 155c911 no longer exists on any branch). The
 anchor-provenance logging from the old proto branch doesn't exist on main, so the runtime
 banner/redraw logging reports over ALL fractional rows (0<d<1), not just keyframe-anchor rows —
-mechanism unchanged. NOT GPU-verified. Confirmed unrun in
-experiments-run before build — no prior experiment holds a descending, co-evolving composite; all
-HOLD-* pins were static states.
+mechanism unchanged. Confirmed unrun in experiments-run before build — no prior experiment holds
+a descending, co-evolving composite; all HOLD-* pins were static states. NOT fully verified —
+first GPU data below is one positive + one negative point on mode `both`; the `prototype_mode`
+ablation combo (`1fea318`) was built to diagnose the negative.
+
+## First GPU results (2026-08-27, mode `both`, c7afc85, 0.2MP)
+
+Pointer rows STR-1/STR-2 in [experiments-run/hold-continued](../experiments-run/hold-continued.md).
+
+- **STR-1** — 40 steps, both injects d=0.5: solid blend, denoise level looks correct. Minor blur
+  on part of the second inject — suspected prompt/inject issue, not mechanistic.
+- **STR-2** — 20 steps, inject r40 d=0.4 + r60 d=0.2: BOTH under-denoised well below dial value
+  (d=0.4 visually reads as ~0.2; d=0.2 reads as ~0.1). Step-count-dependent.
+- **Working hypothesis (UNVERIFIED):** phase 2 gives a row only steps·d free steps to traverse
+  its ENTIRE stretched tail (release at k_d = steps·(1−d), so d=0.2 @ 20 steps = 4 free steps) —
+  an under-discretized tail reads as underbake; 40 steps @ d=0.5 = 20 free steps looked fine.
 
 ## How it differs from prior attempts
 
