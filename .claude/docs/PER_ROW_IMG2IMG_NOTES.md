@@ -6,8 +6,10 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-27 (branch `record-hold27-gpu-falsification`). HOLD-27 GPU run FALSIFIED the HOLD-26 min-free-steps floor (global over-denoise + provenance-blind floor) —
-see [min-free-steps-floor](per-row-img2img/latent-hold-release/min-free-steps-floor.md).
+Last updated: 2026-08-27 (branch `proto-schedule-tail-release`). NEW DESIGN: schedule-tail composite
+release — DD-style unification of the official mask composite with per-region release (implemented
+`155c911`, NOT GPU-verified) — see
+[schedule-tail-composite-release](per-row-img2img/latent-hold-release/schedule-tail-composite-release.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust

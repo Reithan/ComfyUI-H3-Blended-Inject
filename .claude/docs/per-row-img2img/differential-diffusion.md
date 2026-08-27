@@ -34,6 +34,11 @@ Transient temporal fades double-expose too but motion hides it (Motion Context's
 great, including on stochastic — MC is NOT binary-only). The visible bug is specifically
 **fractional denoise of the keyframe** — exactly what this repo exists to fix.
 
+**Self-consistency identity (2026-08-27):** the official clean-composite and the `1−m·σ` label are ONE
+mechanism — the composite makes the label true (row sits at effective sigma m·σ); the ghost is its
+terminal alpha-blend. H3-native DD adaptation built on this:
+[schedule-tail-composite-release](latent-hold-release/schedule-tail-composite-release.md).
+
 ## Differential Diffusion — mechanism
 
 DD source[^ddsrc]. `DifferentialDiffusion.execute` calls `model.set_model_denoise_mask_function(

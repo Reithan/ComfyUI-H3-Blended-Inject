@@ -13,23 +13,15 @@ with a res-aware internal mapping (ACCEPTABLE fallback) — see
 
 **Through-line (2026-08-25):** hold-residency works; the "hold CREATES attraction" premise is challenged
 (a co-evolving inject already blends; a permanent freeze `denoise=0.0` attracts too). The hold-ON cut was
-EXPLAINED and FIXED: `anchor_mask=(m>0)&(m<1)` was provenance-blind and froze the **opening video inject's
-fade-out**, not the r40/r60 keyframes; that wrong-row freeze **propagated forward via H3's global
-attention** and corrupted r40's blend. The provenance fix (hold only 1-frame keyframes at fractional
-denoise) is now **GPU-CONFIRMED**: the clean keyframe-only hold attracts/blends correctly. **NEXT PROBLEM**
-(Findings 12–14): the held keyframe itself under-denoises. The m=0.99 probe shows a ~full redraw still
-"looks like 0.5" — so **neighbor attention (contagion) AFFECTS r40's result** (does not, on this evidence,
-*set* the amount). The m=0.5-vs-m=0.99 A/B is done: **higher m gave the better-looking r40**; HYPOTHESIS
-(unproven) is m=0.5 artifacts = off-manifold half-denoise. The leading read is **res-compression** (runs
-are 0.5MP ≈ 1MP), but the *mechanism* is contested — per-frame basin-sharpening vs the user's
-**attention/contagion** theory (raw-count degrades attention quality; open = P1/P2 sign); a
-**timeline-length sweep at fixed res** would discriminate but is DEFERRED. **Still-repeat-with-fade is RUN**:
-fade fixes the seam but smears the anchor's own artifacts AND reads as a **freeze-frame** — not viable, and a
-CAUTION for route-3. Surviving lever = the single frame's OWN high/res-compensated m (m=0.99 looked best).
-**UPDATE (2026-08-25):** high-m GENERALIZES (r60 too, HOLD-15). HOLD-16/17 separated re-noise level from
-release-step: `m` at a fixed early release is a clean amount knob (m∈{0.8,0.9,0.99} good); `frac` tracks
-level m·σ_sw monotonically. The initial "release-step = quality gate, NOT amount knob" conclusion from
-HOLD-16 is **RETRACTED (user, 2026-08-25)** — the hold=0.75 run is non-diagnostic (confounded). See
+EXPLAINED and FIXED: a provenance-blind `anchor_mask` froze the opening inject's fade-out and corrupted
+r40 via H3's global attention; the provenance fix (hold only 1-frame keyframes at fractional denoise) is
+**GPU-CONFIRMED**. Then (Findings 12–14) the held keyframe itself under-denoises: the m=0.99 probe shows
+**neighbor attention (contagion) AFFECTS r40's result** (not shown to *set* it); higher m looked better;
+leading read = **res-compression** vs the user's attention/contagion theory (mechanism contested, open).
+Still-repeat-with-fade RUN: fixes the seam but smears + reads as freeze-frame — not viable. Surviving
+lever = the frame's OWN high/res-compensated m. **UPDATE (2026-08-25):** high-m GENERALIZES (HOLD-15);
+HOLD-16/17: `m` at a fixed early release is a clean amount knob (m∈{0.8,0.9,0.99}); "release-step =
+quality gate" **RETRACTED** (hold=0.75 run confounded). See
 [held-keyframe-m-vs-sdedit](held-keyframe-m-vs-sdedit.md) + [knob-design-open-questions](knob-design-open-questions.md).
 
 **RESOLUTION-INVARIANCE — the real axis (user, 2026-08-25), and the go/no-go PASSED (HOLD-18).** m-only is
@@ -85,6 +77,10 @@ fade-out ramp rows like keyframes (same class as Findings 7–11 confound), prod
 Schedule-matched descent is NOT the next step; failure is level-semantics and provenance.
 Full table + analysis: [min-free-steps-floor.md](min-free-steps-floor.md).
 
+2026-08-27 — new design [schedule-tail-composite-release](schedule-tail-composite-release.md) implemented
+(155c911, branch proto-schedule-tail-release, NOT GPU-verified), supersedes-in-spirit the falsified
+HOLD-26 floor approach.
+
 ## Child docs
 - [amount-floor-and-step0-redesign](amount-floor-and-step0-redesign.md) — HOLD-19: the amount-floor confirmed
   (keyframe-smear vs abrupt-blend symptoms), m res-compression re-confirmed, the trilemma, and the user's
@@ -127,3 +123,6 @@ Full table + analysis: [min-free-steps-floor.md](min-free-steps-floor.md).
   design for per-frame scheduled release; the motivating A/B sweep (pre-refit e5996c0);
   the HOLD-27 5-run results table + failure analysis (no denoised correction + provenance-blind floor).
   *Read for the HOLD-26/27 design and its failure mode.*
+- [schedule-tail-composite-release](schedule-tail-composite-release.md) — NEW DESIGN (155c911,
+  NOT GPU-verified): DD-style unification of the official mask composite — stretched schedule-tail
+  sigmas, one weight `w=σ_row/σ_glob` as both label and composite, release = drop the composite.
