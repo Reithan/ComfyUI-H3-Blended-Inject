@@ -28,6 +28,10 @@ raw-percentage labels falsified for H3; the remap is the seamless-release ingred
 - [ablation-modes](schedule-tail-composite-release/ablation-modes.md) — the `prototype_mode`
   combo (`1fea318`, replaces the `schedule_tail_release` boolean): `both` / `rescheduled` /
   `mask-drop` / `official` / `default`, plus the all-fractional-rows logging note.
+- [consistency-audit](schedule-tail-composite-release/consistency-audit.md) — source-verified
+  three-channel (label/content/step) audit of `rescheduled`: exact for video under Euler; the
+  audio stream's carried coordinate breaks three ways at FRACTIONAL audio ticks (binary audio
+  masks unaffected), plus five negligible/known divergences.
 - [gpu-results](schedule-tail-composite-release/gpu-results.md) — the STR-1..7 run log
   (`both` underbake, `rescheduled` clean-blend series incl. the 0.5MP res-invariance test),
   the anchoring-dominates implication, and dial-calibration notes.

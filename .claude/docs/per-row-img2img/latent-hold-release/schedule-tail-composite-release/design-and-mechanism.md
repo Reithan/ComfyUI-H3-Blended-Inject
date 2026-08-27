@@ -49,8 +49,9 @@ Code: `sampler.py`, `schedule_tail` branch in `build_per_row_sampler_function`; 
 - Degeneracies: d=1 → σ_row=σ_glob, w≡1, r≡1 → untouched full gen. d=0 → w≡0 → composite =
   clean every step = exact preserve (plus belt-and-braces final `torch.where(never, clean, x)`).
 - Audio: the same w ratio is applied to audio rows/labels; the model computes the audio label
-  `1 − w·σ_a`, composite uses the same weight → the audio analog is self-consistent per stream
-  (video-ratio approximation, as in prior prototypes).
+  `1 − w·σ_a`, composite uses the same weight (video-ratio approximation, as in prior prototypes).
+  This is EXACT only at w∈{0,1}; at fractional audio ticks the carried audio coordinate breaks the
+  approximation three ways — see [consistency-audit](consistency-audit.md) finding A.
 - UNIVERSAL application: every fractional row, NO provenance filter — a deliberate simplification
   for this prototype that deliberately ignores the HOLD-27 provenance lesson, to test the
   mechanism universally first. Fade ramps now also ride stretched tails instead of official
