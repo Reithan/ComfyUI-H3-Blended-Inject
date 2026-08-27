@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-28 (branch `record-schedule-tail-design`). Mode `rescheduled` audited,
+Last updated: 2026-08-27 (branch `record-schedule-tail-design`). Mode `rescheduled` audited,
 declared the canonical target, and given a per-row integrator design + build plan, in
 [schedule-tail-composite-release](per-row-img2img/latent-hold-release/schedule-tail-composite-release.md)
 children `consistency-audit`, `multistep-stochastic-support`, `loop-port-plan`.

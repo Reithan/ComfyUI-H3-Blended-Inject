@@ -1,5 +1,5 @@
 <!-- provenance: status (implementation plan — approved direction, NOT yet implemented) -->
-<!-- verified: 2026-08-28 · plan only, nothing built or GPU-run; code @34a5925 -->
+<!-- verified: 2026-08-27 · plan only, nothing built or GPU-run; code @34a5925 -->
 # Loop-port implementation plan (multistep + stochastic under `rescheduled`)
 
 ## Chosen approach & why
