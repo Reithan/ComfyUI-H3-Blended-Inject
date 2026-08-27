@@ -1,12 +1,12 @@
 <!-- provenance: status (top-level index & direction; child docs carry their own tags) -->
-<!-- verified: 2026-08-25 · repo @72b61c6 -->
+<!-- verified: 2026-08-27 · HOLD-27 GPU result recorded -->
 # Per-Row img2img for H3 — Index & Direction
 
 **Purpose:** the durable, token-lean map of this effort. Read THIS file first every session;
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-26 (branch `proto-latent-hold-release`). HOLD-26 min-free-steps floor rewritten to decouple release LEVEL (intended-d) from TIMING + descending sub-schedule (impl `074e443`, code-confirmed, NOT GPU-verified) —
+Last updated: 2026-08-27 (branch `record-hold27-gpu-falsification`). HOLD-27 GPU run FALSIFIED the HOLD-26 min-free-steps floor (global over-denoise + provenance-blind floor) —
 see [min-free-steps-floor](per-row-img2img/latent-hold-release/min-free-steps-floor.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
