@@ -78,8 +78,8 @@ Schedule-matched descent is NOT the next step; failure is level-semantics and pr
 Full table + analysis: [min-free-steps-floor.md](min-free-steps-floor.md).
 
 2026-08-27 — new design [schedule-tail-composite-release](schedule-tail-composite-release.md) implemented
-(c7afc85, branch proto-schedule-tail-release fresh off main 7877d4d; first GPU MIXED — STR-1
-40-step d=0.5 good, STR-2 20-step low-d underbakes; ablation combo 1fea318),
+(c7afc85 + ablation combo 1fea318, branch proto-schedule-tail-release fresh off main 7877d4d;
+STR-1..7: mode `rescheduled` = WORKING candidate — clean blends 0.2/0.5MP, calibratable dial),
 supersedes-in-spirit the falsified
 HOLD-26 floor approach.
 
@@ -125,7 +125,8 @@ HOLD-26 floor approach.
   design for per-frame scheduled release; the motivating A/B sweep (pre-refit e5996c0);
   the HOLD-27 5-run results table + failure analysis (no denoised correction + provenance-blind floor).
   *Read for the HOLD-26/27 design and its failure mode.*
-- [schedule-tail-composite-release](schedule-tail-composite-release.md) — NEW DESIGN (c7afc85,
-  first GPU mixed): DD-style unification of the official mask composite — stretched schedule-tail
-  sigmas, one weight `w=σ_row/σ_glob` as both label and composite, release = drop the composite;
-  STR-1/2 results + `prototype_mode` ablation combo (1fea318).
+- [schedule-tail-composite-release](schedule-tail-composite-release.md) — NEW DESIGN (c7afc85):
+  DD-style unification of the official mask composite — stretched schedule-tail sigmas, one
+  weight `w=σ_row/σ_glob` as both label and composite, release = drop the composite. Now an
+  index over design/mechanism, `prototype_mode` ablation combo (1fea318), and the STR-1..7 run
+  log (`rescheduled` = working candidate).
