@@ -1,5 +1,5 @@
-<!-- provenance: theory (design — IMPLEMENTED c7afc85 branch proto-schedule-tail-release; mechanism unchanged by ablation combo 1fea318) -->
-<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609) -->
+<!-- provenance: theory (design — IMPLEMENTED c7afc85 branch proto-schedule-tail-release; ablation combo 1fea318; dense-grid row sigmas 34a5925) -->
+<!-- verified: 2026-08-27 · design session + comfy-ref source read (comfy/ldm/minimax/model.py ~587–609); dense-grid fix unit-tested, not GPU-verified -->
 # Schedule-tail composite release — design & mechanism
 
 Child of [schedule-tail-composite-release](../schedule-tail-composite-release.md).
@@ -32,8 +32,8 @@ Code: `sampler.py`, `schedule_tail` branch in `build_per_row_sampler_function`; 
 
 - Per row: `k_d = round(steps·(1−d))` where d = the row's envelope denoise m. Release step = k_d
   — "run the last d-fraction of the denoise schedule".
-- Per step i: stretched-tail sigma `σ_row(i) = sigmas[k_d + i·(steps−k_d)/steps]` (float index,
-  lerp'd on the sigma grid). `σ_row ≤ σ_glob` always.
+- Per step i: stretched-tail sigma `σ_row(i)` = the schedule's value at fractional position
+  `k_d + i·(steps−k_d)/steps`, read exactly off a dense grid (see below). `σ_row ≤ σ_glob` always.
 - ONE number does both jobs: `w_i = σ_row(i)/σ_glob(i)` is BOTH the label mask (model computes
   `t_row = 1 − w·σ_glob = 1 − σ_row`) AND the composite weight — content and label are truthful
   in both phases.
@@ -59,6 +59,29 @@ Code: `sampler.py`, `schedule_tail` branch in `build_per_row_sampler_function`; 
   earlier `schedule_tail_release` boolean). The per-step loop re-enters base_fn one interval at a
   time (Euler-appropriate, deterministic samplers only). No tests (prototype; user pushes with
   --no-validate).
+
+## Dense-grid exact row sigmas (correction)
+
+**Commit `34a5925`, code branch `proto-schedule-tail-release`, 2026-08-27.** The original
+implementation computed σ_row(i) by LERPing the coarse global sigma grid at fractional index
+`k_d + i·(steps−k_d)/steps`. User flagged this as inaccurate: the shift-12 schedule
+(σ = 12s/(1+11s)) is strongly non-linear, so linear interpolation between 20/40 coarse grid points
+misstates σ_row — worst in the top-heavy region where fractional rows start.
+
+Fix: every position the row schedule needs, `(k_d·steps + i·(steps−k_d))/steps²`, is a multiple of
+`1/steps²` — so `nodes.py` pre-generates ONE steps²-step run of the SAME scheduler (KSampler,
+denoise=1.0; schedule math only, no model eval) and passes it as `schedule_tail_cfg["sigmas_dense"]`.
+`sampler.py`'s `row_sigma` then does pure integer indexing: dense index = `k_d·(steps−i) + i·steps`;
+no interpolation at all. Generated only for the remap modes ('rescheduled'/'both'); the old lerp
+remains as a fallback if the dense grid is absent.
+
+This relies on the scheduler being refinement-consistent — linspace-based schedulers
+(normal/sgm_uniform/simple/karras) sample the same continuous curve, so `dense[j·steps]` equals
+coarse `sigmas[j]` exactly.
+
+576 tests pass; NOT yet GPU-verified. Prior GPU results STR-1..8 were all taken on the lerp'd
+build, so realized-denoise calibration observations (top-heavy dial reads) may shift on re-test —
+see [gpu-results](gpu-results.md).
 
 ## How it differs from prior attempts
 

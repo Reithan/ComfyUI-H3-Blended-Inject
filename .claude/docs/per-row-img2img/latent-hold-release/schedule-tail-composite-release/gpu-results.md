@@ -5,6 +5,10 @@
 Child of [schedule-tail-composite-release](../schedule-tail-composite-release.md). Pointer rows
 live in [experiments-run/hold-continued](../../experiments-run/hold-continued.md).
 
+**Caveat:** every run below predates the dense-grid exact row-sigma fix (`34a5925`) and was taken
+on the lerp'd build, so the realized-denoise calibration reads may shift on re-test — see
+[design-and-mechanism](design-and-mechanism.md#dense-grid-exact-row-sigmas-correction).
+
 ## Mode `both` (c7afc85, 0.2MP, 2026-08-27)
 
 - **STR-1** — 40 steps, both injects d=0.5: solid blend, denoise level looks correct. Minor blur
