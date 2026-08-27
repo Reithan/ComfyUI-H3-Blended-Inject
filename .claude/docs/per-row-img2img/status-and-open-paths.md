@@ -82,6 +82,11 @@ correction confirmed ([our-architecture](our-architecture.md)).
      Findings 7–10 (attraction/envelope Findings 4–6 in the sibling doc).
 2. ~~GPU-verify the current build~~ **DONE** — full checklist passed (see Confirmed WORKING
    above).
+   **CANONICAL TARGET (user decision, 2026-08-27):** the schedule-tail `rescheduled` mode is
+   expected to become the canonical implementation, barring new bugs or quality problems. See
+   [schedule-tail-composite-release](latent-hold-release/schedule-tail-composite-release.md)
+   and its `multistep-stochastic-support` child for the per-row integrator port that would give
+   it multistep + stochastic sampler support.
 3. **Stochastic: warning shipped (@06c6bda), hard gate deferred.** `sampler_is_stochastic`
    (eta-default>0 signature heuristic, no hardcoded list) drives a `UserWarning` when fractional
    rows meet an ancestral/SDE sampler. The dead magnitude shim (`make_per_row_noise_sampler`,

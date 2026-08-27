@@ -12,8 +12,11 @@ Implemented `c7afc85` on branch `proto-schedule-tail-release` (recreated FRESH f
 
 **Status (2026-08-27, after STR-1..8):** mode `rescheduled` (per-region SDEdit on the stretched
 tail — init-only composite at σ_row(0), remapped labels + per-row step lerp, no per-step
-re-inject) is the WORKING candidate mechanism: clean blends across 0.2MP and 0.5MP, calibratable
-dial, no seams/errors in any run. Dial calibration remains top-heavy (σ_eff = sigmas[k_d]) and
+re-inject) is the WORKING mechanism, and by **user decision (2026-08-27) is expected to become
+the CANONICAL implementation** barring new bugs or quality problems — i.e. plan for owned,
+tested, first-class code on this path rather than treating it as a prototype branch. It gives
+clean blends across 0.2MP and 0.5MP, a calibratable dial, and no seams or errors in any run so
+far. Dial calibration remains top-heavy (σ_eff = sigmas[k_d]) and
 mildly resolution-dependent, but usable by eye. Mode `both` remains underbake-prone (held-phase
 composite anchoring — STR-2 vs STR-3). Mode `mask-drop` FAILED (STR-8: naive DD-style drop on
 raw-percentage labels falsified for H3; the remap is the seamless-release ingredient).

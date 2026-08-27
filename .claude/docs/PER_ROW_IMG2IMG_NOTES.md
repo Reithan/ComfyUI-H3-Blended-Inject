@@ -6,8 +6,8 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them — don't silently diverge.
 
-Last updated: 2026-08-27 (branch `record-schedule-tail-design`). Mode `rescheduled` audited and a
-per-row multistep/stochastic sampler design sketched, in
+Last updated: 2026-08-27 (branch `record-schedule-tail-design`). Mode `rescheduled` audited,
+declared the canonical target, and given a per-row multistep/stochastic design, in
 [schedule-tail-composite-release](per-row-img2img/latent-hold-release/schedule-tail-composite-release.md)
 children `consistency-audit` and `multistep-stochastic-support`.
 
@@ -60,8 +60,9 @@ single engine* via a per-row ancestral step — see
 
 ## Current direction
 
-- **Deterministic-only**, prototype mode. Stochastic-sampler gate DEFERRED; the stochastic shim
-  may rot (user doesn't care).
+- **Canonical target (user decision, 2026-08-27):** schedule-tail mode `rescheduled` is expected
+  to become the CANONICAL mechanism, barring new bugs/quality problems — plan first-class tested
+  code on it. Deterministic-only today; stochastic gate DEFERRED, shim may rot.
 - Our approach = synthesize per-row img2img via three levers (init-lerp + fractional denoise_mask
   conditioning + REQUIRED denoised correction) with `noise_mask=None` and a post-composite for
   exact-preserve rows. See [our-architecture.md](per-row-img2img/our-architecture.md).

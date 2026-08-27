@@ -71,3 +71,38 @@ callback remap keeps working.
   composite would fight freshly injected noise on every step.
 - Recommended order: **(d)** first if the goal is to close the repo's known stochastic gap, or
   **(b)** first for a quality win on deterministic sampling. Both are cheap.
+
+## Wrap/shim alternative considered (2026-08-27) — loop-port preferred
+
+A **wrap path genuinely exists**, and it is worth recording that it was evaluated rather than
+overlooked. Hand `base_fn` the FULL schedule (which restores multistep history) and redirect the
+per-row integration from inside the model wrapper, using a **doctored `denoised`**:
+
+- For Euler, `denoised_d = r·denoised + (1 − r)·x` — that is *exactly* the existing
+  `m·denoised + (1 − m)·x` wrapper correction with `m = r` for that step.
+- It generalizes to any update rule affine in `(x, denoised)` via `denoised_d = α·x + β·denoised`
+  with per-row `(α, β)`.
+- Ancestral noise magnitude is reachable too: pre-scale ε per-row through the existing
+  `noise_sampler` hook.
+
+**Rejected in favor of the loop-port**, for three reasons:
+
+1. **No generality win.** The per-sampler `(α, β)` still has to be derived by hand — the same
+   knowledge the port needs, just expressed indirectly.
+2. **Second-order terms stay approximate.** History terms would mix doctored values with
+   coefficients computed from the *global* `h`, so fractional rows get an approximation. The
+   loop-port instead runs each rule with the row's own `h` on the true `denoised`, which is exact
+   by construction.
+3. **Fragile plumbing.** The wrapper would have to infer the step index back from sigma, which is
+   brittle in general and worse for two-call samplers like `heun`, where two wrapper invocations
+   share one step.
+
+**Also note:** the current slicing euler-izes **full-denoise rows too**, not just held ones. Under
+any prototype mode the entire generation runs Euler regardless of which sampler the user selected.
+Every GPU result to date used Euler anyway, so none of the recorded runs are affected — but the
+claim "sampler X was used" is not true of any prototype run until this is fixed.
+
+The user decision that `rescheduled` is expected to become the canonical implementation (see the
+[index](../schedule-tail-composite-release.md) status line) strengthens the port choice further:
+a canonical mechanism deserves first-class owned integrator code with tests, not corrections
+threaded through a wrapper.
