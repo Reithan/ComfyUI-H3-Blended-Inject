@@ -40,6 +40,9 @@ raw-percentage labels falsified for H3; the remap is the seamless-release ingred
   — design sketch (unimplemented): why `dpmpp_2m` silently runs Euler under the loop today, and
   how recovering per-element `denoised` from the Euler slice lets the loop run a per-row update
   rule for `dpmpp_2m`, `res_multistep`, and `euler_ancestral_RF` (the stochastic gap).
+- [loop-port-plan](schedule-tail-composite-release/loop-port-plan.md) — the approved (not yet
+  built) implementation plan for that port: direct model call in the step core, then per-row
+  `dpmpp_2m` and `euler_ancestral_RF`, with the test plan canonicalization requires.
 - [gpu-results](schedule-tail-composite-release/gpu-results.md) — the STR-1..7 run log
   (`both` underbake, `rescheduled` clean-blend series incl. the 0.5MP res-invariance test),
   the anchoring-dominates implication, and dial-calibration notes.

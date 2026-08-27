@@ -106,3 +106,6 @@ The user decision that `rescheduled` is expected to become the canonical impleme
 [index](../schedule-tail-composite-release.md) status line) strengthens the port choice further:
 a canonical mechanism deserves first-class owned integrator code with tests, not corrections
 threaded through a wrapper.
+
+**The plan that executes this design** — ordered steps, integrator-selection fallbacks, and the
+test plan — is [loop-port-plan](loop-port-plan.md).
