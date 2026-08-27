@@ -1,6 +1,6 @@
 <!-- provenance: status (current state / open paths) -->
 <!-- verified: 2026-08-24 · repo @72b61c6 -->
-<!-- last updated: 2026-08-24, branch: migrate-debug-wiki-findings -->
+<!-- last updated: 2026-08-24, branch: proto-latent-hold-release -->
 <!-- anchoring: reference commits/PRs, never task numbers — the task list is cleared/churned
      during prototyping and is not a durable artifact -->
 # Status & open paths
@@ -58,6 +58,28 @@ correction confirmed ([our-architecture](our-architecture.md)).
    likely one of the hold-and-release strategies on the latent/mask side (knob B), needing new tests
    and possibly a new node. OPEN: whether 1-frame keyframe injects stay in `H3AddInject` or get a
    dedicated node — decide when the latent-resident work starts.
+
+   **PROTOTYPE (branch `proto-latent-hold-release`, NOT for merge) — full design + GPU debug log in
+   [latent-hold-release/](latent-hold-release/index.md).** Route-1 anchor-then-release on
+   knob **B** (latent). State as of 2026-08-25:
+   - Hold-residency **CONFIRMED** on GPU (anchor held bit-identical clean through the hold).
+   - **A/B + denoise=0.0 (guide removed in both):** hold OFF (fractional) blends; hold ON cut;
+     `denoise=0.0` (permanent freeze) BLENDS. SOLID: attraction is a baseline property of the co-evolving
+     inject and does NOT need a hold; freeze alone doesn't block it. **Envelope fork SETTLED by code:**
+     with the user's config (markers 0/0/1/1, interpolation `none`, 1-frame inject on the singleton "1"
+     row) `evaluate_envelope` = `{row40: md, row39: 1.0}` — denoise=0.0 gives a TRUE frozen clean m=0
+     keyframe row and a full-gen (not frozen) neighbor. Fable's +0.5 trap and gray shoulder-wall are
+     LINEAR/eased artifacts and do NOT apply. **The hold-ON cut is now EXPLAINED (2026-08-25):**
+     `anchor_mask=(m>0)&(m<1)` is provenance-blind → it froze the OPENING video inject's fade-out (the
+     1,084,864 fractional elems), not the r40/r60 keyframes; that wrong-row freeze PROPAGATED forward via
+     H3's global attention and corrupted r40's blend. ⇒ no envelope bug; all prior hold tests are
+     confounded; we have NEVER cleanly held only the keyframe injects. FIX = give the hold PROVENANCE
+     (tag intended inject rows at construction), then re-run the keyframe-only A/B. Do NOT call route-1 a
+     dead end. PRIMARY problem stays the keyframe's fractional underdenoise (timed cond-removal/H3AddGuide,
+     route-2 two-pass, resolution-corrected effective-m); a gentle continuous-λ spring is the other latent
+     variant. Full log:
+     [latent-hold-release/hold-mechanism-and-confounds](latent-hold-release/hold-mechanism-and-confounds.md)
+     Findings 7–10 (attraction/envelope Findings 4–6 in the sibling doc).
 2. ~~GPU-verify the current build~~ **DONE** — full checklist passed (see Confirmed WORKING
    above).
 3. **Stochastic: warning shipped (@06c6bda), hard gate deferred.** `sampler_is_stochastic`
