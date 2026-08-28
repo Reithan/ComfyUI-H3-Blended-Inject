@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). Bug E grid-cycle theory GPU-falsified; leading cause now held+long-ramp mid-schedule disparity — [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md).
+Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). Bug E → ramp-start adjacent to chunk reset (S2, CPU-exact 13/13, GPU pending); chunk-seam decode-overlap — [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -87,7 +87,7 @@ single engine via a per-row ancestral step. See
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
 - [bugs.md](per-row-img2img/bugs.md): A (fixed), B (stochastic/open), E (long-fade/open). *Read for fractional-region artifacts.*
-- [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (GPU-narrowed):** Bug E — grid-cycle falsified 2026-08-28; revised = held+long-ramp mid-schedule disparity; GPU tests recorded. *Read for Bug E.*
+- [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (S2, CPU-exact, GPU pending):** Bug E — ramp-start adjacent to chunk reset (local_row∈{1,4}, 13/13); held+ramp retired; decode-overlap mechanism. *Read for Bug E.*
 - [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived):**
   ×S fix globally exact; leaks per-row for m<1; C2 audibility AMBIGUOUS. *Read for fractional audio / carry.*
 - [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED free audio; H2 FALSIFIED (fade-length confound); primary long-fade video bug open; σ_a-LABEL proof valid.** *Read for euler_a audio.*

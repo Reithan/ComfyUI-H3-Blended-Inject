@@ -1,6 +1,6 @@
-<!-- provenance: theory (UNVERIFIED — GPU-narrowed; revised hypothesis analytical/UNVERIFIED; prior grid-cycle mechanism GPU-FALSIFIED 2026-08-28) -->
-<!-- verified: 2026-08-28 · GPU test matrix falsifies grid-cycle count prediction; revised held+ramp theory analytical only; tests on main (euler, 0.2MP) -->
-# Bug E: long-fade video interference — held+ramp mid-schedule disparity
+<!-- provenance: theory (CPU-EXACT separator S2, GPU out-of-sample PENDING — code-exact across 13 tested configs; no GPU out-of-sample confirmation yet) -->
+<!-- verified: 2026-08-28 · CPU numerical analysis of frame_to_row/evaluate_envelope/sampler; source repo @ branch fix-audio-ancestral-axis-mismatch -->
+# Bug E: long-fade video interference — chunk-seam cell-alignment (S2)
 
 Bug E symptom: moiré / streamers / ribbons / electric-like patterns in video latent with long
 fades; sampler-independent; audio tracks via joint attention.
@@ -8,82 +8,89 @@ Established in [bugs.md](bugs.md) and [audio-axis-verdict.md](audio-axis-verdict
 
 Note: σ̃/H2 and Fix A do NOT address Bug E — present on main before either fix, sampler-independent.
 
-## GPU falsification — 2026-08-28 test matrix (euler, 0.2MP, single video fade at f0, no guides)
+## Separator S2 — code-exact predictor (13/13)
 
-Notation: a/b/c/d = fade_in/start_keyframe/end_keyframe/fade_out.
-HELD (frozen preserved block) = [skf, ekf]. RAMP = fade span.
+The artifact occurs **iff** the fade-out ramp-start row — the latent row containing `ekf`
+(end_keyframe), where the frozen held block meets the ramp — is **adjacent to a chunk reset row**.
 
-| Config    | Held | Ramp            | Result                                           |
-|-----------|------|-----------------|--------------------------------------------------|
-| 0/0/0/85  | ~0f  | 85f (5 cycles)  | CLEAN                                            |
-| 0/0/0/17  | ~0f  | 17f (1 cycle)   | CLEAN                                            |
-| 0/0/0/69  | ~0f  | 69f             | CLEAN                                            |
-| 0/0/0/73  | ~0f  | 73f             | CLEAN                                            |
-| 0/0/0/75  | ~0f  | 75f             | CLEAN                                            |
-| 0/0/7/75  | 7f   | 68f (4 cycles)  | CLEAN                                            |
-| 0/0/30/90 | 30f  | 60f             | NOISY — streamers/ribbons/electric; audio tracks |
-| 0/0/60/90 | 60f  | 30f             | CLEAN                                            |
+H3 grid: (1,4,4,4,4) per 17-frame chunk. Each chunk has 5 rows: `local_row = global_row % 5`.
 
-## Grid-cycle-count theory — REJECTED (GPU falsified 2026-08-28)
+| local_row | position in chunk | S2 |
+|-----------|-------------------|----|
+| 0 | chunk reset / anchor (1-frame cell) | SAFE |
+| 1 | immediately AFTER reset | ERROR |
+| 2 | interior (4-frame cell) | SAFE |
+| 3 | interior (4-frame cell) | SAFE |
+| 4 | immediately BEFORE next reset | ERROR |
 
-Prior hypothesis: artifact onset tracks how many 17-frame grid cycles the ramp spans
-(predicted onset ~≥3–4 cycles); the (1,4,4,4,4) sampling-periodicity / stuck-pair mechanism
-was the proposed driver.
+**S2 = True iff `local_row ∈ {1, 4}`, i.e. `global_row % 5 ∈ {1, 4}`.**
 
-**Falsified by:** 0/0/0/85 (5 cycles, CLEAN), 0/0/0/75 (CLEAN), 0/0/7/75 (4 cycles, CLEAN).
-Long ramps spanning 4–5 grid cycles are clean when the held block is small.
-The grid-cycle count does NOT predict the artifact.
-The sampling-periodicity / stuck-pair / k_d-quantization mechanism is REJECTED as the driver.
+## Evidence — 13/13 perfect separation
 
-## Revised hypothesis — held + long ramp mid-schedule disparity (UNVERIFIED)
+Notation: a/b/c/d = fade_in/skf/ekf/fade_out. Ramp-start `global_row = frame_to_row(ekf)`.
 
-The artifact requires BOTH:
-(a) a substantial FROZEN preserved/held block, AND
-(b) a LONG graded ramp adjacent to it.
+| Config | ramp-start row | cell | S2 | GPU result |
+|--------|---------------|------|----|------------|
+| 0/0/0/85,17,69,73,75 (c=0) | row 0 | 0 (reset) | F | CLEAN |
+| 0/0/7/75 (c=7) | row 2 | 2 | F | CLEAN |
+| 0/0/40/90 (c=40) | row 12 | 2 | F | CLEAN |
+| 0/0/44/90 (c=44) | row 13 | 3 | F | CLEAN |
+| 0/0/60/90 (c=60) | row 18 | 3 | F | CLEAN |
+| 0/0/35/90 (c=35) | row 11 | 1 | T | ERROR (streamers) |
+| 0/0/36/90 (c=36) | row 11 | 1 | T | ERROR (geometric) |
+| 0/0/37/90 (c=37) | row 11 | 1 | T | ERROR (green electric) |
+| 0/0/30/90 (c=30) | row 9 | 4 | T | ERROR (streamers; original error case) |
 
-Neither alone triggers it:
+S2 predicts all 13 cases correctly. GPU out-of-sample confirmation is PENDING.
 
-- **Long ramp alone is clean:** 0/0/7/75 has a LONGER ramp (68f) than the failing case (60f)
-  but only 7f held → CLEAN.
-- **Large held alone is clean:** 0/0/60/90 has a LARGER held block (60f) than the failing
-  case but only 30f ramp → CLEAN.
-- **Not the product:** 0/0/30/90 and 0/0/60/90 have identical held×ramp = 1800 but opposite
-  outcomes.
+## Prior theory retired — "held+long-ramp mid-schedule disparity" was a confound
 
-Only 0/0/30/90 combines both a substantial held (30f) and a long ramp (60f) → NOISY.
+The previous revision hypothesized that BOTH a substantial held block AND a long ramp were
+required. S2 shows this was a confound.
 
-## Mechanism (theory)
+The original pair that suggested it:
+- 0/0/30/90 (held 30f, ramp 60f → NOISY): ramp-start row 9, cell 4 → S2=T
+- 0/0/60/90 (held 60f, ramp 30f → CLEAN): ramp-start row 18, cell 3 → S2=F
 
-This is a DYNAMIC, not a static geometry. User observation from per-step previews: the error
-noise is GENERATED mid-schedule (~1/4 to 1/2 through the steps); later low-sigma steps either
-HEAL it or crystallize it into visible artifacts (streamers/bubbles/electricity).
+The outcome differs by WHERE `ekf` lands in the chunk — NOT by held size or ramp length.
+**Held+ramp framing is retired as a confound explained by S2. Do not revisit it.**
 
-This matches where the schedule-tail remap produces MAXIMUM cross-row sigma disparity:
-fully-released ramp rows (low k_d → low sigma, near-clean) sit in H3's full joint attention
-([dit-forward.md](native-h3-mechanism/dit-forward.md)) next to still-frozen held rows
-(m≈0, k_d≈steps → high sigma). A large frozen block adjacent to a long ramp SUSTAINS this
-noisy-vs-clean attention boundary across many rows AND many mid-steps → structured noise that
-needs enough low-sigma runway to heal.
+## Structural, not a denoise/k_d-level effect
 
-Explains: present on main, sampler-independent, video-primary, audio-couples via joint attention.
+Config c=37: ramp-start row 11, `k_d = 20` (same as a fully-frozen row; denoise ≈ 1.0) → still
+ERRORS. The artifact is not driven by the denoise level at the ramp-start row. It is the geometric
+coincidence of the frozen→ramping boundary landing on a reset-adjacent cell. Interior cells 2–3
+keep the boundary inside the chunk, with frozen context buffering both sides of every seam.
 
-Corollary (user's read): more cases may carry SOME transient noise that heals when step count
-is adequate or the compounding-frame count is too low.
+## Mechanism — chunk-seam decode-overlap (same confirmed H3 failure mode)
 
-## Falsifiable predictions — next GPU tests
+H3 VAE encodes each 17-frame chunk independently and DECODES with overlapping blended windows.
+This chunk-boundary decode blend is the **confirmed root of the task #25 "pop"** in this codebase
+— see [highres-singleframe-underdenoise/resolution-ladder.md](highres-singleframe-underdenoise/resolution-ladder.md)
+(memory key `h3-vae-decode-overlap`).
 
-1. **STEPS SWEEP on 0/0/30/90 (steps 20→30→40→60):** if artifact diminishes as steps rise,
-   CONFIRMS the compound-vs-heal dynamic and localizes the fix to release schedule / tail runway.
-   (Highest-value test.)
-2. **Held-threshold bisection — 0/0/15/75** (held 15f, ramp 60f): narrows the held trigger
-   between 7 (clean) and 30 (noisy).
-3. **Long-ramp-required check — 0/0/30/60** (held 30f, ramp 30f): predict CLEAN; if noisy,
-   held≥30 alone triggers and the hypothesis is wrong.
-4. **Optional — 0/0/30/90 with held min_denoise=0.05:** tests whether the exact-preserve
-   "never-release" path seeds the boundary vs. a near-zero path.
+Placing the frozen→ramping discontinuity on a reset-adjacent cell (1 or 4) lands the abrupt signal
+jump exactly at a chunk seam. The overlapping decode pass blends that jump into adjacent decoded
+frames → structured visual noise. Cells 2–3 (interior) keep the discontinuity ≥2 rows inside the
+chunk; frozen context buffers both sides of every seam and the decode blend sees a smooth signal.
 
-## Fix direction (speculative — confirm mechanism first)
+## Pending GPU out-of-sample predictions (UNRUN)
 
-If the steps-sweep confirms heal-vs-compound: smooth the mid-schedule release disparity
-(e.g. gentler/continuous release across the held→ramp boundary, or ensure enough tail steps)
-rather than any grid-alignment change. Do not implement until GPU-confirmed.
+| Config | ramp-start row | cell | Prediction |
+|--------|---------------|------|------------|
+| 0/0/47/90 (c=47) | row 14 | 4 | ERROR — confirms cell4 independent of c=30 |
+| 0/0/34/90 (c=34) | row 10 | 0 (reset) | CLEAN |
+| 0/0/38/90 (c=38) | row 11 | 1 | ERROR |
+| 0/0/39/90 (c=39) | row 12 | 2 | CLEAN — pins error cliff at the cell1→cell2 boundary |
+
+The c=38/c=39 pair pins the exact transition: last frame of cell1 → first frame of cell2.
+
+## Fix direction (speculative — confirm GPU out-of-sample first)
+
+Snap `ekf`/`efo` (and by symmetry `sfi`/`skf`) OFF the reset-adjacent cells (1 and 4), to the
+reset cell (0) or interior cells (2–3). This is analogous to the existing `inject_at` 17-frame
+floor-snap in `sanitize.py` (`snap_inject_at`, lines 26–68), which ensures `inject_at` lands on
+a valid chunk boundary. A fade-endpoint snap would keep the frozen→ramp boundary away from
+every chunk seam.
+
+**Do not implement until GPU out-of-sample predictions are confirmed.**

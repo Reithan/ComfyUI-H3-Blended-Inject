@@ -1,8 +1,8 @@
 <!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
      GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, leading
-     RCA = held+long-ramp mid-schedule attention-disparity (GPU-narrowed; grid-cycle theory
-     falsified 2026-08-28)) -->
+     RCA = ramp-start row adjacent to chunk reset row (local_row∈{1,4}); CPU-exact 13/13, GPU
+     out-of-sample pending; chunk-seam decode-overlap mechanism) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 subsequently falsified by fade-length GPU data (same date, late) · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -135,9 +135,11 @@ passthrough (no-op inject). **Status: FIXED, pending merge.**
 frozen held block coexists with a long fade ramp; sampler-independent; audio tracks via joint
 attention; present on main before Fix A or σ̃.
 
-**Leading RCA:** held+long-ramp mid-schedule attention-disparity (GPU-narrowed; grid-cycle
-theory GPU-falsified 2026-08-28) — see [long-fade-grid-beat.md](long-fade-grid-beat.md) for
-the test matrix, rejected grid-cycle mechanism, revised hypothesis, and next GPU tests.
+**Leading RCA:** ramp-start row adjacent to a chunk reset row (`local_row ∈ {1,4}`,
+i.e. `global_row % 5 ∈ {1,4}`); CPU-exact separator (13/13), GPU out-of-sample pending;
+mechanism = chunk-seam decode-overlap (same confirmed H3 failure as task #25 pop).
+See [long-fade-grid-beat.md](long-fade-grid-beat.md) for the full table, retired
+held+ramp confound, structural evidence, and pending GPU predictions.
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).
