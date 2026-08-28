@@ -39,3 +39,54 @@ Consequences (these REVISE the plan below):
 4. **Experiment success criterion updated:** seam-z is NECESSARY but NOT SUFFICIENT — pair it with an
    anchor-content-fidelity check (user visual, or the `‖x_final[anchor]−clean‖` / ρ_ret proxy). A method
    "wins" only if seam drops WHILE the anchor's own regen stays at the intended ≈0.45 level.
+
+## Hold-prototype corroboration (2026-08-25) — nominal m is res-compressed, hold-independently
+
+Three route-1 hold-prototype runs on r40 (single-frame keyframe) give NEW evidence for this exact model:
+- **m=0.5, hold=0.5** → "looks like ~0.1 denoise" (realized ≪ nominal).
+- **m=0.99, hold=0.5** → "looks like ~0.5 denoise" (realized ≈0.5 from nominal 0.99).
+- **m=0.5, NO hold** → also "~0.1", i.e. **identical to the hold run** ⇒ the compression is hold-INDEPENDENT.
+
+This matches d_content res-compression (nominal 0.45 → realized 0.05–0.1 @1MP) and reads as a monotonic
+nominal→realized curve. It ARGUES AGAINST reading the runs as "hold is a stronger img2img lever than m":
+holding m fixed and raising it 0.5→0.99 is what moved the result; hold=0.5 vs none did not. It also argues
+AGAINST collapsing m↔hold into one knob — the model (consequence 3) needs them SEPARATE: m = anchor
+content-denoise (res-compensate the nominal value), hold = neighbor seam/trust lever.
+
+**Cheap discriminator (untested):** run **m=0.5, hold=0.5 at 0.2MP**. Model predicts it now "looks ~0.5"
+(low res: d_content/d_blend coincide). If it still looks ~0.1, resolution is NOT the cause and the
+contagion/other tracks reopen. Pair with the `‖x_final[anchor]−clean‖` proxy instead of eyeballing.
+Run resolution (user, 2026-08-25): **all r40 runs were 0.5MP** — a proven **1.0MP proxy** (same error
+modes, slightly milder, ~1/4 the runtime). So they are in the high-res / window-may-be-closed regime.
+Hold-thread context: [../latent-hold-release/anchor-denoise-after-clean-fix](../latent-hold-release/anchor-denoise-after-clean-fix.md).
+
+## Competing MECHANISM for the res-dependence — attention dilution vs basin-sharpening (user, 2026-08-25)
+
+The "basin sharpening / T_N(d) steepening" framing is a **per-frame intrinsic** mechanism (a solo frame
+would underdenoise at high res). The user's leading alternative is **attention dilution**: r40's own denoise
+math is res-INVARIANT; the res effect is entirely **temporal contagion** — neighbors "hold" the single-frame
+inject HARDER at high res / longer timelines. If true, res-compression and contagion are ONE mechanism.
+Not yet disproven; supporting experiments exist.
+
+Mechanism refined to **raw-count** (user, 2026-08-25). An earlier caveat ("raw-count has the same scaling
+hole as ratio") is **RETRACTED** — `(N-1)/N` invariance is about the *share* of attention, not attention
+*quality*; quality genuinely degrades with raw token count (softmax entropy over more keys, RoPE-range
+stretch). Open: **sign/pathway** — P1 (neighbors pin r40 — wrong sign under dilution) vs P2 (r40's signal
+too diluted to assert — right sign); spectral-detail + RoPE-locality also on the table. Timeline length is
+a separate clean axis.
+
+**Strongest evidence favoring the attention family (already in hand): the fade observation.** Faded video
+injects denoise well; single-frame / no-fade injects underdenoise worst. A pure per-frame basin would
+res-compress EACH faded row too → it does NOT predict "fades work"; the attention family does (graded
+neighbors + inject self-anchoring). Confound: video injects differ from a still by fade envelope AND motion.
+
+**Discriminators.** **still-repeat-with-fade on r40 is ALREADY RUN** (result: fade fixes the SEAM but NOT
+the anchor's own artifacts, which smear across the span, AND the model reads a static repeat as a
+FREEZE-FRAME → not viable; confirms d_content vs d_blend are separate axes). Remaining cheap: **0.2MP**
+(res-confirm) + **r60** (free 2nd single-frame point). Cleanest mechanism split = a **timeline-length sweep
+at fixed res & m** (dilution ⇒ length-dependent; basin ⇒ length-invariant) but **DEFERRED** (a coherent
+multi-inject timeline isn't free). If dilution wins, fix = route-3 (anchor attention-logit boost) — **but
+CAUTION: route-3 risks the same freeze-frame read** (neighbors conforming to a boosted lone anchor). The
+surviving lever is the **single frame's own effective denoise** (high / res-compensated m), NOT temporal
+replication. Hold-thread detail:
+[../latent-hold-release/anchor-denoise-m-vs-res](../latent-hold-release/anchor-denoise-m-vs-res.md).

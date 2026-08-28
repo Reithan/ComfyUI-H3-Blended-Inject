@@ -38,11 +38,10 @@ ancestral renoise runs on a fabricated per-row schedule that isn't scale-invaria
 
 ## The ghost — where it actually appears (user-confirmed; corrects earlier claim)
 
-**MC DOES support fractional / temporally-faded masks.** The fork adds `H3 Set AV Noise Mask` /
-`H3 Clear AV Noise Mask`, so you can paint arbitrary mask values; a temporal FADE works very well
-**including on stochastic samplers** (user's own workflow). The subagent's "video binary only" was
-the DEFAULT mask builder (`h3_mask_compat.py:161` thresholds ≥0.995→1, ≤0.05→0, quantize 1/256),
-**not** the capability. MC is NOT limited to binary video.
+**MC DOES support fractional / temporally-faded masks.** The fork's `H3 Set/Clear AV Noise Mask`
+nodes allow arbitrary mask values; temporal fades work well including on stochastic samplers. The
+"binary video" claim applies only to the DEFAULT builder (`h3_mask_compat.py:161`), not the
+capability.
 
 The ghost is **narrow (user-confirmed):** it appears only when **`min_denoise` is 0<value<1, and
 generally only in the KEYFRAMES.** It is NOT fractional masks in general — it's **sustained
@@ -78,26 +77,23 @@ like intuitive img2img denoise — is the PRIMARY reason this repo exists.
 `min_denoise > 0`, **MC pops over a ghost frame while Blended stays smooth** — the exact gap,
 closed. At `min_denoise = 0.0` (fade from a clip) the two look visually similar (parity achieved).
 
-Also: MC upstream isn't
-taking PRs and has heavy churn; MC's node-sprawl and workflows are a QoL problem. See also
-[differential-diffusion · ghost](differential-diffusion.md#why-native-inpaint-ghosts-the-math).
+MC upstream is not taking PRs and has heavy churn; node-sprawl is a QoL problem.
+See also [differential-diffusion · ghost](differential-diffusion.md#why-native-inpaint-ghosts-the-math).
 
 ## Scope & injection flexibility (design divergence, user-confirmed)
 
-MC was built around **clip continuation** — extending one clip into the next — so it targets injects
-at **f0 almost exclusively**, and heavily prioritizes tight A/V line-up to stop audio pops from
-**compounding** as the clip grows with each successive extension.
+MC targets f0 almost exclusively, prioritizing tight A/V line-up to prevent audio pops from
+compounding across extensions.
 
 Blended targets **arbitrary injects**: a wider variety of inject lengths at more arbitrary timeline
 points, via principled frame-space snapping (per-17 latent-grid reset, single-frame injects,
 half-open envelope, tail-local A/V join, `17n+5` length snap).
 
-**The real enabler is better BLENDING, not the lack of extension-chaining.** MC's binary masking
-exposes A/V-misalignment pops at hard boundaries, so MC must enforce tight A/V line-up. Blended
-fades the boundary, hiding the pop. The guardrail (`warn_audio_tail_alignment` / `is_faded_through`)
-warns/snaps only when a misalignment is NOT covered by a fade. This opens uses MC isn't shaped for:
-**mid-timeline keyframe injection, mid-context video guiding**, etc. (Design intent — GPU
-verification pending; see [status-and-open-paths](status-and-open-paths.md#open-paths).)
+**Better BLENDING is the real differentiator.** MC's binary masking requires tight A/V line-up to
+avoid pops; Blended fades the boundary. The guardrail warns/snaps only when a misalignment is NOT
+covered by a fade, enabling uses MC isn't shaped for: **mid-timeline keyframe injection,
+mid-context video guiding** (design intent; GPU verification pending;
+see [status-and-open-paths](status-and-open-paths.md#open-paths)).
 
 ## The three design points (the real fork)
 

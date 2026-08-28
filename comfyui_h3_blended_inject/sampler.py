@@ -1,38 +1,34 @@
-"""Per-row img2img sampler helpers.
+"""Per-row img2img sampler helpers (schedule-tail remap).
 
-This module owns the three levers that turn ComfyUI's global sampler into a per-row
-img2img sampler for H3 blended injects (see the ``per-row-img2img-architecture`` design):
+This module turns ComfyUI's global sampler into a per-row img2img sampler for H3 blended
+injects using the GPU-validated **schedule-tail remap** mechanism.  Each fractional row
+(``0 < m < 1``) runs the LAST ``d``-fraction (``d = m``) of the schedule's sigma values,
+stretched over ALL steps:
 
-1. **Per-row initial noise** (:func:`per_row_init_lerp`): after ComfyUI's global
-   ``noise_scaling`` produces ``x_global = sigma_max*eps + (1-sigma_max)*clean``, the
-   img2img start for row ``r`` with denoise ``m_r`` is exactly
-   ``x_r = m_r*x_global + (1-m_r)*clean`` — a per-row lerp between the fully-noised latent
-   and the clean reference.  ``m=1`` → full generation, ``m=0`` → preserve, ``0<m<1`` →
-   img2img start.  Applied at the top of a thin wrapped ``sampler_function``
-   (:func:`build_per_row_sampler_function`) because the sampler steps its own outer ``x``
-   — a model_function_wrapper cannot set the initial ``x``.
+- Release step ``k_d = round(steps·(1−m))`` (clamped to ``[0, steps]``); ``never = k_d ≥ steps``
+  marks ``m == 0`` (exact-preserve) rows.  Stretch factor ``span = (steps − k_d) / steps``.
+- ``row_sigma(i)`` is read EXACTLY from a dense ``steps²+1`` sigma grid at grid index
+  ``k_d·(steps − i) + i·steps`` — an integer index for every row/step, so there is no
+  interpolation error against the shift-12 schedule curvature.  A coarse-grid lerp is used
+  only if that dense grid is absent.
+- The DiT label is ``w = (sig_row / sig_g).clamp(max=1.0)`` so the model computes the truthful
+  ``t_row = 1 − w·σ_g = 1 − σ_row`` in both the held and free phases.
+- Per-step per-row scaling ``r = (sig_row − sig_row_next) / (sig_g − sig_g_next)`` is applied
+  as ``x_cur = x_prev + r·(x_cur − x_prev)`` so each row integrates its own compressed tail
+  instead of the global interval — this replaces the old denoised correction entirely.
+- An init-only clean composite fires ONCE at ``i == 0`` (``x = w·x + (1−w)·clean``) to place
+  each row on its own noise-line at ``σ_row(0)``; it is never re-injected (per-region SDEdit
+  on the stretched tail).  A final ``where(never, clean, x_cur)`` guarantees ``m == 0`` preserve.
 
-2. **Per-row DiT conditioning** — handled by the conditioning wrapper (built elsewhere)
-   that feeds the fractional ``denoise_mask`` so the DiT compresses each row's schedule.
+**Audio.**  The base sampler steps the whole packed (video+audio) latent on the VIDEO sigma
+schedule uniformly.  Audio rows, however, live on the sigma-shifted audio schedule
+(:func:`time_shift_sigma`), so ``row_sigma``, ``sig_g``, ``w`` and ``r`` use audio-shifted
+sigmas for audio rows and raw video sigmas for video rows.  ``k_d`` / ``span`` depend only on
+``m`` and are identical for both modalities.  Audio rows are located by the packed video
+prefix length (the same boundary :func:`scale_packed_audio` uses).
 
-3. **No native noise_mask** — the caller passes ``noise_mask=None`` so ``KSamplerX0Inpaint``
-   never composites, removing the compounding re-pin ghost.
-
-For deterministic samplers (euler, res_multistep, dpmpp_2m, ...) the per-step update is
-invariant under scaling all sigmas by ``m_r``, so running the global sampler on the global
-schedule with per-row-conditioned ``x0`` and per-row initial noise reproduces per-row
-img2img exactly — no sampler modification needed.  Stochastic samplers (ancestral/SDE,
-euler s_churn>0) add fresh noise per step; :func:`_make_per_row_noise_sampler` scales that
-noise per-row, but this is INSUFFICIENT for H3's RF-ancestral path (Bug B): the
-``sample_euler_ancestral_RF`` renoise sub-step is affine (not linear) in sigma via its
-``alpha = 1 - sigma`` terms, so no noise-magnitude shim alone can make it scale-invariant.
-Stochastic samplers are unsupported/deferred; see ``bugs.md`` Bug B and
-``stochastic-recovery-theory.md``.
-
-Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.
-
-This module is imported lazily inside ``nodes._run_sampler`` (a ``# pragma: no cover`` GPU
-path), so it has no module-level importers at load time — that is intentional, not an orphan.
+Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
+imports stay lazy so this module loads without a ComfyUI environment.
 """
 
 from __future__ import annotations
@@ -46,38 +42,6 @@ import torch
 from comfyui_h3_blended_inject.guides import filter_released_keyframes
 
 
-def per_row_init_lerp(
-    x: torch.Tensor,
-    m: torch.Tensor,
-    clean: torch.Tensor,
-) -> torch.Tensor:
-    """Blend the fully-noised latent ``x`` toward the clean reference per row.
-
-    Computes ``m * x + (1 - m) * clean`` with ``m`` and ``clean`` cast to ``x``'s device
-    and dtype so mixed-precision inputs do not raise.  ``m`` is the per-row denoise fraction
-    broadcast over the non-row dimensions (e.g. shape ``[1, rows, 1]`` against ``x`` of
-    shape ``[1, rows, cols]``); ``m == 0`` yields ``clean``, ``m == 1`` yields ``x``.
-
-    Parameters
-    ----------
-    x:
-        The globally noise-scaled latent (``sigma_max*eps + (1-sigma_max)*clean``).
-    m:
-        Per-row denoise fractions, broadcastable to ``x``.
-    clean:
-        The clean reference latent (target with all inject content composited in),
-        broadcastable to ``x``.
-
-    Returns
-    -------
-    torch.Tensor
-        The per-row img2img starting latent, same shape/dtype/device as ``x``.
-    """
-    m = m.to(device=x.device, dtype=x.dtype)
-    clean = clean.to(device=x.device, dtype=x.dtype)
-    return m * x + (1.0 - m) * clean
-
-
 def scale_packed_audio(
     packed: torch.Tensor,
     video_element_count: int,
@@ -89,15 +53,12 @@ def scale_packed_audio(
     (``scale_factor == 1.0``) but multiplies the AUDIO slice by ``audio_scale``
     (``shift / audio_shift`` = 4.0), carrying the audio stream onto the video schedule.  The
     sampler therefore holds ``x_global`` whose audio slice is already ``audio_scale``-scaled.
-    The per-row init lerp (:func:`per_row_init_lerp`) blends toward the clean reference in that
-    same space, so the lerp's clean term must carry the identical audio scale — otherwise
-    fractional-denoise (``0 < m < 1``) audio rows img2img *from* a mismatched reference and
-    decode as static.  ``m == 1`` rows drop the clean term and ``m == 0`` rows are restored
-    post-sampling, so only fractional audio is affected (matching the observed fade-region
-    garble under deterministic samplers).
+    The clean reference the remap composites against must live in that same scaled space, so
+    its audio slice carries the identical scale here.
 
     ``packed`` is a flat ``[B, video_elems + audio_elems]`` latent; ``video_element_count`` is
-    ``prod(video_shape[1:])`` — the packed video-prefix length.  A no-op when
+    ``prod(video_shape[1:])`` — the packed video-prefix length (and the same boundary the
+    audio-modality mask uses in :func:`build_per_row_sampler_function`).  A no-op when
     ``audio_scale == 1.0`` or there is no audio tail.
 
     **Dual contract:** mutates ``packed`` in place *and* returns the same tensor.  Both are
@@ -128,11 +89,10 @@ def quantize_denoise(m: torch.Tensor) -> torch.Tensor:
 
     H3's ``_token_grid_masks`` quantizes the pooled denoise mask with
     ``ceil(mask * 256) / 256`` before it reaches the DiT, so the network's per-row
-    timestep labels live on a 1/256 grid.  Levers 1 and 3 (init lerp, denoised
-    correction) must use the *identical* per-row ``m`` or the lever-3 identity
-    ``corrected = x - m*sigma*v`` is off by up to 1/256 per row.  Quantizing ``m``
-    up front makes all three levers consistent: the native quantization becomes a
-    no-op on already-quantized values.  ``0`` and ``1`` are fixed points.
+    timestep labels live on a 1/256 grid.  Quantizing ``m`` up front keeps the remap's
+    release-step and label math on the *identical* per-row values the DiT will see (the
+    native quantization becomes a no-op on already-quantized values).  ``0`` and ``1`` are
+    fixed points.
     """
     return torch.ceil(m * 256.0) / 256.0
 
@@ -146,9 +106,10 @@ def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
     ``eta`` (euler, dpmpp_2m, res_multistep — whose public wrapper hardcodes ``eta=0.``
     internally) or default it to 0.  Known blind spot: samplers that inject noise
     unconditionally without an ``eta`` knob (ddpm, lcm, er_sde) are not detected —
-    acceptable for a warning heuristic; do not rely on this for a hard gate.
-    Stochastic samplers are unsupported by the per-row compression (Bug B): the RF
-    renoise sub-step is affine in sigma and not scale-invariant under ``sigma -> m*sigma``.
+    acceptable for a warning heuristic; do not rely on this for a hard gate.  The
+    schedule-tail remap steps the base sampler one interval at a time and is not
+    scale-invariant under stochastic renoise on H3's rectified-flow path, so stochastic
+    samplers corrupt fractional/preserved rows and only warrant a warning.
     """
     try:
         params = inspect.signature(fn).parameters
@@ -163,138 +124,51 @@ def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Deferred stochastic shim (Bug B)
-# ---------------------------------------------------------------------------
-
-
-def sampler_accepts_noise_sampler(fn: Callable[..., Any]) -> bool:
-    """Return ``True`` iff ``fn`` declares an explicit ``noise_sampler`` parameter.
-
-    A bare ``**kwargs`` does *not* count: only samplers that name ``noise_sampler`` actually
-    consume an injected noise source (stochastic ancestral/SDE samplers).  Deterministic
-    samplers omit it, so the shim is skipped for them.  When this returns ``True``,
-    ``build_per_row_sampler_function`` installs ``_make_per_row_noise_sampler`` — a shim
-    that is currently deferred (Bug B: insufficient for H3's RF-ancestral path).
-    """
-    try:
-        return "noise_sampler" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-
-
-def _make_per_row_noise_sampler(
-    base_noise_sampler: Callable[[Any, Any], torch.Tensor],
-    m: torch.Tensor,
-) -> Callable[[Any, Any], torch.Tensor]:
-    """Wrap a noise_sampler so its output is scaled per-row by ``m``.
-
-    Stochastic samplers add ``noise_sampler(sigma, sigma_next) * s_noise * sigma_up`` each
-    step, where ``sigma_up`` is a bare sigma.  Row ``r`` running at compressed schedule
-    ``m_r*sigma`` should receive ``m_r*sigma_up`` of noise, so this wrapper pre-scales the
-    sampled noise by ``m_r``.
-
-    CAVEAT (Bug B): this correctness argument only holds for Karras-style ancestral
-    (``get_ancestral_step`` is homogeneous degree 1).  H3's CONST model routes to
-    ``sample_euler_ancestral_RF``, which does NOT use ``get_ancestral_step`` — its renoise
-    coefficients are affine in sigma (``alpha = 1 - sigma``), so this magnitude shim is
-    insufficient there and stochastic samplers remain unsupported.  Kept as a dead shim;
-    see ``stochastic-recovery-theory.md`` for the proposed real fix.
-
-    Parameters
-    ----------
-    base_noise_sampler:
-        The underlying noise source, ``(sigma, sigma_next) -> tensor``.
-    m:
-        Per-row denoise fractions, broadcastable to the noise tensor.
-
-    Returns
-    -------
-    Callable
-        A ``(sigma, sigma_next) -> tensor`` noise sampler with per-row-scaled output.
-    """
-
-    def noise_sampler(sigma: Any, sigma_next: Any) -> torch.Tensor:
-        noise = base_noise_sampler(sigma, sigma_next)
-        return noise * m.to(device=noise.device, dtype=noise.dtype)
-
-    return noise_sampler
-
-
-def _default_noise_sampler_factory(  # pragma: no cover
-    x: torch.Tensor, seed: int | None = None
-) -> Callable[[Any, Any], torch.Tensor]:
-    """Lazily build ComfyUI's ``default_noise_sampler(x, seed=seed)``.
-
-    Imported lazily so this module stays importable without ``comfy`` present (tests inject
-    their own factory).  Falls back to the no-seed call when the API does not declare a
-    ``seed`` parameter (older ComfyUI builds).
-    """
-    from comfy.k_diffusion import sampling as k_sampling  # noqa: PLC0415
-
-    try:
-        sig = inspect.signature(k_sampling.default_noise_sampler)
-    except (TypeError, ValueError):
-        # Uninspectable (C extension or similar); skip the seed-aware path.
-        return k_sampling.default_noise_sampler(x)
-    if "seed" in sig.parameters:
-        return k_sampling.default_noise_sampler(x, seed=seed)
-    return k_sampling.default_noise_sampler(x)
-
-
 def build_conditioning_wrapper(
-    pooled_conds: dict[str, torch.Tensor],
-    m_packed: torch.Tensor | None = None,
+    schedule_tail: dict[str, Any],
     *,
     guide_release: dict[str, Any] | None = None,
 ) -> Callable[[Callable[..., Any], dict[str, Any]], Any]:
-    """Return a ``model_function_wrapper`` that injects per-row conditioning and corrects
-    the denoised prediction so each row integrates at its compressed rate.
+    """Return a ``model_function_wrapper`` that injects the remap's per-row conditioning.
 
-    Two jobs, both required for per-row img2img:
+    In the schedule-tail remap the sampler loop stashes the per-step per-row label mask into
+    ``schedule_tail["pooled_current"]`` (pooled DiT conditioning built from ``w`` so the model
+    computes ``t_row = 1 − w·σ = 1 − σ_row``, truthful in both the held and free phases).  This
+    wrapper places that conditioning into a COPY of ``c`` and returns the raw denoised
+    prediction — there is NO denoised correction: the sampler loop's per-row ``r``-scaling
+    confines each row's integral to its compressed tail.  Before the loop's first step
+    ``pooled_current`` is absent, so ``pooled_ones`` (native full-denoise labels) is used.
 
-    **1. Inject pooled per-row conditioning.**  Each key/tensor in ``pooled_conds`` is placed
-    directly into a copy of ``c`` (device/dtype-aligned to the current ``input``) so it flows
-    through ``apply_model(**c)`` → DiT ``extra_conds`` params.  ``c`` is copied, never mutated.
+    Two optional jobs layer on top:
 
-    **2. Denoised correction.**  H3's ``process_timestep`` compresses the *embedding*
-    (``v_timestep = m*t``) but ``calculate_denoised`` still uses the outer sigma, so the
-    sampler would integrate every row over the full global interval.  Blending
-    ``corrected = m*denoised + (1-m)*x`` makes the effective velocity ``m*v`` and confines
-    each row's integral to its compressed ``m*sigma`` interval.  ``m==1`` → raw denoised;
-    ``m==0`` → frozen at the (clean) init.  The correction commutes with CFG.
-
-    A third, optional job — **per-guide timed cond removal** — is armed via
-    ``guide_release`` (see below): once the per-step sigma drops below a guide's release
-    threshold, that guide's native keyframe cond row is stripped from a COPY of
-    ``minimax_payload`` so a co-located fractional latent inject can finish denoising
-    without the cond-token attractor re-pulling it toward the source.
+    - **Observer-label K/V split.**  When ``schedule_tail["observer"]`` is populated (by
+      :func:`~comfyui_h3_blended_inject.observer_split.install_observer_split`), the per-call
+      observer labels (``t_obs = 1 − m·σ``) consumed by the DiT block patches are refreshed via
+      ``observer_call_update`` — imported lazily so this module needs no ComfyUI at load time.
+    - **Per-guide timed cond removal.**  When ``guide_release["entries"]`` is armed, once the
+      per-step sigma drops below a guide's release threshold that guide's keyframe cond row is
+      stripped from a COPY of ``minimax_payload`` (matched by object identity, so foreign
+      keyframes are never caught), letting a co-located fractional inject finish denoising
+      without the cond-token attractor re-pulling it toward the source.
 
     Matches ComfyUI's ``model_function_wrapper`` contract:
     ``(apply_model, args_dict) -> prediction``.
 
     Parameters
     ----------
-    pooled_conds:
-        DiT conditioning key → pooled mask tensor from ``MiniMaxH3._denoise_mask_values``.
-        May be empty (pure denoised-correction pass-through).
-    m_packed:
-        Per-row denoise fractions broadcastable to the model input/output.  ``None`` skips
-        the denoised correction (used by conditioning-injection unit tests).
+    schedule_tail:
+        The schedule-tail config dict.  Read keys: ``"pooled_current"`` (per-step, set by the
+        sampler loop), ``"pooled_ones"`` (native-label fallback), ``"observer"`` (optional
+        observer state).
     guide_release:
-        Mutable state dict for per-guide timed cond removal, shared with ``_run_sampler``
-        (which fills it in once the sigma schedule exists — after this wrapper is built).
-        Keys:
+        Mutable state dict for per-guide timed cond removal, shared with ``_run_sampler``:
 
-        - ``"entries"``: list of ``(keyframe_id, threshold)`` pairs — ``id()`` of a
-          keyframe dict appended by our sampler, and the sigma below which it releases
-          (from :func:`~comfyui_h3_blended_inject.guides.release_threshold`).  Matching
-          is by OBJECT IDENTITY, so official-node / fl2va keyframes are never caught.
+        - ``"entries"``: list of ``(keyframe_id, threshold)`` pairs — ``id()`` of a keyframe
+          dict appended by our sampler and the sigma below which it releases.
         - ``"cache"``: filled here; released payload copies keyed by
-          ``(id(payload), frozenset(released_ids))`` so the cond and uncond streams —
-          distinct payload dicts — never cross, and each released-set is built once.
+          ``(id(payload), frozenset(released_ids))`` so cond/uncond streams never cross.
 
-        ``None`` or an empty/missing ``"entries"`` list → fully inert (native behavior).
+        ``None`` or an empty/missing ``"entries"`` list → inert.
 
     Returns
     -------
@@ -305,7 +179,15 @@ def build_conditioning_wrapper(
     def wrapper(apply_model: Callable[..., Any], args_dict: dict[str, Any]) -> Any:
         inp = args_dict["input"]
         c = dict(args_dict["c"])
-        for key, value in pooled_conds.items():
+        active_pooled = schedule_tail.get("pooled_current", schedule_tail["pooled_ones"])
+        # Observer-label K/V split: refresh the per-call observer labels (t_obs = 1 − m·σ)
+        # consumed by the DiT block patches. See observer_split.py.
+        obs = schedule_tail.get("observer")
+        if obs is not None:  # pragma: no cover - armed only on GPU runs
+            from comfyui_h3_blended_inject.observer_split import observer_call_update
+
+            observer_call_update(obs, float(args_dict["timestep"].flatten()[0]))
+        for key, value in active_pooled.items():
             c[key] = value.to(device=inp.device, dtype=inp.dtype)
         # --- Per-guide timed cond removal (release keyframe cond rows past threshold) ---
         if guide_release is not None and guide_release.get("entries"):
@@ -321,41 +203,45 @@ def build_conditioning_wrapper(
                 if filtered is None:
                     filtered = filter_released_keyframes(payload, released_ids)
                     cache[cache_key] = filtered
-                    print(
-                        f"[H3_INJECT] timed cond removal: {len(released_ids)} guide cond "
-                        f"row(s) released at sigma={sig_now:.4f}",
-                        flush=True,
-                    )
                 c["minimax_payload"] = filtered
-        denoised = apply_model(inp, args_dict["timestep"], **c)
-        if m_packed is None:
-            return denoised
-        m = m_packed.to(device=denoised.device, dtype=denoised.dtype)
-        return m * denoised + (1.0 - m) * inp
+        return apply_model(inp, args_dict["timestep"], **c)
 
     return wrapper
+
+
+def _shift_schedule(sig: torch.Tensor, from_shift: float, to_shift: float) -> torch.Tensor:
+    """Vectorized :func:`time_shift_sigma` over a whole sigma schedule/grid tensor.
+
+    Applies the same two-step warp element-wise so an entire coarse schedule or dense grid can
+    be re-shifted from the video shift to the audio shift in one shot.  ``f(0) = 0``, ``f(1) = 1``.
+    """
+    base = sig / (from_shift + sig * (1.0 - from_shift))
+    return to_shift * base / (1.0 + (to_shift - 1.0) * base)
 
 
 def build_per_row_sampler_function(
     base_fn: Callable[..., Any],
     m_packed: torch.Tensor,
     clean_packed: torch.Tensor,
+    schedule_tail: dict[str, Any],
     *,
-    scale_stochastic_noise: bool = False,
-    noise_sampler_factory: Callable[..., Callable[[Any, Any], torch.Tensor]] | None = None,
+    video_element_count: int | None = None,
+    shift_v: float = 12.0,
+    shift_a: float = 3.0,
 ) -> Callable[..., Any]:
-    """Wrap a k-diffusion ``sampler_function`` to run per-row img2img.
+    """Wrap a k-diffusion ``sampler_function`` to run the per-row schedule-tail remap.
 
     The returned callable matches ComfyUI's ``sampler_function`` contract
-    ``(model, x, sigmas, extra_args=None, callback=None, disable=None, **kwargs)``.  On
-    entry it lerps ``x`` toward the clean reference per row (:func:`per_row_init_lerp`) so
-    each row starts from its img2img noise level, then delegates to ``base_fn`` unchanged.
+    ``(model, x, sigmas, extra_args=None, callback=None, disable=None, **kwargs)``.  It runs
+    the ``rescheduled`` remap described in the module docstring: an init-only clean composite
+    at step 0, per-step per-row label ``w`` (stashed for the conditioning wrapper), a single
+    global-schedule step of ``base_fn`` per interval, then per-row ``r``-scaling onto each
+    row's own compressed tail.  ``m == 0`` rows are restored from ``clean`` at the end.
 
-    When ``scale_stochastic_noise`` is set (used for stochastic samplers, detected via
-    :func:`sampler_accepts_noise_sampler`) and the caller did not already supply a
-    ``noise_sampler``, a per-row-scaling noise_sampler is built from the lerp'd ``x`` (so it
-    has the right shape/device) and injected into ``kwargs``.  Deterministic samplers leave
-    ``scale_stochastic_noise`` off and need no noise source at all.
+    Audio rows (packed elements at/after ``video_element_count``) run the remap on the
+    sigma-shifted audio schedule (:func:`time_shift_sigma` with ``shift_v``/``shift_a``); only
+    the sigma VALUES fed to ``row_sigma``/``sig_g``/``w``/``r`` differ.  ``base_fn`` still steps
+    the whole packed latent on the raw video schedule.
 
     Parameters
     ----------
@@ -365,18 +251,21 @@ def build_per_row_sampler_function(
         Per-row denoise fractions in the sampler's packed latent layout, broadcastable to x.
     clean_packed:
         The clean reference latent in the packed layout, broadcastable to x.
-    scale_stochastic_noise:
-        Whether to inject a per-row-scaling noise_sampler for stochastic samplers.
-    noise_sampler_factory:
-        ``(x, seed=...) -> noise_sampler`` used to build the base noise source; defaults to
-        ComfyUI's ``default_noise_sampler``.  Injected by tests.
+    schedule_tail:
+        Config dict.  Read keys: ``"make_pooled"`` (``c_vec -> pooled conds``, called per step
+        to publish ``pooled_current``), ``"sigmas_dense"`` (the ``steps²+1`` dense grid).  Sets
+        ``"pooled_current"`` each step.
+    video_element_count:
+        Packed video-prefix length; elements at/after it are audio and run the shifted
+        schedule.  ``None`` (no audio) disables the audio path entirely.
+    shift_v, shift_a:
+        Video/audio sigma shifts for the audio schedule warp.
 
     Returns
     -------
     Callable
         A drop-in ``sampler_function``.
     """
-    factory = noise_sampler_factory or _default_noise_sampler_factory
 
     def sampler_function(
         model: Any,
@@ -387,20 +276,114 @@ def build_per_row_sampler_function(
         disable: Any = None,
         **kwargs: Any,
     ) -> Any:
-        x0 = per_row_init_lerp(x, m_packed, clean_packed)
-        if scale_stochastic_noise and kwargs.get("noise_sampler") is None:
-            seed = (extra_args or {}).get("seed")
-            base_ns = factory(x0, seed=seed)
-            kwargs["noise_sampler"] = _make_per_row_noise_sampler(base_ns, m_packed)
-        return base_fn(
-            model,
-            x0,
-            sigmas,
-            extra_args=extra_args,
-            callback=callback,
-            disable=disable,
-            **kwargs,
-        )
+        n_sig = int(sigmas.shape[-1])
+        steps_n = max(1, n_sig - 1)
+        clean = clean_packed.to(device=x.device, dtype=x.dtype)
+        m_dev = m_packed.to(device=x.device, dtype=x.dtype)
+        make_pooled = schedule_tail.get("make_pooled")
+
+        # k_d / span depend only on m → identical for video and audio rows.
+        k_d = torch.round(steps_n * (1.0 - m_dev)).clamp(0, steps_n)
+        never = k_d >= steps_n  # d == 0 → exact preserve
+        span = (steps_n - k_d) / steps_n
+
+        # Audio-modality mask over packed elements: same boundary scale_packed_audio uses.
+        audio_mask = None
+        if video_element_count is not None and 0 <= video_element_count < m_dev.shape[-1]:
+            flat = torch.zeros(m_dev.shape[-1], dtype=torch.bool, device=x.device)
+            flat[video_element_count:] = True
+            audio_mask = flat.view(*([1] * (m_dev.dim() - 1)), -1)
+
+        # Video schedule + (if audio) its sigma-shifted counterpart, coarse and dense.
+        sig_v = sigmas.to(device=x.device, dtype=x.dtype)
+        sig_a = _shift_schedule(sig_v, shift_v, shift_a) if audio_mask is not None else None
+        dense = schedule_tail.get("sigmas_dense")
+        has_dense = dense is not None and int(dense.shape[-1]) == steps_n * steps_n + 1
+        if has_dense:
+            dense_v = dense.to(device=x.device, dtype=x.dtype)
+            dense_a = _shift_schedule(dense_v, shift_v, shift_a) if audio_mask is not None else None
+
+        def _stream_row_sigma(i: int, dense_grid: torch.Tensor | None, coarse: torch.Tensor):
+            """Per-row sigma for ONE modality's schedule at global step ``i``."""
+            if has_dense:
+                # Exact stretched-tail sigma: schedule position (k_d·steps + i·(steps−k_d))/steps²
+                # is grid point k_d·(steps−i) + i·steps of the SAME scheduler run at steps² steps.
+                idx = (k_d * (steps_n - i) + i * steps_n).round().long()
+                return dense_grid[idx.clamp(0, steps_n * steps_n)]
+            # Fallback (dense grid absent): lerp the coarse grid at k_d + i·span.
+            idx = (k_d + i * span).clamp(0.0, float(steps_n))
+            lo = idx.floor().long().clamp(0, n_sig - 1)
+            hi = (lo + 1).clamp(0, n_sig - 1)
+            fr = (idx - lo.to(idx.dtype)).clamp(0.0, 1.0)
+            return coarse[lo] * (1.0 - fr) + coarse[hi] * fr
+
+        def row_sigma(i: int) -> torch.Tensor:
+            """Per-row target sigma, audio rows on the shifted schedule."""
+            sv = _stream_row_sigma(i, dense_v if has_dense else None, sig_v)
+            if audio_mask is None:
+                return sv
+            sa = _stream_row_sigma(i, dense_a if has_dense else None, sig_a)
+            return torch.where(audio_mask, sa, sv)
+
+        def global_sigma(i: int) -> torch.Tensor:
+            """Per-row global sigma at step ``i``, audio rows on the shifted schedule."""
+            if audio_mask is None:
+                return sig_v[i]
+            return torch.where(audio_mask, sig_a[i], sig_v[i])
+
+        def _cb(offset: int) -> Any:  # remap per-step callback index to the global step
+            if callback is None:
+                return None
+
+            def inner(d: dict[str, Any]) -> Any:
+                d = dict(d)
+                d["i"] = offset + int(d.get("i", 0))
+                return callback(d)
+
+            return inner
+
+        frac_mask = (m_dev > 0.0) & (m_dev < 1.0)
+        if bool(frac_mask.any()):
+            ks = k_d[frac_mask]
+            print(
+                f"[H3_INJECT] schedule-tail remap: {steps_n} steps; fractional rows release at "
+                f"step [{int(ks.min())}..{int(ks.max())}] "
+                f"(d in [{float(m_dev[frac_mask].min()):.3f},"
+                f"{float(m_dev[frac_mask].max()):.3f}])",
+                flush=True,
+            )
+
+        x_cur = x
+        sig_row = row_sigma(0)
+        for i in range(steps_n):
+            sig_g = global_sigma(i).clamp(min=1e-8)
+            sig_g_next = global_sigma(i + 1)
+            # Truthful label: model computes t_row = 1 − w·σ_g = 1 − σ_row (per modality).
+            w = (sig_row / sig_g).clamp(max=1.0)
+            if make_pooled is not None:
+                schedule_tail["pooled_current"] = make_pooled(
+                    w.to(device=m_packed.device, dtype=m_packed.dtype)
+                )
+            # Init-only clean composite: place each row on its noise-line at σ_row(0), then
+            # never re-inject (per-region SDEdit on the stretched tail).
+            if i == 0:
+                x_cur = w * x_cur + (1.0 - w) * clean
+            x_prev = x_cur
+            x_cur = base_fn(
+                model,
+                x_cur,
+                sigmas[i : i + 2],
+                extra_args=extra_args,
+                callback=_cb(i),
+                disable=True,
+                **kwargs,
+            )
+            # Per-row step scaling: each row integrates its OWN Δσ_row, not the global Δσ.
+            sig_row_next = row_sigma(i + 1)
+            r = ((sig_row - sig_row_next) / (sig_g - sig_g_next).clamp(min=1e-8)).clamp(min=0.0)
+            x_cur = x_prev + r * (x_cur - x_prev)
+            sig_row = sig_row_next
+        return torch.where(never, clean, x_cur)  # belt-and-braces d == 0 exact preserve
 
     return sampler_function
 
@@ -414,8 +397,8 @@ def build_per_row_sampler_function(
 def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3.0) -> float:
     """Return the shifted audio sigma for a given video sigma.
 
-    Mirrors ``time_shift_sigma`` from ``comfy/ldm/minimax/model.py``.  Audio rows release
-    against this shifted sigma, not the raw video sigma, to keep audio and video fades
+    Mirrors ``time_shift_sigma`` from ``comfy/ldm/minimax/model.py``.  Audio rows run their
+    remap against this shifted sigma, not the raw video sigma, to keep audio and video fades
     temporally aligned.
 
     Parameters
@@ -424,14 +407,12 @@ def time_shift_sigma(sigma: float, from_shift: float = 12.0, to_shift: float = 3
         Current video sigma value (scalar, in [0, 1] space).
     from_shift:
         Video sigma shift (``sigma_shift_video``).  Defaults to 12.0, the H3 DiT
-        constructor default.  In production, pass the runtime value from
-        ``transformer_options["minimax_h3_sigma_shift_video"]`` so audio timing stays
-        aligned when the user changes the video shift via the ``MiniMax H3 Sigma Shift``
-        node.
+        constructor default.  In production, pass the runtime value from the diffusion
+        model's ``sigma_shift_video`` so audio timing stays aligned when the user changes
+        the video shift via the ``MiniMax H3 Sigma Shift`` node.
     to_shift:
         Audio sigma shift (``sigma_shift_audio``).  Defaults to 3.0, the H3 DiT
-        constructor default.  Pass the runtime value from
-        ``transformer_options["minimax_h3_sigma_shift_audio"]`` when available.
+        constructor default.  Pass the runtime ``sigma_shift_audio`` when available.
 
     Returns
     -------
