@@ -423,6 +423,80 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     return x
 
 
+# ---------------------------------------------------------------------------
+# DPM++ / multistep shared spine (PR3 helpers, PR4 SDE composition entry points)
+#
+# Shared spine for deterministic DPM++ steps (PR3) and the SDE family (PR4):
+# recover → time_coeffs → second_order.  PR4 will add SDE renoise and
+# mid-evaluation steps that compose with these three helpers directly.
+# ---------------------------------------------------------------------------
+
+
+def _recover_row_denoised(ctx: _StepContext) -> tuple[torch.Tensor, torch.Tensor]:
+    """Evaluate the model and recover the per-row x0 estimate.
+
+    Runs a single model evaluation with the global carrier sigma, fires ``ctx.callback``
+    with the stock k-diffusion dict, then recovers ``denoised_r`` by projecting the
+    velocity back onto each row's ``sig_row``.
+
+    Returns
+    -------
+    tuple[denoised, denoised_r]
+        ``denoised`` — raw model output (global carrier scale).
+        ``denoised_r`` — per-row x0 estimate at ``σ_row``.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
+    carrier = ctx.sigmas[ctx.i]
+    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
+    if ctx.callback is not None:
+        ctx.callback(
+            {
+                "i": 0,
+                "denoised": denoised,
+                "x": ctx.x_prev,
+                "sigma": carrier,
+                "sigma_hat": carrier,
+            }
+        )
+    v = (ctx.x_prev - denoised) / carrier
+    denoised_r = ctx.x_prev - ctx.sig_row * v
+    return denoised, denoised_r
+
+
+def _dpmpp_time_coeffs(
+    sig_a: torch.Tensor,
+    sig_b: torch.Tensor,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute DPM++ log-time coefficients for a (σ_a → σ_b) step.
+
+    Returns
+    -------
+    tuple[t_a, t_b, h, sigma_ratio]
+        ``t_a = −log σ_a``, ``t_b = −log σ_b``, ``h = t_b − t_a``,
+        ``sigma_ratio = exp(−h)`` (the damping factor; equals ``σ_b / σ_a`` for exact logs).
+    """
+    t_a = -sig_a.clamp(min=eps).log()
+    t_b = -sig_b.clamp(min=eps).log()
+    h = t_b - t_a
+    sigma_ratio = (-h).exp()
+    return t_a, t_b, h, sigma_ratio
+
+
+def _dpmpp_2m_second_order(
+    denoised_r: torch.Tensor,
+    old_denoised_r: torch.Tensor,
+    r: torch.Tensor,
+) -> torch.Tensor:
+    """Blend current and previous x0 estimates for the DPM++ 2M second-order update.
+
+    Returns the multistep predictor ``D = (1 + 1/(2r))·d_r − (1/(2r))·d_r_prev``.
+    PR4 (dpmpp_sde, 2M SDE, 3M SDE) reuses this as the deterministic mid-step predictor.
+    """
+    return (1.0 + 1.0 / (2.0 * r)) * denoised_r - (1.0 / (2.0 * r)) * old_denoised_r
+
+
 def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row DPM-Solver++(2M) step — restores true 2nd-order under the remap.
 
@@ -440,9 +514,11 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
 
     Guarantees:
 
-    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **bit-for-bit**: for m=1,
+    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **within atol=1e-5**: for m=1,
       ``σ_row = σ_carrier`` and ``denoised_r = denoised``, so every t / h / r matches
-      the scalar stock values.
+      the scalar stock values.  The terminal step deviates by ~1e-8 because this
+      implementation eps-clamps ``t_next`` where stock uses exact ``σ_fn(+∞) = 0``; the
+      equivalence test uses ``atol=1e-5``.
     - **Terminal rows** (``σ_row_next == 0``) fall back to first-order elementwise via
       ``torch.where``, mirroring stock's ``if sigmas[i+1] == 0`` branch.
     - **m=0 rows** produce safe output (h≈0, ``x ≈ x_prev``); the outer
@@ -450,33 +526,10 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
 
     GPU-only paths (``model.inner_model`` attr) are ``# pragma: no cover``.
     """
-    extra_args = {} if ctx.extra_args is None else ctx.extra_args
-    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
-    carrier = ctx.sigmas[ctx.i]
-
-    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
-    if ctx.callback is not None:
-        ctx.callback(
-            {
-                "i": 0,
-                "denoised": denoised,
-                "x": ctx.x_prev,
-                "sigma": carrier,
-                "sigma_hat": carrier,
-            }
-        )
-
-    # Recover per-row x0: conditioning wrapper labels at t_row = 1 − σ_row, so
-    # velocity v = (x − denoised)/σ_carrier maps to denoised_r = x − σ_row·v.
-    v = (ctx.x_prev - denoised) / carrier
-    denoised_r = ctx.x_prev - ctx.sig_row * v
+    _, denoised_r = _recover_row_denoised(ctx)
 
     # t = −log σ;  σ_fn(t) = exp(−t) = σ.
-    eps = 1e-8
-    t_i = -ctx.sig_row.clamp(min=eps).log()
-    t_next = -ctx.sig_row_next.clamp(min=eps).log()
-    h = t_next - t_i  # elementwise; positive because σ is decreasing
-    sigma_ratio = (-h).exp()  # σ_fn(t_next) / σ_fn(t_i) = exp(−h)
+    t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row, ctx.sig_row_next)
 
     old_denoised_r = ctx.state.get("old_denoised_r")
     h_prev: torch.Tensor | None = ctx.state.get("h_prev_row")
@@ -486,8 +539,9 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
         x = sigma_ratio * ctx.x_prev - (-h).expm1() * denoised_r
     else:
         # Steps 1+: second-order; fall back to first-order for terminal rows.
+        eps = 1e-8
         r = h_prev / h.clamp(min=eps)
-        denoised_d = (1.0 + 1.0 / (2.0 * r)) * denoised_r - (1.0 / (2.0 * r)) * old_denoised_r
+        denoised_d = _dpmpp_2m_second_order(denoised_r, old_denoised_r, r)
         x_2nd = sigma_ratio * ctx.x_prev - (-h).expm1() * denoised_d
         x_1st = sigma_ratio * ctx.x_prev - (-h).expm1() * denoised_r
         # Elementwise: terminal rows (σ_row_next == 0) use first-order, mirroring stock.
@@ -526,25 +580,7 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 
     GPU-only paths (``model.inner_model`` attr) are ``# pragma: no cover``.
     """
-    extra_args = {} if ctx.extra_args is None else ctx.extra_args
-    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
-    carrier = ctx.sigmas[ctx.i]
-
-    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
-    if ctx.callback is not None:
-        ctx.callback(
-            {
-                "i": 0,
-                "denoised": denoised,
-                "x": ctx.x_prev,
-                "sigma": carrier,
-                "sigma_hat": carrier,
-            }
-        )
-
-    # Recover per-row x0 (same identity as _dpmpp_2m_step).
-    v = (ctx.x_prev - denoised) / carrier
-    denoised_r = ctx.x_prev - ctx.sig_row * v
+    _, denoised_r = _recover_row_denoised(ctx)
 
     # With eta=0: sigma_down = σ_row_next, sigma_up = 0 (no noise).
     sigma_down = ctx.sig_row_next
@@ -560,9 +596,7 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
     else:
         # Steps 1+: 2nd-order RES; fall back to 1st-order for terminal rows.
         # t = −log σ;  σ_fn(t) = exp(−t);  φ1(t) = expm1(t)/t;  φ2(t) = (φ1(t)−1)/t.
-        t_i = -ctx.sig_row.clamp(min=eps).log()
-        t_next = -sigma_down.clamp(min=eps).log()
-        h = t_next - t_i  # elementwise; positive for decreasing schedules
+        t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row, sigma_down, eps)
         # With eta=0: old_sigma_down = prev step's sigma_down = prev sig_row_next = cur sig_row.
         # So t_old = t_i; c2 = (t_prev − t_old) / h = (t_prev − t_i) / h.
         t_prev = -prev_sig_row.clamp(min=eps).log()
@@ -574,7 +608,7 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
         b1 = torch.nan_to_num(phi1_val - phi2_val / c2, nan=0.0)
         b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
 
-        x_2nd = (-h).exp() * ctx.x_prev + h * (b1 * denoised_r + b2 * old_denoised_r)
+        x_2nd = sigma_ratio * ctx.x_prev + h * (b1 * denoised_r + b2 * old_denoised_r)
         # First-order fallback for terminal rows.
         d = (ctx.x_prev - denoised_r) / ctx.sig_row.clamp(min=eps)
         x_1st = ctx.x_prev + d * (sigma_down - ctx.sig_row)
