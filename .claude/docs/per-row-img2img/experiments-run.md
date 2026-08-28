@@ -8,7 +8,7 @@ home doc for data and conclusions. This file is a pointer table only; results li
 Experiment rows are split into two child files (original exceeded the 12,000-char ceiling at 40 rows):
 
 - [early-series.md](experiments-run/early-series.md) — RES, DATA, HYP, early HOLD (HOLD-2 through HOLD-14)
-- [hold-continued.md](experiments-run/hold-continued.md) — HOLD-15 through HOLD-27, STR (current), STILL, MC, AUG, AUD, BUG-B, DD, VER
+- [hold-continued.md](experiments-run/hold-continued.md) — HOLD-15 through HOLD-27, STILL, MC, AUG, AUD, BUG-B, DD, VER, SCHED, OFFLABEL, STR (current)
 
 ## DEFERRED / NOT-RUN
 

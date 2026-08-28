@@ -82,7 +82,8 @@ t_row trust LABELS rather than content (our crux hypothesis), extra iterations c
 same conditional a single deterministic pass already approximates — equilibration is then
 orthogonal to the crux and buys nothing. Discriminating experiment: early-step equilibration on
 the known-lock case (d≈0.6 @1MP) — if seam z-score minimum widens vs d, iteration matters; if
-unchanged, the label-gating story wins and route 3/1 stay primary.
+unchanged, the label-gating story wins and route 1 / observer-split stay primary.
+(Note: route 3 attention-logit boost was REJECTED 2026-08-27 — latent-side mandate + SDPA perf.)
 
 ## Pointers
 

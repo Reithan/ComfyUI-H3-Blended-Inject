@@ -1,4 +1,4 @@
-<!-- provenance: status (design goal + the decisive cross-resolution test; the intra-res sweeps do NOT settle this) -->
+<!-- provenance: status (SUPERSEDED — route-1; design goal + decisive cross-resolution test; intra-res sweeps do NOT settle this) -->
 <!-- verified: 2026-08-25 · user reframing + prior 1MP window-closed (the-real-bug) + all-hold-runs-0.5MP -->
 
 > **North star (this prototype drive):** ONE user-facing knob that maps visually to a normal img2img denoise `d`,

@@ -1,10 +1,12 @@
-<!-- provenance: reference + confirmed (source-verified file:line map and formula derivations; GPU-observed crack signature confirmed live; duality argument is analytical, corroborated by source analysis and memory h3-scale-latent-inpaint-override) -->
+<!-- provenance: reference + confirmed (source-verified file:line map and formula derivations;
+     GPU-observed crack signature confirmed; duality argument analytical,
+     corroborated by source analysis and memory h3-scale-latent-inpaint-override) -->
 <!-- verified: 2026-08-23 · comfy-ref @b78cec87 -->
-# Differential Diffusion & the ghost — why native mask paths fail on H3
+# Differential Diffusion & the ghost: why native mask paths fail on H3
 
 Read this when considering any mask-based / DD / inpaint approach to fractional denoise on H3, or
 to understand the original ghosting bug. Bottom line: **DD is the general "img2img via a mask"
-primitive and it works — but it is the EXACT DUAL of [our approach](our-architecture.md) on H3**
+primitive and it works, but it is the EXACT DUAL of [our approach](our-architecture.md) on H3**
 (DD covers stochastic samplers, cracks deterministic; ours covers deterministic, breaks
 stochastic). Neither native path gives free fractional img2img on H3.
 
@@ -21,29 +23,24 @@ stochastic). Neither native path gives free fractional img2img on H3.
 ## Why native inpaint ghosts (the math)
 
 Fractional row, `denoise_mask = m` (0<m<1). At the final step σ→0 the POST composite[^post]
-gives `x_final ≈ m·D_final + (1−m)·clean` — a convex blend of two DIFFERENT coherent latents ⇒
+gives `x_final ≈ m·D_final + (1−m)·clean`: a convex blend of two DIFFERENT coherent latents ⇒
 double-exposure. For m=0.3 that's 70% inject + 30% new overlaid = ghost. Inpaint semantics
 ("freeze the known region, blend it every step") are the wrong operation for "denoise this row
-from a partially-noised start." Not tunable — inherent to compositing. Our per-row init-lerp
+from a partially-noised start." Not tunable; inherent to compositing. Our per-row init-lerp
 injects clean **once at the start** (correct img2img), so no composite, no ghost.
 
-**Scope of the ghost (corrected — see [motion-context-comparison](motion-context-comparison.md)):**
+**Scope of the ghost (corrected, see [motion-context-comparison](motion-context-comparison.md)):**
 the composite double-exposes on any FRACTIONAL (0<m<1) row, but it's only *perceptible* when the
-fraction is SUSTAINED on coherent held content — i.e. an anchor keyframe at `0<min_denoise<1`.
+fraction is SUSTAINED on coherent held content, i.e. an anchor keyframe at `0<min_denoise<1`.
 Transient temporal fades double-expose too but motion hides it (Motion Context's faded masks look
-great, including on stochastic — MC is NOT binary-only). The visible bug is specifically
-**fractional denoise of the keyframe** — exactly what this repo exists to fix.
+great, including on stochastic; MC is NOT binary-only). The visible bug is specifically
+**fractional denoise of the keyframe**, exactly what this repo exists to fix.
 
-**Self-consistency identity (2026-08-27):** the official clean-composite and the `1−m·σ` label are ONE
-mechanism — the composite makes the label true (row sits at effective sigma m·σ); the ghost is its
-terminal alpha-blend. H3-native DD adaptation built on this:
-[schedule-tail-composite-release](latent-hold-release/schedule-tail-composite-release.md).
-
-## Differential Diffusion — mechanism
+## Differential Diffusion: mechanism
 
 DD source[^ddsrc]. `DifferentialDiffusion.execute` calls `model.set_model_denoise_mask_function(
 forward)`. `forward(sigma, denoise_mask, extra_options, strength)`:
-- `threshold = (current_ts − ts_to)/(ts_from − ts_to)` — schedule-progress, falls ~1→0.
+- `threshold = (current_ts − ts_to)/(ts_from − ts_to)`: schedule-progress, falls ~1→0.
 - `binary_mask = (denoise_mask >= threshold)`; with `strength<1`, blends
   `strength·binary + (1−strength)·continuous`.
 - Effect: continuous mask value `v` becomes a per-STEP BINARY mask; region `v` activates once
@@ -52,7 +49,7 @@ forward)`. `forward(sigma, denoise_mask, extra_options, strength)`:
   (no per-row compression) ⇒ **stochastic samplers work for free**. This IS img2img via a mask.
 
 **Only hook available**: `denoise_mask_function`[^hook], applied ONCE to the mask and reused for
-BOTH the PRE and POST composites — there is NO hook to disable/override POST alone (would need
+BOTH the PRE and POST composites; there is NO hook to disable/override POST alone (would need
 monkeypatching). `noise_mask=None` disables BOTH composites. `KSamplerX0Inpaint` is always
 constructed but its PRE/POST are gated on `denoise_mask is not None`.
 
@@ -61,12 +58,12 @@ constructed but its PRE/POST are gated on `denoise_mask is not None`.
 - DD assumes the SD/Flux model: a frozen region sits on the **σ-noised trajectory**
   `x_σ = σ·noise + (1−σ)·clean`, and when its threshold is crossed it is *revealed* and continues
   denoising seamlessly.
-- H3's masked path is a **DIFFERENT mechanism — conditioning-image injection.**
+- H3's masked path is a **DIFFERENT mechanism: conditioning-image injection.**
   `scale_latent_inpaint`[^sli] freezes preserved regions to a FIXED cond-timestep image:
   `cleans[0] = aug·clean + (1−aug)·noise`, `aug = VISUAL_COND_TIMESTEP = 0.999` ⇒ ≈clean,
   INDEPENDENT of σ. The code comment says it outright: *"preserved regions run at the cond
   timestep, inject them at cond strength."* The DiT reinforces this by PINNING preserved rows'
-  timestep to `VISUAL_COND_TIMESTEP`[^dit]. Preserved rows are permanent conditioning — never on
+  timestep to `VISUAL_COND_TIMESTEP`[^dit]. Preserved rows are permanent conditioning; never on
   the noised trajectory.
 - So when DD flips a row frozen→active mid-schedule: H3 was holding x≈clean and pinning t=0.999;
   the row goes active at σ_activation with a clean (off-distribution) x and the pin released ⇒ the
@@ -93,10 +90,10 @@ Each covers exactly the class the other fails; no SINGLE *native* mechanism cove
 Supporting both *via native paths* = two denoise engines selected by sampler type = the
 special-casing smell. ⇒ pick ONE class. Deterministic (our path) is the standard/correct choice
 for flow models. **Caveat (revises this section):** the "two engines" framing applies to native
-paths; a per-row ancestral step may recover stochastic *inside our one engine* — see
+paths; a per-row ancestral step may recover stochastic *inside our one engine*; see
 [stochastic-recovery-theory](stochastic-recovery-theory.md).
 Making DD ALSO work on deterministic would require overriding BOTH `scale_latent_inpaint` (freeze
-to σ-noised trajectory) AND the DiT row-pinning — reimplementing SD-style DD by hand on H3's
+to σ-noised trajectory) AND the DiT row-pinning, reimplementing SD-style DD by hand on H3's
 plain forward. Not simpler than ours. Confirmed independently in memory
 `h3-scale-latent-inpaint-override`.
 

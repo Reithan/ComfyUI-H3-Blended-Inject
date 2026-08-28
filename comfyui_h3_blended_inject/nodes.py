@@ -120,13 +120,17 @@ def _run_sampler(  # pragma: no cover
        ``noise_scaling`` produces ``x_global = sigma_max*eps + (1-sigma_max)*clean``.
     2. Build the *fractional per-row denoise mask*
        (:func:`~comfyui_h3_blended_inject.mask.derive_fractional_mask`) and pack it to the
-       sampler's flat layout.  Its pooled token-grid values are injected as DiT conditioning
-       via the :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`, so each
-       row runs its own compressed schedule.
+       sampler's flat layout.  The schedule-tail remap loop publishes the per-step per-row
+       label mask as pooled DiT conditioning via
+       :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`.
     3. Wrap the base k-diffusion ``sampler_function`` with
-       :func:`~comfyui_h3_blended_inject.sampler.build_per_row_sampler_function`, which lerps
-       the initial ``x`` toward the clean reference per row (``m*x + (1-m)*clean``) and — for
-       stochastic samplers — installs a per-row-scaling noise_sampler shim.
+       :func:`~comfyui_h3_blended_inject.sampler.build_per_row_sampler_function`, which runs
+       each fractional row over the last ``d``-fraction of the schedule (read from a dense
+       ``steps²+1`` sigma grid), composites the clean reference once at step 0, and scales each
+       row's per-step delta onto its own compressed tail.  Audio rows use the sigma-shifted
+       audio schedule.  The observer-label K/V split
+       (:func:`~comfyui_h3_blended_inject.observer_split.install_observer_split`) is installed
+       on top when fractional rows exist.
     4. Run ``comfy.sample.sample_custom`` with ``noise_mask=None`` (no native compositing → no
        compounding re-pin ghost), then apply the binary exact-preserve overwrite
        (:func:`~comfyui_h3_blended_inject.composite.post_composite_preserve`) for ``m == 0``
@@ -161,7 +165,6 @@ def _run_sampler(  # pragma: no cover
         build_conditioning_wrapper,
         build_per_row_sampler_function,
         quantize_denoise,
-        sampler_accepts_noise_sampler,
         sampler_is_stochastic,
         scale_packed_audio,
     )
@@ -205,10 +208,18 @@ def _run_sampler(  # pragma: no cover
     import comfy.utils as _comfy_utils
 
     clean_packed, latent_shapes = _comfy_utils.pack_latents(clean_components)
+    # Audio rows run the schedule-tail remap on the sigma-shifted audio schedule; capture the
+    # packed video-prefix length (the modality boundary) and the model's sigma shifts here.
+    video_element_count: int | None = None
+    shift_v, shift_a = 12.0, 3.0
     if clean_audio is not None:
         audio_scale = float(getattr(m.model.model_sampling, "audio_scale", 1.0))
         n_video_elems = math.prod(int(d) for d in latent_shapes[0][1:])
         clean_packed = scale_packed_audio(clean_packed, n_video_elems, audio_scale)
+        video_element_count = n_video_elems
+        _dm = m.get_model_object("diffusion_model")
+        shift_v = float(getattr(_dm, "sigma_shift_video", 12.0))
+        shift_a = float(getattr(_dm, "sigma_shift_audio", 3.0))
 
     # --- 3. Fractional per-row denoise mask, packed to the same flat layout. ---
     video_shape = tuple(int(d) for d in video.shape)
@@ -230,12 +241,17 @@ def _run_sampler(  # pragma: no cover
     # (lever 3) on the *identical* per-row m. See sampler.quantize_denoise.
     m_packed = quantize_denoise(m_packed).to(device=clean_packed.device)
 
-    # --- 4. Install the fractional-denoise conditioning + denoised-correction wrapper. ---
-    # The wrapper injects the pooled per-row timestep conditioning AND corrects the denoised
-    # (m*denoised + (1-m)*input) so the sampler integrates each row over its compressed
-    # m*sigma interval — H3's process_timestep only compresses the network's timestep, while
-    # calculate_denoised still divides by the outer sigma. See build_conditioning_wrapper.
-    pooled = m.model._denoise_mask_values(m_packed, latent_shapes)
+    # --- 4. Build the schedule-tail remap config + install the conditioning wrapper. ---
+    # Each fractional row runs the LAST d-fraction of the schedule's σ-values stretched over
+    # ALL steps; the sampler loop publishes the per-step per-row label mask into
+    # schedule_tail_cfg["pooled_current"] (truthful t_row = 1 − σ_row) and does its own per-row
+    # step scaling, so the wrapper does NO denoised correction. See build_per_row_sampler_function.
+    import torch
+
+    schedule_tail_cfg: dict[str, Any] = {
+        "pooled_ones": m.model._denoise_mask_values(torch.ones_like(m_packed), latent_shapes),
+        "make_pooled": lambda c_vec: m.model._denoise_mask_values(c_vec, latent_shapes),
+    }
     # Per-guide timed cond removal: mutable state shared with the wrapper.  Its "entries"
     # (keyframe id → sigma threshold) are filled in below once the sigma schedule exists;
     # until then — and for hold_frac=1.0 guides, forever — the wrapper path is inert.
@@ -243,9 +259,22 @@ def _run_sampler(  # pragma: no cover
     m.model_options = {
         **m.model_options,
         "model_function_wrapper": build_conditioning_wrapper(
-            pooled, m_packed, guide_release=guide_release
+            schedule_tail_cfg, guide_release=guide_release
         ),
     }
+
+    # Observer-label K/V split: every DiT block presents fractional inject rows' K+V under the
+    # official label m (observed ratio pinned at m:1) while Q/residual/MLP keep the truthful
+    # remapped label. Populates schedule_tail_cfg["observer"]; inert (returns False) when there
+    # are no fractional rows. See observer_split.py.
+    from comfyui_h3_blended_inject.observer_split import install_observer_split
+
+    installed = install_observer_split(m, schedule_tail_cfg, m_packed, latent_shapes)
+    print(
+        "[H3_INJECT] observer-label split: "
+        + ("block patches installed" if installed else "no fractional rows — inert"),
+        flush=True,
+    )
 
     # --- 5. Wrap the base sampler_function for per-row img2img. ---
     base_ks = comfy.samplers.sampler_object(sampler_name)
@@ -262,13 +291,14 @@ def _run_sampler(  # pragma: no cover
             UserWarning,
             stacklevel=2,
         )
-    # scale_stochastic_noise triggers _make_per_row_noise_sampler — a deferred no-op
-    # (Bug B: noise-magnitude shim insufficient for H3's RF-ancestral path; see sampler.py).
     wrapped_fn = build_per_row_sampler_function(
         base_fn,
         m_packed,
         clean_packed,
-        scale_stochastic_noise=sampler_accepts_noise_sampler(base_fn),
+        schedule_tail_cfg,
+        video_element_count=video_element_count,
+        shift_v=shift_v,
+        shift_a=shift_a,
     )
     sampler = comfy.samplers.KSAMPLER(
         wrapped_fn,
@@ -303,6 +333,22 @@ def _run_sampler(  # pragma: no cover
         model_options=m.model_options,
     )
     sigmas = ksampler_obj.sigmas.to(device)
+
+    # Exact per-row stretched-tail sigmas: every σ_row(i) sits at position
+    # (k_d·steps + i·(steps−k_d))/steps² of the continuous schedule — an exact grid point of a
+    # steps²-step run of the SAME scheduler.  Pre-generate that dense grid (schedule math only,
+    # no model eval) so the sampler indexes real scheduler values instead of lerping the coarse
+    # steps-point grid (inaccurate under shift-12 curvature).
+    dense_ks = comfy.samplers.KSampler(
+        m,
+        steps=steps * steps,
+        device=device,
+        sampler=sampler_name,
+        scheduler=scheduler,
+        denoise=1.0,
+        model_options=m.model_options,
+    )
+    schedule_tail_cfg["sigmas_dense"] = dense_ks.sigmas.to(device)
 
     # Arm per-guide timed cond removal now the sigma schedule exists.  hold_frac=1.0
     # guides get no threshold (release_threshold → None) and are never released — the
@@ -988,10 +1034,10 @@ class H3InjectSampler:
                     {
                         "tooltip": (
                             "Sampler algorithm.  Deterministic samplers (euler, res_multistep, "
-                            "dpmpp_2m) work correctly with per-row img2img.  Stochastic samplers "
-                            "(euler_ancestral, dpmpp_2s_ancestral, SDE variants) will print a "
-                            "warning at runtime: the per-row noise-magnitude shim is insufficient "
-                            "for H3's RF-ancestral path (Bug B) and results may be incorrect."
+                            "dpmpp_2m) work correctly with the per-row schedule-tail remap.  "
+                            "Stochastic samplers (euler_ancestral, dpmpp_2s_ancestral, SDE "
+                            "variants) will warn at runtime: the remap is not scale-invariant "
+                            "under stochastic renoise on H3's RF path and results may be incorrect."
                         ),
                     },
                 ),

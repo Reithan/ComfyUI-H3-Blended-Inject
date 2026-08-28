@@ -62,19 +62,18 @@ Hold-thread context: [../latent-hold-release/anchor-denoise-after-clean-fix](../
 
 ## Competing MECHANISM for the res-dependence — attention dilution vs basin-sharpening (user, 2026-08-25)
 
-The "basin sharpening / T_N(d) steepening" framing above is a **per-frame intrinsic** mechanism (a solo
-frame would underdenoise at high res). The user's leading alternative is **attention dilution**: r40's own
-denoise math is res-INVARIANT, and the res effect is entirely **temporal contagion** — neighbors "hold" the
-single-frame inject HARDER at high res / longer timelines. If true, res-compression and contagion are ONE
-mechanism, not two. **Not yet disproven; several supporting experiments exist (link them here).**
+The "basin sharpening / T_N(d) steepening" framing is a **per-frame intrinsic** mechanism (a solo frame
+would underdenoise at high res). The user's leading alternative is **attention dilution**: r40's own denoise
+math is res-INVARIANT; the res effect is entirely **temporal contagion** — neighbors "hold" the single-frame
+inject HARDER at high res / longer timelines. If true, res-compression and contagion are ONE mechanism.
+Not yet disproven; supporting experiments exist.
 
-Mechanism refined to **raw-count** (user, 2026-08-25). NOTE: an earlier caveat here ("raw-count has the
-same scaling hole as ratio") is **RETRACTED** — `(N-1)/N` invariance is about the *share* of attention, not
-attention *quality*, and attention quality genuinely degrades with raw token count (softmax entropy over
-more keys, RoPE-range stretch); high-res DiT + long-context both suffer from token *number* independent of
-ratio. Open part = the **sign/pathway**: P1 (neighbors pin r40 — wrong sign under dilution) vs P2 (r40's own
-signal too diluted to assert — right sign); spectral-detail + RoPE-locality also on the table. Timeline
-length is a separate clean axis.
+Mechanism refined to **raw-count** (user, 2026-08-25). An earlier caveat ("raw-count has the same scaling
+hole as ratio") is **RETRACTED** — `(N-1)/N` invariance is about the *share* of attention, not attention
+*quality*; quality genuinely degrades with raw token count (softmax entropy over more keys, RoPE-range
+stretch). Open: **sign/pathway** — P1 (neighbors pin r40 — wrong sign under dilution) vs P2 (r40's signal
+too diluted to assert — right sign); spectral-detail + RoPE-locality also on the table. Timeline length is
+a separate clean axis.
 
 **Strongest evidence favoring the attention family (already in hand): the fade observation.** Faded video
 injects denoise well; single-frame / no-fade injects underdenoise worst. A pure per-frame basin would

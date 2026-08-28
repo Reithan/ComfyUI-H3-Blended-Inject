@@ -1,6 +1,6 @@
-<!-- provenance: status (GPU result + code analysis; next problem after the provenance fix landed) -->
+<!-- provenance: status (SUPERSEDED — route-1; GPU result + code analysis; next problem after the provenance fix landed) -->
 <!-- verified: 2026-08-25 · GPU A/B (md=0.0 sanity + r40 md=0.5 hold=0.5) + sampler.py re-noise/correction trace @proto-latent-hold-release -->
-# Anchor under-denoise after the clean keyframe-only hold (Finding 12)
+# Anchor under-denoise after the clean keyframe-only hold (Finding 12, SUPERSEDED)
 
 Follows [hold-mechanism-and-confounds](hold-mechanism-and-confounds.md) (Findings 7–11, provenance
 confound + fix). That fix is now GPU-CONFIRMED; this doc opens the NEXT problem: the held keyframe
