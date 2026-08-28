@@ -1,89 +1,89 @@
-<!-- provenance: theory (UNVERIFIED — analytical/CPU-side, no GPU confirmation) -->
-<!-- verified: 2026-08-28 · CPU numerical characterization of the schedule-tail remap; GPU verification pending -->
-# Long-fade video interference — 17-frame grid-beat theory (Bug E RCA)
+<!-- provenance: theory (UNVERIFIED — GPU-narrowed; revised hypothesis analytical/UNVERIFIED; prior grid-cycle mechanism GPU-FALSIFIED 2026-08-28) -->
+<!-- verified: 2026-08-28 · GPU test matrix falsifies grid-cycle count prediction; revised held+ramp theory analytical only; tests on main (euler, 0.2MP) -->
+# Bug E: long-fade video interference — held+ramp mid-schedule disparity
 
 Bug E symptom: moiré / streamers / ribbons / electric-like patterns in video latent with long
-fades (~60f); absent at short fades (~30f); sampler-independent; audio tracks via joint attention.
+fades; sampler-independent; audio tracks via joint attention.
 Established in [bugs.md](bugs.md) and [audio-axis-verdict.md](audio-axis-verdict.md).
 
-This doc records the leading mechanistic hypothesis from CPU numerical characterization.
-It is a THEORY: the arithmetic is consistent; GPU confirmation is required before treating this
-as the definitive cause.
+Note: σ̃/H2 and Fix A do NOT address Bug E — present on main before either fix, sampler-independent.
 
-Note: the σ̃/H2 and Fix A work does NOT address Bug E — Bug E is present on main, before either
-fix, and is sampler-independent.
+## GPU falsification — 2026-08-28 test matrix (euler, 0.2MP, single video fade at f0, no guides)
 
-## Leading mechanism — 17-frame grid-beat (UNVERIFIED)
+Notation: a/b/c/d = fade_in/start_keyframe/end_keyframe/fade_out.
+HELD (frozen preserved block) = [skf, ekf]. RAMP = fade span.
 
-The proposed cause is a BEAT between the per-row fade denoise ramp and H3's 17-frame latent
-grid structure.
+| Config    | Held | Ramp            | Result                                           |
+|-----------|------|-----------------|--------------------------------------------------|
+| 0/0/0/85  | ~0f  | 85f (5 cycles)  | CLEAN                                            |
+| 0/0/0/17  | ~0f  | 17f (1 cycle)   | CLEAN                                            |
+| 0/0/0/69  | ~0f  | 69f             | CLEAN                                            |
+| 0/0/0/73  | ~0f  | 73f             | CLEAN                                            |
+| 0/0/0/75  | ~0f  | 75f             | CLEAN                                            |
+| 0/0/7/75  | 7f   | 68f (4 cycles)  | CLEAN                                            |
+| 0/0/30/90 | 30f  | 60f             | NOISY — streamers/ribbons/electric; audio tracks |
+| 0/0/60/90 | 60f  | 30f             | CLEAN                                            |
 
-The grid maps frames to rows as (1,4,4,4,4) per 17-frame chunk (grid.py:138-168).
-Every 5th row is a 1-frame "boundary" row that samples the m-ramp at a SINGLE point.
-The four surrounding rows each average over 4 frames (envelope.py:125-243 averages
-row_center_times).
-This imposes a periodic (period = 5 rows = 17 frames) non-uniform sampling of the fade ramp
-onto k_d and the per-row sigma-labels.
+## Grid-cycle-count theory — REJECTED (GPU falsified 2026-08-28)
 
-k_d = round(steps*(1-m)) (sampler.py:496) and the dense-grid idx (sampler.py:521) embed that
-periodic modulation into per-row conditioning.
-H3's full joint attention (no mask, [dit-forward.md](native-h3-mechanism/dit-forward.md))
-renders it as a periodically-structured latent → visible moiré, which couples into audio.
+Prior hypothesis: artifact onset tracks how many 17-frame grid cycles the ramp spans
+(predicted onset ~≥3–4 cycles); the (1,4,4,4,4) sampling-periodicity / stuck-pair mechanism
+was the proposed driver.
 
-## Why fade length is the variable (the crux)
+**Falsified by:** 0/0/0/85 (5 cycles, CLEAN), 0/0/0/75 (CLEAN), 0/0/7/75 (4 cycles, CLEAN).
+Long ramps spanning 4–5 grid cycles are clean when the held block is small.
+The grid-cycle count does NOT predict the artifact.
+The sampling-periodicity / stuck-pair / k_d-quantization mechanism is REJECTED as the driver.
 
-A 60f fade spans ~4 complete grid cycles (20 rows = 4×5).
-A 30f fade spans only ~2.2 cycles (11 rows).
-~4 repetitions is enough to resolve a spatial frequency as a visible moiré; ~2 is not.
+## Revised hypothesis — held + long ramp mid-schedule disparity (UNVERIFIED)
 
-This is the classic two-near-commensurate-periods (ramp vs 17-frame grid) moiré origin.
-The SAME per-period structure is sub-perceptual at 30f and perceptible at 60f.
+The artifact requires BOTH:
+(a) a substantial FROZEN preserved/held block, AND
+(b) a LONG graded ramp adjacent to it.
 
-## Corroborating detail — stuck pairs at 60f (secondary, not the whole story)
+Neither alone triggers it:
 
-At 60f the k_d steps are fine (avg Δk_d≈1.2/row), producing two "stuck pairs": adjacent rows
-straddling a chunk boundary get IDENTICAL k_d despite different content.
-Rows 4&5 (frames 16/17 boundary) and rows 15&16 (frames 51/52) are the stuck pairs.
-At 30f (coarse steps, avg Δk_d≈3) NO stuck pairs occur.
+- **Long ramp alone is clean:** 0/0/7/75 has a LONGER ramp (68f) than the failing case (60f)
+  but only 7f held → CLEAN.
+- **Large held alone is clean:** 0/0/60/90 has a LARGER held block (60f) than the failing
+  case but only 30f ramp → CLEAN.
+- **Not the product:** 0/0/30/90 and 0/0/60/90 have identical held×ramp = 1800 but opposite
+  outcomes.
 
-Secondary note: H3 VAE encodes each 17-frame chunk INDEPENDENTLY (grid.py:3).
-A long partial-denoise ramp crossing 3-4 independent chunks could add inter-chunk phase mismatch
-on the same 17-frame period.
-This variant shares the period and is hard to separate from the sampling-periodicity story
-without GPU.
+Only 0/0/30/90 combines both a substantial held (30f) and a long ramp (60f) → NOISY.
 
-## Alternatives contradicted by the arithmetic
+## Mechanism (theory)
 
-**k_d release-band quantization ("more bands = more moiré"): CONTRADICTED.**
-30f has COARSER k_d steps (Δk_d≈3) than 60f (Δk_d≈1.2).
-If coarse banding caused it, 30f would be WORSE. It is clean. Banding per se is not the cause.
+This is a DYNAMIC, not a static geometry. User observation from per-step previews: the error
+noise is GENERATED mid-schedule (~1/4 to 1/2 through the steps); later low-sigma steps either
+HEAL it or crystallize it into visible artifacts (streamers/bubbles/electricity).
 
-**Stretched-tail row-crossing / non-monotonic sigma: CONTRADICTED by algebra.**
-idx(A,i)−idx(B,i) = (k_A−k_B)(steps−i) ≥ 0 for all i, so per-row sigma order is strictly
-monotone in k_d; no crossings exist.
+This matches where the schedule-tail remap produces MAXIMUM cross-row sigma disparity:
+fully-released ramp rows (low k_d → low sigma, near-clean) sit in H3's full joint attention
+([dit-forward.md](native-h3-mechanism/dit-forward.md)) next to still-frozen held rows
+(m≈0, k_d≈steps → high sigma). A large frozen block adjacent to a long ramp SUSTAINS this
+noisy-vs-clean attention boundary across many rows AND many mid-steps → structured noise that
+needs enough low-sigma runway to heal.
 
-## Falsifiable predictions — discriminating GPU experiments
+Explains: present on main, sampler-independent, video-primary, audio-couples via joint attention.
 
-1. **Fade-length sweep** (30/40/50/60/70f, all else fixed): artifact onset should track
-   GRID-CYCLE COUNT (rows_in_fade / 5), NOT k_d-band count. Predict onset around ~3 cycles.
+Corollary (user's read): more cases may carry SOME transient noise that heals when step count
+is adequate or the compounding-frame count is too low.
 
-2. **Spatial/temporal period check**: the visible interference should have a ~17-frame
-   (≈5-latent-row) period. If the pattern repeats on that period, this strongly confirms grid-beat.
+## Falsifiable predictions — next GPU tests
 
-3. **Fade-endpoint snap / phase shift**: snapping fade endpoints to 17-frame chunk boundaries,
-   or phase-shifting a fixed-length fade, should CHANGE or reduce the pattern if grid-beat is
-   the cause; should NOT change it if the cause were pure k_d banding.
+1. **STEPS SWEEP on 0/0/30/90 (steps 20→30→40→60):** if artifact diminishes as steps rise,
+   CONFIRMS the compound-vs-heal dynamic and localizes the fix to release schedule / tail runway.
+   (Highest-value test.)
+2. **Held-threshold bisection — 0/0/15/75** (held 15f, ramp 60f): narrows the held trigger
+   between 7 (clean) and 30 (noisy).
+3. **Long-ramp-required check — 0/0/30/60** (held 30f, ramp 30f): predict CLEAN; if noisy,
+   held≥30 alone triggers and the hypothesis is wrong.
+4. **Optional — 0/0/30/90 with held min_denoise=0.05:** tests whether the exact-preserve
+   "never-release" path seeds the boundary vs. a near-zero path.
 
-## Fix directions (SPECULATIVE — confirm the mechanism first)
+## Fix direction (speculative — confirm mechanism first)
 
-Do not implement until the mechanism is GPU-confirmed. Each targets a different part of the theory:
-
-(a) Break the periodic sampling bias — evaluate the ramp so boundary (1-frame) and delta
-    (4-frame) rows are sampled consistently.
-
-(b) Continuous per-row release — replace round() with dither/interpolation on k_d to eliminate
-    stuck pairs.
-
-(c) Constrain or snap fade geometry to whole grid cycles.
-
-Lead with confirming the mechanism via the GPU experiments above, NOT with a code fix.
+If the steps-sweep confirms heal-vs-compound: smooth the mid-schedule release disparity
+(e.g. gentler/continuous release across the held→ramp boundary, or ensure enough tail steps)
+rather than any grid-alignment change. Do not implement until GPU-confirmed.

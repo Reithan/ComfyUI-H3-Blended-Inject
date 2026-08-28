@@ -75,9 +75,9 @@ discriminator is falsified. Do NOT present it as a validated fix for the audible
 Status: AMBIGUOUS, not validated. Separate minor thread; do not conflate with the primary bug.
 
 **Primary open bug (see [bugs.md](bugs.md) Bug E and [long-fade-grid-beat.md](long-fade-grid-beat.md)):**
-long-fade (~60f) VIDEO-latent interference (moiré/streamers/electric), sampler-independent, present
-on main, audio tracks via joint attention. Leading RCA: 17-frame grid-beat theory (CPU-supported,
-GPU-unverified); see [long-fade-grid-beat.md](long-fade-grid-beat.md) for mechanism and experiments.
+long-fade VIDEO-latent interference (moiré/streamers/electric), sampler-independent, present on
+main, audio tracks via joint attention. Leading RCA: held+long-ramp mid-schedule attention-disparity
+(GPU-narrowed; grid-cycle theory GPU-falsified 2026-08-28); see [long-fade-grid-beat.md](long-fade-grid-beat.md).
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 

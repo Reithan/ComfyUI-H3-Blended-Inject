@@ -1,7 +1,8 @@
 <!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
      GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, leading
-     RCA = 17-frame grid-beat theory, CPU-supported/GPU-unverified) -->
+     RCA = held+long-ramp mid-schedule attention-disparity (GPU-narrowed; grid-cycle theory
+     falsified 2026-08-28)) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 subsequently falsified by fade-length GPU data (same date, late) · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -130,12 +131,13 @@ passthrough (no-op inject). **Status: FIXED, pending merge.**
 
 ## Bug E — OPEN: Long-fade video-latent interference (moiré/streamers), sampler-independent
 
-**Symptom** (user, GPU 2026-08-28): moiré / streamers / electric patterns at ~60f fade, absent at ~30f,
-sampler-independent, audio tracks via joint attention, present on main before Fix A or σ̃.
+**Symptom** (user, GPU 2026-08-28): moiré / streamers / electric patterns when a substantial
+frozen held block coexists with a long fade ramp; sampler-independent; audio tracks via joint
+attention; present on main before Fix A or σ̃.
 
-**Leading RCA:** 17-frame grid-beat theory (CPU-supported, GPU-unverified) — see
-[long-fade-grid-beat.md](long-fade-grid-beat.md) for mechanism, contradicted alternatives, GPU
-experiments, and fix directions.
+**Leading RCA:** held+long-ramp mid-schedule attention-disparity (GPU-narrowed; grid-cycle
+theory GPU-falsified 2026-08-28) — see [long-fade-grid-beat.md](long-fade-grid-beat.md) for
+the test matrix, rejected grid-cycle mechanism, revised hypothesis, and next GPU tests.
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).
