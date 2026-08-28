@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). GPU FALSIFIED the single-cause axis verdict; Fix A is a local fix, not #76's cure; Bug C noise floor open — [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md).
+Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). GPU validated Fix A for free-audio euler_ancestral; falsification retracted; one fractional audio bug open — [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -91,9 +91,9 @@ single engine via a per-row ancestral step. See
 - [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived
   math):** why the ×S audio fix is exact globally but leaks per-row for m<1 (Consequences 1 & 2);
   pointer to Consequence 3 (axis mismatch). *Read when fractional AUDIO artifacts appear.*
-- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **FALSIFIED (GPU 2026-08-28):**
-  single-cause axis verdict + "euler clean" refuted; Fix A a local fix, not #76's cure;
-  σ_a-load-bearing-for-LABEL proof still valid; Bug C noise floor open. *Read for euler_a ringing.*
+- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED for free audio
+  (GPU 2026-08-28);** falsification retracted; σ_a-load-bearing-for-LABEL proof valid; one
+  fractional-region audio bug open. *Read for euler_a audio.*
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*

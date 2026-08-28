@@ -1,5 +1,5 @@
-<!-- provenance: bug (A: fixed; B: open/deferred; C audio noise floor: open/under-investigation; D optional inject_list: fixed-pending-merge) -->
-<!-- verified: 2026-08-23 · repo @72b61c6 · C/D added 2026-08-28 (branch fix-audio-ancestral-axis-mismatch) -->
+<!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A, GPU-validated 2026-08-28; C-remaining fractional-region audio: open/characterization-in-progress; D optional inject_list: fixed-pending-merge) -->
+<!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch, no fractional injects) reinstates Fix A; supersedes 94b1597 · repo @72b61c6 · D added 2026-08-28 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
 Read this when debugging fractional-region artifacts (audio garble, grey/reverse noise). The code
@@ -57,14 +57,8 @@ affine `alpha = 1−sigma` terms (see
 [k-diffusion-samplers](native-h3-mechanism/k-diffusion-samplers.md)) that are NOT scale-invariant,
 so per-row compression can't be reproduced by scaling the injected noise. The old
 `make_per_row_noise_sampler` shim only scales noise magnitude; insufficient.
-Additionally, our sampler.py runs audio's ancestral integration (denoised_r, si/sigma_down/ratio/
-renoise_coeff) on σ_a instead of σ_v — a local correctness gap vs stock. The earlier "single-cause
-axis mismatch" verdict was **FALSIFIED by GPU 2026-08-28**: Fix A (move only the ancestral
-integration to σ_v) did NOT resolve the fractional squeak, and the underlying noise is
-sampler-independent (present under euler, which Fix A never touches). Fix A remains a correct LOCAL
-improvement (m=1 audio bit-exact vs stock ancestral) but is not the #76 cure; σ_a stays
-load-bearing for the LABEL (model-contract proof still valid). Full verdict + falsification:
-[audio-axis-verdict.md](audio-axis-verdict.md). See also the audio noise-floor bug below.
+Separately, our sampler.py ran audio's ancestral integration (denoised_r, si/sigma_down/ratio/
+renoise_coeff) on σ_a instead of σ_v — a real bug for FREE audio, now FIXED (see Bug C).
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
@@ -83,23 +77,42 @@ doesn't care. Supported path = deterministic (euler / res_multistep / dpmpp_2m).
 
 ## Bug C
 
-**Persistent low audio noise floor in m=1 free audio (OPEN — cause under investigation).**
+**Free-audio euler_ancestral distortion — an our-node axis bug, FIXED by Fix A (GPU-validated
+2026-08-28). Retracts the earlier "sampler-independent noise floor" framing.**
 
-**Symptom** (user, GPU 2026-08-28, branch fix-audio-ancestral-axis-mismatch): a persistent low
-noise floor runs through the NON-INJECTED (m=1, fully free) audio timeline. Present under
-euler_ancestral AND — quieter — under deterministic euler, which was previously believed clean.
+A prior wiki commit (94b1597) called this a persistent, sampler-INDEPENDENT noise floor present
+even under deterministic euler on free (m=1) audio, and marked the axis verdict FALSIFIED. That run
+used FRACTIONAL injects, conflating two phenomena. **Retracted.** Controlled GPU A/B (user,
+2026-08-28: same prompt, NO fractional injects, minimal graph) shows:
 
-**Why it is its own bug (not Bug B / axis mismatch / Consequence 2):** the Fix A diff touches only
-`_euler_ancestral_rf_step`; `_euler_step` (sampler.py:278, registered at :404) is byte-identical
-between main and the fix branch, so the floor was already on main. euler runs no ancestral renoise
-yet shows it ⇒ **sampler-independent**, so the ancestral step is not the cause. It appears at m=1
-where Consequence 2's ρ = 1 exactly ⇒ not Consequence 2 either. It lives in the shared
-every-step/every-row audio-carry machinery that corrupts even fully-free audio.
+- STOCK KSampler (our node OUT): euler CLEAN, euler_ancestral CLEAN.
+- OUR node, `main`, free audio (m=1): euler CLEAN, euler_ancestral TINNY/REVERB/NOISY.
+- OUR node, Fix A branch, free audio: euler CLEAN, euler_ancestral **CLEAN**.
 
-**Candidates (all UNVERIFIED, do not assert one):** the `process_latent_in` ×S audio scale, the
-`forward` σ_a/σ_v carry, or the packed-trajectory handling. This falsified the single-cause axis
-verdict — full deduction in [audio-axis-verdict.md](audio-axis-verdict.md). **Status: OPEN, root
-cause under investigation.**
+So free-audio `euler` is CLEAN (no floor); the distortion was an OUR-NODE `euler_ancestral` bug.
+
+**Root cause:** on main, audio rows computed the ancestral RENOISE terms on the σ_a schedule
+(`sig_row`) while the packed audio lives on the σ_v trajectory → mis-scaled renoise injected every
+step → accumulating tinny/reverb noise. euler has no renoise, so it was clean both ways. **FIXED
+by Fix A** (move denoised_r + si/sigma_down/ratio/renoise_coeff to the σ_v axis); m=1 audio now
+bit-exact vs stock ancestral, video byte-identical. σ_a stays load-bearing for the LABEL
+(model-contract proof still valid). Full verdict: [audio-axis-verdict.md](audio-axis-verdict.md).
+
+## Bug C-remaining (OPEN — fractional-region audio distortion, characterization in progress)
+
+**Symptom** (user, GPU 2026-08-28, Fix A branch): with a VIDEO fade-in inject, audio distorts +
+loud noise IN THE FADE / fractional region only.
+
+**Mechanism (Consequence 2 shaped):** in `audio_mode="fade"` (`schedule.py:200-215`
+`RowSchedule.audio_denoise`) audio rows follow the video denoise envelope, so a video fade
+compresses AUDIO rows to fractional m; they blend toward the packed clean S·A under the
+[Consequence 2](audio-carry-identity.md) ρ mis-scale (ρ≠1 for 0<m<1). This is the long-known
+fractional-audio ρ mis-scale, now reproduced — SEPARATE from the free-audio ancestral bug above.
+
+**Still TBD:** sampler-dependence (does deterministic euler also distort in the fade region?) and
+the exact `audio_mode` used. A euler A/B + audio_mode confirmation are pending. Do NOT yet assert
+it is ancestral-specific OR fully sampler-independent. **Status: OPEN, characterization in
+progress.**
 
 ## Bug D
 

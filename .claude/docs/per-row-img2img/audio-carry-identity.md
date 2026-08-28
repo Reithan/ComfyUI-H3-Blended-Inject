@@ -1,5 +1,5 @@
-<!-- provenance: confirmed C1/C2 (source-derived); C3 single-cause axis verdict FALSIFIED by GPU 2026-08-28 (see audio-axis-verdict.md); σ_a-load-bearing-for-LABEL proof still valid; Fix A a local improvement, NOT the #76 cure -->
-<!-- verified: 2026-08-28 · source-derived algebra (C1/C2); C3 axis verdict FALSIFIED, true cause under investigation — audio-axis-verdict.md;
+<!-- provenance: confirmed C1/C2 (source-derived); C3 free-audio ancestral axis fix VALIDATED, GPU 2026-08-28 (audio-axis-verdict.md); σ_a-LABEL proof valid; Consequence 2 = live suspect for remaining fractional-audio distortion -->
+<!-- verified: 2026-08-28 · source-derived algebra (C1/C2); C3 Fix A validated (free audio), earlier falsification retracted — audio-axis-verdict.md;
      source base comfy-ref @b78cec87 · repo @06c6bda -->
 # Audio carry identity: why ×S is exact globally but leaks per-row
 
@@ -39,25 +39,26 @@ Error ratio `ρ = k·S·(1−m·σ_v)/(1−m·σ_a)`:
 - `σ → 1` (early steps): ρ → S for any m < 1; e.g. m=0 rows present up-to-×S-too-loud audio
   context to the DiT early in sampling.
 
-So fractional/preserved AUDIO rows see a mis-scaled clean component early. Note the m=1-free noise
-floor (below) rules OUT Consequence 2 as the floor's cause: at m=1, ρ = 1 exactly (no error), yet
-the floor is still audible there — so ρ is present but is NOT what produces the floor.
+So fractional/preserved AUDIO rows see a mis-scaled clean component early. **Consequence 2 is the
+live suspect for the remaining fractional-region audio distortion** (video fade compresses audio
+rows to 0<m<1 under `audio_mode="fade"`; ρ≠1). It does NOT touch free (m=1) audio, where ρ = 1
+exactly — the free-audio ancestral distortion was a separate axis bug now FIXED by Fix A (below).
 
-## Consequence 3 — single-cause axis verdict FALSIFIED (GPU 2026-08-28); Fix A a local improvement
+## Consequence 3 — free-audio ancestral axis fix VALIDATED (controlled GPU 2026-08-28)
 
-Full detail, the falsification, the surviving σ_a-load-bearing-for-LABEL proof, and Fix A/B status
-are in the child doc: **[audio-axis-verdict.md](audio-axis-verdict.md)**.
+Full detail, the retraction of the earlier falsification, the σ_a-load-bearing-for-LABEL proof, and
+Fix A/B status are in the child doc: **[audio-axis-verdict.md](audio-axis-verdict.md)**.
 
-Short summary: the earlier verdict named the ancestral axis mismatch as the SINGLE root cause of
-both fractional ringing (FACT 1) and FACT 2, with "euler is clean" as the discriminator. GPU test
-of Fix A **FALSIFIED** this: (1) the fractional squeak persists under euler_ancestral; (2) a
-persistent low noise floor runs through the m=1 FREE timeline; (3) that floor is present under
-deterministic euler too — whose code Fix A never touches (byte-identical main↔branch). So the
-floor is sampler-INDEPENDENT and pre-existing; the axis mismatch is not its cause, nor the squeak's
-sole cause. The floor is NOT Consequence 2 either (ρ=1 at m=1). σ_a remains LOAD-BEARING for the
-LABEL (model-contract proof, still valid); Fix A is a correct LOCAL improvement (m=1 audio
-bit-exact vs stock ancestral, video byte-identical) but NOT the #76 cure. True cause under
-investigation — see [bugs.md](bugs.md) noise-floor bug.
+Short summary: on `main`, our `euler_ancestral` distorted FREE (m=1) audio (tinny/reverb) while
+stock KSampler ancestral was clean — an OUR-NODE bug. Root cause: audio rows ran the ancestral
+RENOISE terms on the σ_a schedule while the packed audio lives on the σ_v trajectory. **Fix A**
+(move the ancestral integration to σ_v) makes free-audio euler_ancestral CLEAN, matching stock;
+m=1 audio bit-exact, video byte-identical. Controlled GPU A/B (2026-08-28, no fractional injects)
+VALIDATED this. An earlier commit (94b1597) had called it FALSIFIED / "not the cure" based on a run
+WITH fractional injects that conflated two phenomena — RETRACTED as premature. σ_a remains
+LOAD-BEARING for the LABEL (model-contract proof, still valid). The one REMAINING open issue —
+fractional-region audio distortion under a video fade — is Consequence 2 shaped (see above and
+[bugs.md](bugs.md)), separate from this free-audio fix, characterization in progress.
 
 ## If artifacts survive the axis fix — Consequence-2 (ρ) compensation
 

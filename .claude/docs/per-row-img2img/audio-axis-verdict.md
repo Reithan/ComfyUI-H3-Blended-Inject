@@ -1,79 +1,70 @@
-<!-- provenance: bug+theory (single-cause axis verdict + "euler clean" FALSIFIED by GPU 2026-08-28; Fix A a correct LOCAL improvement, NOT the #76 cure; σ_a-load-bearing-for-LABEL proof still valid; true cause under investigation) -->
-<!-- verified: 2026-08-28 · Fix-A GPU A/B (user, branch fix-audio-ancestral-axis-mismatch) FALSIFIED the verdict;
-     _euler_step byte-identical main↔branch (deduction below); σ_a-label proof from source comfy-ref @b78cec87;
-     commit 41c488d; prior branch fix-audio-carrier-recovery @2483914 -->
-# Audio ancestral axis mismatch — verdict FALSIFIED; Fix A a correct local improvement
+<!-- provenance: bug+proof (free-audio ancestral axis fix VALIDATED, controlled GPU 2026-08-28; earlier falsification retracted; σ_a-load-bearing-for-LABEL proof valid; one separate fractional-audio Consequence-2 bug OPEN) -->
+<!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch, no fractional injects, minimal graph);
+     supersedes the 94b1597 falsification (that run used fractional injects → conflated two phenomena);
+     σ_a-label proof from source comfy-ref @b78cec87; commit 41c488d; prior branch fix-audio-carrier-recovery @2483914 -->
+# Audio ancestral axis mismatch — Fix A VALIDATED for free audio; one separate fractional bug remains
 
 Consequence 3 of the [audio carry identity](audio-carry-identity.md).
-Read when debugging `_euler_ancestral_rf_step`, Fix A, or the audio noise floor ([bugs.md](bugs.md)).
+Read when debugging `_euler_ancestral_rf_step`, Fix A, or fractional-region audio ([bugs.md](bugs.md)).
 
-## FALSIFIED by GPU 2026-08-28 — read this first
+## VALIDATED for free audio (controlled GPU 2026-08-28) — read this first
 
-The user GPU-tested Fix A (move only the ancestral integration to σ_v) on branch
-`fix-audio-ancestral-axis-mismatch`. Result:
+A prior wiki commit (94b1597) marked this verdict FALSIFIED and called Fix A "not the cure." That
+run was done WITH fractional injects, which muddied the signal by mixing two separate phenomena.
+**The falsification is RETRACTED as premature.** New controlled GPU tests (user, 2026-08-28: same
+prompt, NO fractional injects, minimal graph) isolate the variables and REINSTATE Fix A for the
+free-audio case:
 
-1. Fractional-frame "muffled squeaking" (FACT 1) **PERSISTS** under euler_ancestral — Fix A did
-   NOT resolve it.
-2. A persistent **low noise floor** runs through the NON-INJECTED (m=1, fully free) timeline.
-3. That floor is present under euler_ancestral AND ALSO (quieter) under deterministic **euler** —
-   the sampler previously believed clean.
+| setup | euler | euler_ancestral |
+|---|---|---|
+| STOCK KSampler (our node OUT), no injects | CLEAN | CLEAN |
+| OUR node, `main`, free audio (1 guide, no injects → all rows m=1) | CLEAN | **TINNY/REVERB/NOISY** |
+| OUR node, Fix A branch, same free-audio setup | CLEAN | **CLEAN** |
+| OUR node, Fix A branch, WITH a video fade-in inject | CLEAN* | audio distortion + loud noise IN THE FADE REGION only |
 
-**Decisive deduction (verified from code):** the Fix A diff touches ONLY
-`_euler_ancestral_rf_step` (plus threading `sig_row_v` through `_StepContext`). The deterministic
-`_euler_step` (sampler.py:278, registered `"sample_euler": _euler_step` at :404) is UNCHANGED —
-byte-for-byte identical between `main` and the fix branch. So the floor the user now hears under
-euler was ALREADY PRESENT on main; the earlier "euler is clean" A/B only ever established the
-absence of the loud ancestral RINGING/ECHO, never a noise-free floor — nobody had listened for the
-floor under euler before.
+\*euler behaviour in the fade-region case is TBD (A/B pending); the loud noise was observed under
+the fade inject, localized to the fractional region — a SEPARATE bug (see below).
 
-Consequences (all falsify the sections below):
-- **(a)** The floor is SAMPLER-INDEPENDENT and pre-existing. euler runs no ancestral renoise yet
-  shows it → the ancestral step is NOT its root cause. The "single-cause axis mismatch" verdict
-  and the "euler-clean discriminator" are **FALSIFIED**.
-- **(b)** Fix A cannot fix the floor (doesn't touch euler) and did NOT fix the fractional squeak
-  under euler_ancestral → the axis mismatch was not the squeak's sole cause either.
-- **(c)** The floor appears in m=1 FREE audio, where Consequence 2's error ratio ρ = 1 exactly →
-  it is NOT Consequence 2 either. The cause lives in the shared every-step/every-row audio-carry
-  machinery that corrupts even fully-free audio. Candidates, all UNVERIFIED: the
-  `process_latent_in` ×S audio scale, the `forward` σ_a/σ_v carry, or packed-trajectory handling.
-  **Root cause is UNDER INVESTIGATION — do not assert one.** See [bugs.md](bugs.md) noise-floor bug.
+## Fix A — VALIDATED for the free-audio (m=1) ancestral case
 
-## Fix A — a correct LOCAL improvement, but does NOT resolve #76
+On `main`, our `euler_ancestral` diverged from stock on FREE audio: tinny/reverb/noisy, while stock
+KSampler ancestral was clean. **This is an OUR-NODE bug** (stock is clean). Fix A moves the
+ancestral integration terms — `denoised_r` (:380) and si/sigma_down/ratio/renoise_coeff (:384-393)
+— onto the σ_v-axis per-row sigma. With Fix A, free-audio `euler_ancestral` is **CLEAN and matches
+stock**; audio at m=1 becomes bit-exact vs stock `sample_euler_ancestral_RF`; video byte-identical.
 
-Fix A moves ONLY `_euler_ancestral_rf_step` `denoised_r` (:380) and the ancestral terms
-si/sigma_down/ratio/renoise_coeff (:384-393) onto the σ_v-axis per-row sigma. It is a **correct
-local improvement**: audio at m=1 becomes bit-exact vs stock `sample_euler_ancestral_RF`, and
-video is byte-identical. But it does NOT resolve #76's symptoms (fractional squeak persists; the
-noise floor is sampler-independent and untouched by it). Keep it as a correctness fix on the
-ancestral path; it is not the #76 cure. Whether to merge is a separate call.
+**Root cause (free-audio bug):** on main, audio rows computed the ancestral RENOISE terms on the
+σ_a schedule (`sig_row`) while the packed audio actually lives on the σ_v trajectory → a mis-scaled
+renoise was injected every step → accumulating tinny/reverb noise. `euler` runs NO renoise, so it
+was clean both ways (main and branch). Fix A puts the renoise integration back on the σ_v axis the
+packed audio really follows. **FIXED by Fix A.**
 
-## ~~Single-cause verdict (Consequence 3)~~ — FALSIFIED
+## The earlier "euler-clean discriminator" is VALID for free audio
 
-~~BOTH GPU facts share ONE root cause: the axis mismatch in `_euler_ancestral_rf_step`.~~
-**FALSIFIED (2026-08-28):** the noise floor is sampler-independent and present under euler, which
-runs none of these lines; and Fix A left FACT 1 intact. The two symptoms do not share this single
-cause. (Historical detail retained: the stock `sample_euler_ancestral_RF`,
-comfy-ref/comfy/k_diffusion/sampling.py:247-265, computes sigma_down/ratio/renoise_coeff from pure
-σ_v with zero AV branching, and our sampler puts audio's ancestral terms on σ_a at :380,384-393 —
-so Fix A's local correctness claim stands, but it is not the #76 root cause.)
+Controlled result: our `euler` on free (m=1) audio is CLEAN, matching stock, on BOTH main and the
+fix branch. So swapping euler_ancestral→euler DOES discriminate: it removes the loud ancestral
+renoise component, and for free audio the remainder is clean. The 94b1597 "Bug C:
+sampler-independent noise floor" framing is **WRONG and retracted** — there is no free-audio floor
+under euler. The floor/noise the user heard under euler in the earlier session was in the
+WITH-fractional-injects setup: a different, fractional-region phenomenon (next section).
 
-## ~~Euler clean — live A/B~~ — FALSIFIED as a discriminator
+## Remaining OPEN bug — fractional-region audio distortion (Consequence 2 shaped)
 
-~~Swapping euler_ancestral→euler makes ringing VANISH, ruling out all sampler-independent
-causes.~~ **FALSIFIED (2026-08-28):** the A/B only showed euler lacks the loud ancestral RINGING;
-it never established a noise-free floor, and the Fix-A test now reveals a low floor present under
-euler too. euler is NOT clean; it merely lacks the ancestral echo. The discriminator cannot rule
-out sampler-independent causes — the floor IS one.
+With a VIDEO fade-in inject, audio distorts + emits loud noise IN THE FADE / fractional region.
+Mechanism (from `schedule.py:200-215` `RowSchedule.audio_denoise`): in `audio_mode="fade"` the
+audio rows follow the video denoise envelope, so a video fade compresses AUDIO rows to fractional m
+and they blend toward the packed clean S·A under the **[Consequence 2](audio-carry-identity.md) ρ
+mis-scale** (ρ≠1 for 0<m<1). This is the long-known fractional-audio ρ mis-scale, now reproduced —
+SEPARATE from the free-audio ancestral bug Fix A fixes.
 
-## Renoise is (only) the forward-echo engine — narrowed
+**Still TBD (characterization in progress):** sampler-dependence (does deterministic euler also
+distort in the fade region?) and the exact `audio_mode` used. A euler A/B + an audio_mode
+confirmation are pending. Do NOT yet assert it is ancestral-specific OR fully sampler-independent.
+Tracked as the open item in [bugs.md](bugs.md).
 
-The ancestral renoise injection (sampler.py:395-397, eta>0) still explains the LOUD
-ringing/echo that euler lacks (euler has no renoise). That much survives: renoise is the echo
-engine for the loud component. It does NOT explain the sampler-independent floor.
+## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 
-## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of the falsification)
-
-This model-contract proof is independent of the axis verdict and remains valid.
+This model-contract proof is independent of the axis fix and remains valid.
 
 **VERDICT: σ_a is removable for the ancestral INTEGRATION but LOAD-BEARING for the LABEL.**
 Fix B (full-unification: σ_v for BOTH label AND integration) remains **REJECTED — by
@@ -90,7 +81,8 @@ still multiplies by ITS σ_a → `1 − sig_row_v·(σ_a/σ_v)`. Since time_shif
 [dit-forward.md](native-h3-mechanism/dit-forward.md)), this MISLABELS audio, worst at
 early/high-σ steps. The σ_a denominator is required for a truthful label.
 
-**σ_a IS LOAD-BEARING IN THREE SITES** (only the ancestral integration axis is questioned):
+**σ_a IS LOAD-BEARING IN THREE SITES** (only the ancestral integration axis was ever questioned;
+Fix A moves ONLY that integration, not the label):
 
 1. Per-row label denominator `w = sig_row/sig_g` (sampler.py:557,755) — proven above.
 2. Observer-label K/V split — observer labels `t_obs = 1−m·σ` use shifted σ_a for audio
