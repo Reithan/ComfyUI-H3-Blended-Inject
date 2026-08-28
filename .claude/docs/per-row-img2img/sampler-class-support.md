@@ -40,6 +40,13 @@ renoise term. `sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha
 `σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral case. Same root cause as
 [Bug B](bugs.md#bug-b); PR2 closes it for euler_ancestral; multistep / DPM++ not yet verified.
 
+→ **AUDIO: OPEN (root cause CONFIRMED 2026-08-27, task #76).** GPU spike also revealed euler_a
+audio hiss. Root cause: implementation divides by `ctx.sigmas[i]` (σ_v) instead of `ctx.sig_g`
+(per-modality global: σ_v video, σ_a audio). Effective lerp weight `w/S ≈ w/4`: audio under-denoises
+~4×; at m=1 ~75% terminal noise survives → the hiss. Fix: `v = (x−denoised)/ctx.sig_g`. Video
+is a provable no-op (sig_g == sigmas[i] for video; #68 GPU pass cannot regress). Bug also present
+in PR3's recovery reuse; PR3 held. GPU audio confirm pending (task #76).
+
 ## Design (UNVERIFIED): per-row step functions replace the black-box base_fn
 
 The remap loop already owns exact per-row sigma tensors (`sig_row`, `sig_row_next` from the
@@ -85,8 +92,10 @@ until PR4's label-refresh plumbing proves out.
   hidden σ-dependence detected beyond the label channel for the single-eval RF-ancestral path.
   PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
   history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
-- **Audio:** ancestral alpha terms on the SHIFTED audio σ need a pass through
-  [audio-carry-identity.md](audio-carry-identity.md) before trusting fractional-audio + stochastic.
+- **Audio (CONFIRMED OPEN, task #76):** root cause identified: recovery divides by `ctx.sigmas[i]`
+  (σ_v) not `ctx.sig_g` (per-modality global). Fix: one-line sigma swap; regression test =
+  audio-slice denoised_r == denoised at m=1 terminal. See
+  [audio-carry-identity.md](audio-carry-identity.md) (Consequence 3). Bug in PR2 + PR3; PR3 held.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
@@ -114,8 +123,11 @@ Deterministic (eta=0) form; per-row `old_denoised` history carried across the ou
 Finding 1's first-order degradation. Key test: all-m=1 rows over a full schedule must reproduce
 the stock sampler bit-for-bit on a toy model. Gated on USER GPU quality check (task #70) at the
 d=0.2/0.15 sweet-spot config.
+Introduces shared DPM++ spine helpers (reused by PR4 SDE family): `_recover_row_denoised(ctx)`
+(velocity-recovery + model-eval block), `_dpmpp_time_coeffs(σ_a, σ_b)` (t = −log σ, h, sigma_ratio),
+`_dpmpp_2m_second_order(denoised_r, old_denoised_r, r)` ((1+1/2r)·d − (1/2r)·d_old multistep combiner).
 
-**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde`. Sequenced
+**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`. Sequenced
 AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
 (sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO model evals/step (denoised @σ_i, then
 denoised_2 @midpoint σ_s_1, r=1/2 default), NO history, noise injected after EACH sub-step (781,
@@ -137,3 +149,8 @@ correlation structure follows the global schedule — accepted approximation).
 **Merge gated on NEW USER GPU spike (task #73):** leak surface LARGER than PR2's — these lean on
 the SNR mapping rather than the clean RF alpha identity, so rerun the label→timestep leak test
 (39f fade, min_denoise 0.2–0.3) with both samplers before merge.
+Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
+renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
+stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
+BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (audio-carry
+renoise miscalibration — same hiss that currently appears under euler_a).
