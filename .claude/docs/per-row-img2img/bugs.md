@@ -1,5 +1,5 @@
-<!-- provenance: bug (A: fixed; B: open/deferred) -->
-<!-- verified: 2026-08-23 · repo @72b61c6 -->
+<!-- provenance: bug (A: fixed; B: open/deferred; C audio noise floor: open/under-investigation; D optional inject_list: fixed-pending-merge) -->
+<!-- verified: 2026-08-23 · repo @72b61c6 · C/D added 2026-08-28 (branch fix-audio-ancestral-axis-mismatch) -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
 Read this when debugging fractional-region artifacts (audio garble, grey/reverse noise). The code
@@ -58,10 +58,13 @@ affine `alpha = 1−sigma` terms (see
 so per-row compression can't be reproduced by scaling the injected noise. The old
 `make_per_row_noise_sampler` shim only scales noise magnitude; insufficient.
 Additionally, our sampler.py runs audio's ancestral integration (denoised_r, si/sigma_down/ratio/
-renoise_coeff) on σ_a instead of σ_v — the axis mismatch confirmed DEFINITE (2026-08-28) and the
-specific cause of fractional audio ringing under euler_ancestral. Fix A corrects this while leaving
-the label on σ_a (CONFIRMED REQUIRED by model-contract proof; Fix B REJECTED). Full verdict:
-[audio-axis-verdict.md](audio-axis-verdict.md).
+renoise_coeff) on σ_a instead of σ_v — a local correctness gap vs stock. The earlier "single-cause
+axis mismatch" verdict was **FALSIFIED by GPU 2026-08-28**: Fix A (move only the ancestral
+integration to σ_v) did NOT resolve the fractional squeak, and the underlying noise is
+sampler-independent (present under euler, which Fix A never touches). Fix A remains a correct LOCAL
+improvement (m=1 audio bit-exact vs stock ancestral) but is not the #76 cure; σ_a stays
+load-bearing for the LABEL (model-contract proof still valid). Full verdict + falsification:
+[audio-axis-verdict.md](audio-axis-verdict.md). See also the audio noise-floor bug below.
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
@@ -77,6 +80,37 @@ second sampler-type-selected mechanism (special-casing smell). Decisions (memory
 `prototype-goal-fade-mask-parity`): stochastic-sampler gate DEFERRED; stochastic shim
 (`make_per_row_noise_sampler`, `scale_stochastic_noise`) may be left DEAD or deleted; the user
 doesn't care. Supported path = deterministic (euler / res_multistep / dpmpp_2m).
+
+## Bug C
+
+**Persistent low audio noise floor in m=1 free audio (OPEN — cause under investigation).**
+
+**Symptom** (user, GPU 2026-08-28, branch fix-audio-ancestral-axis-mismatch): a persistent low
+noise floor runs through the NON-INJECTED (m=1, fully free) audio timeline. Present under
+euler_ancestral AND — quieter — under deterministic euler, which was previously believed clean.
+
+**Why it is its own bug (not Bug B / axis mismatch / Consequence 2):** the Fix A diff touches only
+`_euler_ancestral_rf_step`; `_euler_step` (sampler.py:278, registered at :404) is byte-identical
+between main and the fix branch, so the floor was already on main. euler runs no ancestral renoise
+yet shows it ⇒ **sampler-independent**, so the ancestral step is not the cause. It appears at m=1
+where Consequence 2's ρ = 1 exactly ⇒ not Consequence 2 either. It lives in the shared
+every-step/every-row audio-carry machinery that corrupts even fully-free audio.
+
+**Candidates (all UNVERIFIED, do not assert one):** the `process_latent_in` ×S audio scale, the
+`forward` σ_a/σ_v carry, or the packed-trajectory handling. This falsified the single-cause axis
+verdict — full deduction in [audio-axis-verdict.md](audio-axis-verdict.md). **Status: OPEN, root
+cause under investigation.**
+
+## Bug D
+
+**`H3InjectSampler` required `inject_list` → "Missing Connection" on zero injects (FIXED, pending merge).**
+
+**Symptom:** the node declared `inject_list` as a required input, so wiring zero injects — or
+bypassing all of them — raised a ComfyUI "Missing Connection" error, blocking a plain
+passthrough/no-inject run.
+
+**Fix** (branch `fix-optional-inject-list`): make `inject_list` optional so zero injects ==
+passthrough (no-op inject). **Status: FIXED, pending merge.**
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).

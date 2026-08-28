@@ -1,5 +1,5 @@
-<!-- provenance: confirmed (C1/C2 source-derived; C3 axis mismatch DEFINITE — see audio-axis-verdict.md; σ_a load-bearing for label by model-contract proof; Fix A confirmed; Fix B REJECTED with proof 2026-08-28) -->
-<!-- verified: 2026-08-28 · source-derived algebra (C1/C2); axis-mismatch verdict + σ_a-label proof in audio-axis-verdict.md;
+<!-- provenance: confirmed C1/C2 (source-derived); C3 single-cause axis verdict FALSIFIED by GPU 2026-08-28 (see audio-axis-verdict.md); σ_a-load-bearing-for-LABEL proof still valid; Fix A a local improvement, NOT the #76 cure -->
+<!-- verified: 2026-08-28 · source-derived algebra (C1/C2); C3 axis verdict FALSIFIED, true cause under investigation — audio-axis-verdict.md;
      source base comfy-ref @b78cec87 · repo @06c6bda -->
 # Audio carry identity: why ×S is exact globally but leaks per-row
 
@@ -39,18 +39,25 @@ Error ratio `ρ = k·S·(1−m·σ_v)/(1−m·σ_a)`:
 - `σ → 1` (early steps): ρ → S for any m < 1; e.g. m=0 rows present up-to-×S-too-loud audio
   context to the DiT early in sampling.
 
-So fractional/preserved AUDIO rows see a mis-scaled clean component early; the euler A/B (2026-08-28) shows ρ is present but perceptually negligible — see [audio-axis-verdict.md](audio-axis-verdict.md).
+So fractional/preserved AUDIO rows see a mis-scaled clean component early. Note the m=1-free noise
+floor (below) rules OUT Consequence 2 as the floor's cause: at m=1, ρ = 1 exactly (no error), yet
+the floor is still audible there — so ρ is present but is NOT what produces the floor.
 
-## Consequence 3 — velocity/ancestral axis mismatch (DEFINITE; Fix A confirmed; Fix B rejected)
+## Consequence 3 — single-cause axis verdict FALSIFIED (GPU 2026-08-28); Fix A a local improvement
 
-Full verdict, σ_a-load-bearing proof, Fix A/B design, and test order are in the child doc:
-**[audio-axis-verdict.md](audio-axis-verdict.md)**.
+Full detail, the falsification, the surviving σ_a-load-bearing-for-LABEL proof, and Fix A/B status
+are in the child doc: **[audio-axis-verdict.md](audio-axis-verdict.md)**.
 
-Short summary: stock ancestral integration uses pure σ_v (no AV branching); our sampler wrongly
-runs audio's `denoised_r` + ancestral terms on σ_a. σ_a is LOAD-BEARING for the label (proven
-by model contract, 2026-08-28) but NOT for the integration. Fix B (unify both to σ_v) is
-**REJECTED with proof**. Fix A (move only ancestral integration to σ_v; leave label + r-scaling
-on σ_a) is confirmed. Code change still UNVERIFIED on GPU; needs fail-then-pass regression test.
+Short summary: the earlier verdict named the ancestral axis mismatch as the SINGLE root cause of
+both fractional ringing (FACT 1) and FACT 2, with "euler is clean" as the discriminator. GPU test
+of Fix A **FALSIFIED** this: (1) the fractional squeak persists under euler_ancestral; (2) a
+persistent low noise floor runs through the m=1 FREE timeline; (3) that floor is present under
+deterministic euler too — whose code Fix A never touches (byte-identical main↔branch). So the
+floor is sampler-INDEPENDENT and pre-existing; the axis mismatch is not its cause, nor the squeak's
+sole cause. The floor is NOT Consequence 2 either (ρ=1 at m=1). σ_a remains LOAD-BEARING for the
+LABEL (model-contract proof, still valid); Fix A is a correct LOCAL improvement (m=1 audio
+bit-exact vs stock ancestral, video byte-identical) but NOT the #76 cure. True cause under
+investigation — see [bugs.md](bugs.md) noise-floor bug.
 
 ## If artifacts survive the axis fix — Consequence-2 (ρ) compensation
 
