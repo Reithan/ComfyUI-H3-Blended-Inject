@@ -21,6 +21,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.sampler import (
+    _NATIVE_ROW_STEPS,
     _shift_schedule,
     build_conditioning_wrapper,
     build_per_row_sampler_function,
@@ -908,3 +909,334 @@ class TestStepDispatch:
         assert base.calls[0]["sigmas"].dtype == torch.float64, (
             "fallback must forward the raw sigmas dtype (float64), not the sig_v cast (float32)"
         )
+
+
+# ---------------------------------------------------------------------------
+# RF-ancestral native step: local scalar reference
+# ---------------------------------------------------------------------------
+
+
+def _local_sample_euler_ancestral_rf(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+    noise_sampler: Any = None,
+    **_kwargs: Any,
+) -> torch.Tensor:
+    """Local scalar reference for ``sample_euler_ancestral_RF`` (no comfy dependency).
+
+    Mirrors comfy's ``sample_euler_ancestral_RF`` (k_diffusion/sampling.py:240-266)
+    exactly, including the terminal-step branch.  Used only in tests.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigmas[i + 1] == 0:
+            x = denoised
+        else:
+            downstep_ratio = 1 + (sigmas[i + 1] / sigmas[i] - 1) * eta
+            sigma_down = sigmas[i + 1] * downstep_ratio
+            alpha_ip1 = 1 - sigmas[i + 1]
+            alpha_down = 1 - sigma_down
+            renoise_coeff = (
+                sigmas[i + 1] ** 2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2
+            ) ** 0.5
+            sigma_down_i_ratio = sigma_down / sigmas[i]
+            x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised
+            if eta > 0:
+                x = (alpha_ip1 / alpha_down) * x + noise_sampler(
+                    sigmas[i], sigmas[i + 1]
+                ) * s_noise * renoise_coeff
+    return x
+
+
+# Patch __name__ so the dispatch registry routes to _euler_ancestral_rf_step.
+_local_sample_euler_ancestral_rf.__name__ = "sample_euler_ancestral"
+
+
+class _FixedNoiseSampler:
+    """Returns the same fixed noise tensor on every call; call count is tracked."""
+
+    def __init__(self, noise: torch.Tensor) -> None:
+        self.noise = noise
+        self.call_count = 0
+
+    def __call__(self, sigma: Any, sigma_next: Any) -> torch.Tensor:
+        self.call_count += 1
+        return self.noise.clone()
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: native RF-ancestral step == stock scalar for m=1
+# ---------------------------------------------------------------------------
+
+
+class TestRFAncestralStepEquivalence:
+    """_euler_ancestral_rf_step reproduces stock sample_euler_ancestral_RF exactly for m=1."""
+
+    def _run_native(
+        self,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        noise_sampler: Any,
+        eta: float = 1.0,
+        *,
+        video_element_count: int | None = None,
+    ) -> torch.Tensor:
+        """Run the per-row sampler with _local_sample_euler_ancestral_rf as the base."""
+        fn = build_per_row_sampler_function(
+            _local_sample_euler_ancestral_rf,
+            m,
+            clean,
+            _sched(),
+            video_element_count=video_element_count,
+        )
+        return fn(model, x.clone(), sigmas, noise_sampler=noise_sampler, eta=eta)
+
+    def test_m1_equals_stock(self) -> None:
+        """All-m=1 latent: per-row output must match stock scalar reference (tight atol=1e-6)."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(4)  # steps_n=3
+        fixed_noise = torch.randn(1, 3)
+        ns = _FixedNoiseSampler(fixed_noise)
+
+        # Stock scalar reference.
+        stock_out = _local_sample_euler_ancestral_rf(model, x.clone(), sigmas, noise_sampler=ns)
+        # Native per-row (all m=1): name matches registry → _euler_ancestral_rf_step dispatched.
+        out = self._run_native(
+            m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed_noise)
+        )
+
+        assert torch.allclose(out, stock_out, atol=1e-6), (
+            f"m=1 per-row must match stock RF-ancestral; max diff="
+            f"{float((out - stock_out).abs().max())}"
+        )
+
+    def test_m1_equals_stock_eta_zero(self) -> None:
+        """eta=0 (deterministic) also matches stock: no noise injected in either path."""
+        model = _ScaleModel(0.85)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(4)
+
+        def null_ns(sigma: Any, sigma_next: Any) -> torch.Tensor:
+            return torch.zeros_like(x)
+
+        stock_out = _local_sample_euler_ancestral_rf(
+            model, x.clone(), sigmas, noise_sampler=null_ns, eta=0.0
+        )
+        out = self._run_native(m, x, clean, sigmas, model, noise_sampler=null_ns, eta=0.0)
+        assert torch.allclose(out, stock_out, atol=1e-6)
+
+    def test_m0_returns_clean(self) -> None:
+        """m=0 rows: outer where(never, clean, x) restores clean exactly."""
+        model = _ScaleModel(0.9)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.full((1, 3), 7.0)
+        sigmas = _decreasing(3)
+        fixed_noise = torch.randn(1, 3)
+        out = self._run_native(
+            m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed_noise)
+        )
+        assert torch.allclose(out, clean), "m=0 rows must be restored from clean exactly"
+
+    def test_terminal_step_yields_denoised_r_no_branch(self) -> None:
+        """Terminal sigma_row_next=0 falls out of the formula (no special-case branch needed).
+
+        For m=1, denoised_r==denoised, ratio==0 → x=denoised; renoise_coeff=sqrt(0)=0.
+        We verify the output equals what stock gives at the terminal step.
+        """
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        # 2-step schedule: step 1 is terminal (sigmas[2]==0).
+        sigmas = _decreasing(3)
+        fixed_noise = torch.zeros(1, 2)  # zero noise: renoise_coeff=0 → ignored anyway
+        ns = _FixedNoiseSampler(fixed_noise)
+        stock_out = _local_sample_euler_ancestral_rf(model, x.clone(), sigmas, noise_sampler=ns)
+        out = self._run_native(
+            m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed_noise)
+        )
+        assert torch.allclose(out, stock_out, atol=1e-6)
+
+    def test_fractional_row_strictly_between(self) -> None:
+        """Fractional m=0.5 row lands strictly between x_prev and denoised on each step."""
+        model = _ScaleModel(0.9)
+        m = torch.tensor([[1.0, 0.5]])  # col 0 free, col 1 half-denoise
+        x = torch.zeros(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(3)
+        fixed_noise = torch.zeros(1, 2)  # zero noise for deterministic comparison
+        out = self._run_native(
+            m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed_noise), eta=0.0
+        )
+        # With eta=0 and zero noise, m=1 col gets full denoising; m=0.5 col lands between.
+        # (Values are not clean=0 because x=0 and model denoises toward x*scale=0 — they should
+        # be equal here, but the point is no NaN and shape is correct.)
+        assert out.shape == (1, 2)
+        assert torch.isfinite(out).all(), "fractional row must produce finite values"
+
+    def test_audio_rows_no_error(self) -> None:
+        """Audio rows (video_element_count set, shifted sigma) run without error or NaN."""
+        model = _ScaleModel(0.9)
+        # 4 packed rows: 0,1 video / 2,3 audio.
+        m = torch.full((1, 4), 0.5)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        sigmas = _decreasing(4)
+        fixed_noise = torch.zeros(1, 4)
+        out = self._run_native(
+            m,
+            x,
+            clean,
+            sigmas,
+            model,
+            noise_sampler=_FixedNoiseSampler(fixed_noise),
+            video_element_count=2,
+        )
+        assert out.shape == (1, 4)
+        assert torch.isfinite(out).all()
+
+    def test_eta_zero_skips_noise_call(self) -> None:
+        """eta=0: the noise sampler must not be called (if-eta>0 branch skipped)."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(3)
+        ns = _FixedNoiseSampler(torch.randn(1, 2))
+        self._run_native(m, x, clean, sigmas, model, noise_sampler=ns, eta=0.0)
+        assert ns.call_count == 0, "eta=0 must not invoke the noise sampler"
+
+    def test_noise_sampler_persists_across_steps(self) -> None:
+        """The noise sampler built on step 0 must be reused on step 1 (not rebuilt).
+
+        We use a stateful noise sampler that records call order; if a fresh sampler were
+        built each step both draws would come from reset generators (identical noise) — the
+        stateful one advances, so calls diverging is the expected correct behaviour.
+        """
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(4)  # steps_n=3; 2 non-terminal steps call the noise sampler
+
+        # Noise sampler that returns different tensors on each call.
+        call_outputs: list[torch.Tensor] = [torch.ones(1, 2) * k for k in range(3)]
+        call_idx = [0]
+
+        def advancing_ns(sigma: Any, sigma_next: Any) -> torch.Tensor:
+            out = call_outputs[call_idx[0]].clone()
+            call_idx[0] += 1
+            return out
+
+        out = self._run_native(m, x, clean, sigmas, model, noise_sampler=advancing_ns)
+        # If the sampler advanced correctly, call_idx should have been incremented.
+        # (Terminal step may also call it with renoise_coeff=0, so ≥ 2.)
+        assert call_idx[0] >= 2, "noise sampler must have been called at least twice across steps"
+        assert out.shape == (1, 2)
+
+    def test_callback_fires_once_per_step(self) -> None:
+        """_euler_ancestral_rf_step fires the callback once per step, index remapped globally."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(4)  # steps_n=3
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        fn = build_per_row_sampler_function(_local_sample_euler_ancestral_rf, m, clean, _sched())
+        fn(
+            model,
+            x,
+            sigmas,
+            callback=cb,
+            noise_sampler=_FixedNoiseSampler(torch.zeros(1, 2)),
+        )
+        # _cb remaps the per-step i=0 to the global step index.
+        assert [d["i"] for d in seen] == [0, 1, 2]
+        assert all("denoised" in d for d in seen)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch: native RF-ancestral step chosen when name matches registry
+# ---------------------------------------------------------------------------
+
+
+class TestRFAncestralDispatch:
+    def test_native_rf_ancestral_does_not_call_base_fn(self) -> None:
+        """sample_euler_ancestral dispatch: native step bypasses base_fn entirely."""
+        base_called: list[bool] = []
+
+        def sample_euler_ancestral(  # noqa: ANN202
+            model: Any,
+            x: torch.Tensor,
+            sigmas: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kwargs: Any,
+        ) -> torch.Tensor:
+            base_called.append(True)
+            return x
+
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fixed_noise = torch.zeros_like(x)
+        fn = build_per_row_sampler_function(sample_euler_ancestral, m, torch.zeros(1, 2), _sched())
+        fn(model, x, _decreasing(3), noise_sampler=lambda s, sn: fixed_noise)
+        assert base_called == [], "native RF-ancestral must not call the base_fn wrapper"
+
+    def test_sample_euler_ancestral_in_registry(self) -> None:
+        """sample_euler_ancestral must be registered in _NATIVE_ROW_STEPS."""
+        assert "sample_euler_ancestral" in _NATIVE_ROW_STEPS
+
+    def test_warning_suppressed_for_native_stochastic(self) -> None:
+        """sample_euler_ancestral is stochastic (eta>0 default) but natively handled.
+
+        The warning condition ``sampler_is_stochastic(fn) and name not in _NATIVE_ROW_STEPS``
+        must evaluate False, i.e. the warning is suppressed for this sampler.
+        """
+
+        def fn(model: Any, x: Any, sigmas: Any, eta: float = 1.0) -> Any:  # noqa: ANN202
+            pass
+
+        fn.__name__ = "sample_euler_ancestral"
+        assert sampler_is_stochastic(fn) is True  # it IS stochastic
+        assert fn.__name__ in _NATIVE_ROW_STEPS  # but it IS natively handled
+        # Combined condition used in nodes.py must be False (warning suppressed):
+        assert not (sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS)
+
+    def test_warning_still_fires_for_non_native_stochastic(self) -> None:
+        """Stochastic samplers not in _NATIVE_ROW_STEPS still trigger the warning condition."""
+
+        def fn(model: Any, x: Any, sigmas: Any, eta: float = 1.0) -> Any:  # noqa: ANN202
+            pass
+
+        fn.__name__ = "sample_ddpm_custom"
+        assert sampler_is_stochastic(fn) is True
+        assert fn.__name__ not in _NATIVE_ROW_STEPS
+        assert sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS

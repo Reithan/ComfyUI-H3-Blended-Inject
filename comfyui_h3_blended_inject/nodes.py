@@ -162,6 +162,7 @@ def _run_sampler(  # pragma: no cover
     )
     from comfyui_h3_blended_inject.mask import derive_fractional_mask
     from comfyui_h3_blended_inject.sampler import (
+        _NATIVE_ROW_STEPS,
         build_conditioning_wrapper,
         build_per_row_sampler_function,
         quantize_denoise,
@@ -279,7 +280,11 @@ def _run_sampler(  # pragma: no cover
     # --- 5. Wrap the base sampler_function for per-row img2img. ---
     base_ks = comfy.samplers.sampler_object(sampler_name)
     base_fn = base_ks.sampler_function
-    if sampler_is_stochastic(base_fn) and any(r.denoise < 1.0 for r in schedule):
+    if (
+        sampler_is_stochastic(base_fn)
+        and getattr(base_fn, "__name__", "") not in _NATIVE_ROW_STEPS
+        and any(r.denoise < 1.0 for r in schedule)
+    ):
         import warnings as _warnings
 
         _warnings.warn(
@@ -287,7 +292,7 @@ def _run_sampler(  # pragma: no cover
             "Per-row img2img compression is NOT scale-invariant under stochastic "
             "renoise on H3's rectified-flow path; fractional/preserved rows will "
             "come out corrupted (grey static). Use a deterministic sampler "
-            "(euler, res_multistep, dpmpp_2m).",
+            "(euler, res_multistep, dpmpp_2m) or euler_ancestral.",
             UserWarning,
             stacklevel=2,
         )
