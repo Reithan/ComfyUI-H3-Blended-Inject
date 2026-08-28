@@ -1,4 +1,4 @@
-<!-- provenance: confirmed (global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide H3AddGuide GPU-CONFIRMED @0.5MP 2026-08-24 — official-guide coexistence + audio/clip guides + 1MP untested) -->
+<!-- provenance: confirmed (global prototype GPU-CONFIRMED @0.5MP 2026-08-24; per-guide H3AddGuide GPU-CONFIRMED @0.5MP 2026-08-24 incl. official-guide coexistence — audio/clip guides + 1MP untested) -->
 <!-- verified: 2026-08-24 · comfy-ref @b78cec87 model_base.py:2162-2212, minimax/model.py:318-360,499-524,559-585 · repo @b0efef8 -->
 # Timed cond-removal prototype — design + build
 
@@ -111,14 +111,23 @@ released_ids)` — CPU-unit-testable dict manipulation; only the thin wrapper gl
 
 ## Build (branch `add-h3-guide-node`, PR #2) — per-guide, GPU-CONFIRMED @0.5MP
 
-GPU result (2026-08-24): 0.5MP, two guides at different `hold_frac` — working. Untested on GPU:
-official-guide coexistence, audio guides (`_encode_ref_audio` pragma'd), multi-frame clips, 1MP.
-- `schedule.py`: `Guide` dataclass (`eq=False` — identity IS the release key); `InjectList` widened.
-- `guides.py` (NEW, pure): `partition_inject_list`, `snap_guide_length` (warns on trim),
-  `resolve_frame_index`, `crop_audio_latent`, `release_threshold` (per-guide midpoint math),
-  `build_keyframe`, `filter_released_keyframes` (held-keyframes-then-refs; layout popped; input
-  never mutated).
-- `sampler.py`: filters per step; cache keyed `(id(payload), frozenset(released))`; NOT
-  pragma'd — covered by CPU tests with fake `apply_model`.
-- `nodes.py`: `H3AddGuide` encodes at node time; `_run_sampler` appends keyframes to positive
-  and arms per-guide thresholds after sigmas exist.
+GPU results (2026-08-24, user, 0.5MP): (1) two guides at DIFFERENT `hold_frac` values — working
+fine; (2) official-guide coexistence — mixed official Add Guide + ours in one workflow, passed:
+post-release layout rebuild with a held foreign keyframe is sound. Merged as PR #8. Still
+untested on GPU (defer to first use): audio guides (`_encode_ref_audio` pragma'd), multi-frame
+clip guides, 1MP. Layout:
+- `schedule.py` — `Guide` dataclass (`eq=False`: identity IS the release key); `InjectList`
+  widened to `list[Inject | Guide]`.
+- `guides.py` (NEW, pure) — `partition_inject_list`, `snap_guide_length` (warns on trim, unlike
+  the silent official node), `frame_count_for_rows`, `resolve_frame_index`, `crop_audio_latent`,
+  `release_threshold` (per-guide; same midpoint math as prototype), `build_keyframe`,
+  `filter_released_keyframes` (held-keyframes-then-refs, exact model_base predicates incl. refs
+  video `"latent" in r`; layout popped; input never mutated).
+- `sampler.py` — wrapper takes `guide_release={entries: [(id(kf), threshold)], cache}`; filters
+  per step, cache keyed `(id(payload), frozenset(released))` so cond/uncond never cross. NOT
+  pragma'd — covered by CPU tests with fake apply_model.
+- `nodes.py` — `H3AddGuide` node (encode at node time; snap/trim); `sample()` partitions chain,
+  resolves guides vs target (exact-resolution gate, bounds, audio crop), builds keyframe dicts
+  ONCE (identity!); `_run_sampler` appends them to positive via `conditioning_set_values` and
+  arms thresholds after sigmas exist. Run markers: same `[H3_INJECT] timed cond removal` prints,
+  now with per-guide counts.
