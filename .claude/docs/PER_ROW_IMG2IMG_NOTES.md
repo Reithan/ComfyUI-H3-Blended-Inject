@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (branch `record-pr2-gpu-validation`). sampler-class-support.md + stochastic-recovery-theory.md: #68 GPU pass — Bug B killed for euler_ancestral (PR2 validated).
+Last updated: 2026-08-27 (branch `wiki-dpmpp-spine`). sampler-class-support.md: DPM++ spine — PR3 spine helpers; PR4 adds dpmpp_3m_sde; SDE family gated on #76.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust

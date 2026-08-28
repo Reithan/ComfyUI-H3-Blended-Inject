@@ -114,8 +114,11 @@ Deterministic (eta=0) form; per-row `old_denoised` history carried across the ou
 Finding 1's first-order degradation. Key test: all-m=1 rows over a full schedule must reproduce
 the stock sampler bit-for-bit on a toy model. Gated on USER GPU quality check (task #70) at the
 d=0.2/0.15 sweet-spot config.
+Introduces shared DPM++ spine helpers (reused by PR4 SDE family): `_recover_row_denoised(ctx)`
+(velocity-recovery + model-eval block), `_dpmpp_time_coeffs(σ_a, σ_b)` (t = −log σ, h, sigma_ratio),
+`_dpmpp_2m_second_order(denoised_r, old_denoised_r, r)` ((1+1/2r)·d − (1/2r)·d_old multistep combiner).
 
-**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde`. Sequenced
+**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`. Sequenced
 AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
 (sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO model evals/step (denoised @σ_i, then
 denoised_2 @midpoint σ_s_1, r=1/2 default), NO history, noise injected after EACH sub-step (781,
@@ -137,3 +140,8 @@ correlation structure follows the global schedule — accepted approximation).
 **Merge gated on NEW USER GPU spike (task #73):** leak surface LARGER than PR2's — these lean on
 the SNR mapping rather than the clean RF alpha identity, so rerun the label→timestep leak test
 (39f fade, min_denoise 0.2–0.3) with both samplers before merge.
+Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
+renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
+stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
+BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (audio-carry
+renoise miscalibration — same hiss that currently appears under euler_a).
