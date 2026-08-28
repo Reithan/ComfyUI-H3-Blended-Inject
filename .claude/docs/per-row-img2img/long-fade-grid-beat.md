@@ -1,6 +1,6 @@
-<!-- provenance: theory (UNVERIFIED — 3 confounded models, decoupling factorial pending; S2 GPU-falsified 2026-08-28) -->
-<!-- verified: 2026-08-28 · GPU out-of-sample runs (4 configs) falsified S2 (3/4 mispredicted); ramp-length band descriptive across all 17 tested configs -->
-# Bug E: long-fade video interference — ramp-length band (S2 GPU-falsified; 3-model confound pending)
+<!-- provenance: theory (UNVERIFIED — 4 confounded models (M-A/B/C/D), shift-series decoupler pending; S2 GPU-falsified 2026-08-28) -->
+<!-- verified: 2026-08-28 · GPU noise-midpoint observation: noise peaks at fade midpoint (frames ~60-64), not endpoints; M-D added; shift-series pending -->
+# Bug E: long-fade video interference — ramp-length band (S2 GPU-falsified; 4-model confound; shift-series pending)
 
 Bug E symptom: moiré / streamers / ribbons / electric-like patterns in video latent with long
 fades; sampler-independent; audio tracks via joint attention.
@@ -60,10 +60,22 @@ threshold, not grid-quantized. This directly contradicts S2's grid-position rule
 Upper-edge evidence: 0/0/7/75 (L=68) is the only data point above L=64 that is not a trivial
 c=0 case. The upper-band edge is empirically thin; a single data point.
 
-## Three-way confound — models not yet distinguishable
+## GPU observation — noise localizes to fade midpoint (2026-08-28)
 
-In every `efo=90` test, held = 90 − ramp, so held length, ramp length L, and presence of a
-trailing free (m=1) region all covary. Three models fit all 17 points identically:
+Dissecting 0/0/34/90: noise is STRONGEST at output frames ~60–64 (~2.5–2.66 s).
+The fade spans [34, 90]; midpoint = frame 62.
+The degeneracy forms mid-ramp where m≈0.5 and rows release at mid-schedule (~step 10).
+Consistent with the original "noise generated ~1/4–1/2 through the steps" observation.
+
+This motivates M-D (below). Caveat: noise at the midpoint is expected under M-A too
+(midpoint = relative midpoint of the ramp regardless of absolute position) — so the
+noise-location datum narrows timing-within-schedule, but does NOT decide length vs position.
+
+## Four-way confound — models not yet distinguishable
+
+In every `efo=90` test, held = 90 − ramp, so held length, ramp length L, presence of a
+trailing free (m=1) region, and fade midpoint position all covary. Four models fit all 17
+points identically:
 
 **M-A ramp band:** error iff L ∈ ~[51, 64].
 Both long and short ramps are safe; it is a BAND, bounded on both sides. Long ramps (L≥68) are
@@ -78,23 +90,55 @@ Explains 0/0/7/75 (L=68) clean: frames 75–90 are free and heal the artifact. M
 observation of "noise generated ~1/4–1/2 through then healed/crystallized in later steps." All
 efo=90 tests have zero trailing free region; clean/error split still driven by ramp length there.
 
-All three fit the 17-point dataset. None is ruled out.
+**M-D fade-midpoint absolute position:** error iff (ekf+efo)/2 ∈ ~[60, 64.5].
+Evidence: error-case midpoints = 60.0–64.5 (0/0/30/90→60.0, 0/0/34/90→62.0,
+0/0/35-39/90→62.5-64.5); clean cases all miss it (0/0/40/90→65.0, 0/0/44/90→67.0,
+0/0/60/90→75.0, 0/0/7/75→48.5, 0/0/0/*→8.5-42.5). M-D separates all 17 tested configs.
+CRUCIAL CAVEAT: within efo=90, midpoint = 90 − L/2, so M-D ("midpoint∈[60,64]") and
+M-A ("L∈[51,60]") are ALGEBRAICALLY IDENTICAL statements — NOT independent evidence.
+The pass/fail data cannot distinguish length from midpoint-position on the efo=90 family.
+The noise-location datum adds that degeneracy forms mid-ramp, but under M-A the noise
+would also sit at the relative midpoint — so it does not decide the causal variable.
+
+All four fit the 17-point dataset. None is ruled out.
 
 ## Pending decoupling factorial (UNRUN)
 
 Each run moves ONE variable off the known-error baseline 0/0/35/90 (L=55, held=35, no free tail).
-Per-model predictions:
+Per-model predictions (M-D midpoint for each: clip=124→62.5, d=107→68.5, d=56→30.5):
 
-| Run | What changes | M-A | M-B | M-C |
-|-----|--------------|-----|-----|-----|
-| 0/0/35/90 at clip=124 | adds ~34 trailing free frames | ERROR | ERROR | CLEAN |
-| 0/0/30/107 (d=107=clip, L=77, no free tail) | long ramp, no free tail | CLEAN | ERROR | ERROR |
-| 0/0/5/56 (d=56=clip, L=51, held=5) | short held, same ramp L | ERROR | CLEAN | ERROR |
+| Run | What changes | M-A | M-B | M-C | M-D |
+|-----|--------------|-----|-----|-----|-----|
+| 0/0/35/90 at clip=124 | adds ~34 trailing free frames | ERROR | ERROR | CLEAN | ERROR |
+| 0/0/30/107 (d=107=clip, L=77, no free tail) | long ramp, no free tail | CLEAN | ERROR | ERROR | CLEAN |
+| 0/0/5/56 (d=56=clip, L=51, held=5) | short held, same ramp L | ERROR | CLEAN | ERROR | CLEAN |
 
 Clip lengths snap to 17n+5; valid clips used: 56, 90, 107, 124.
+Note 0/0/30/107 also tests the M-A upper-band edge (L=77 above the L≥68 safe threshold).
+Run all three; each flips exactly one model's prediction relative to the others.
 
-Run all three. Each distinguishes one model from the other two by flipping EXACTLY that model's
-predicted outcome. Three runs together uniquely identify the root cause.
+## Shift-series experiment — position vs length decoupler (UNRUN)
+
+Fix L=55 (known-error length); slide the whole fade window to decouple ramp length (M-A)
+from absolute midpoint position (M-D) and held length (M-B). Anchor: 0/0/35/90 (KNOWN ERROR,
+all models predict ERROR). Clip lengths snap to 17n+5.
+
+| Config (a/b/c/d) | L | Midpoint | Held | M-A | M-B | M-D |
+|---|---|---|---|---|---|---|
+| 0/0/15/70 → snap clip=73 | 55 | 42.5 | 15 | ERROR | CLEAN | CLEAN |
+| 0/0/25/80 → clip=90 | 55 | 52.5 | 25 | ERROR | CLEAN | CLEAN |
+| 0/0/35/90 (ANCHOR, KNOWN ERROR) | 55 | 62.5 | 35 | ERROR | ERROR | ERROR |
+| 0/0/52/107 (shift fwd +17 grid period) | 55 | 79.5 | 52 | ERROR | ERROR | CLEAN |
+
+Read-off:
+- 0/0/15/70 and 0/0/25/80 ERROR → length drives it (M-A; absolute position irrelevant).
+- 0/0/15/70 and 0/0/25/80 CLEAN, anchor ERROR → absolute midpoint ~frame 62 drives it (M-D).
+- 0/0/52/107 splits M-A+M-B (ERROR) from M-D (CLEAN) — key tiebreaker if the above disagree.
+- Co-readout: if noise tracks each fade's OWN midpoint → relative/length (M-A); if noise stays
+  pinned near frame 62 regardless of window shift → absolute grid position (M-D).
+
+Recommend 0/0/15/70 first (largest midpoint shift, shortest clip). The 0/0/30/107 test from the
+factorial remains valid (tests M-A upper edge, orthogonal to the shift series).
 
 ## Epistemic note — mono-causal rules over covariable sweeps
 
@@ -108,12 +152,22 @@ where the candidate variables covary:
 decoupling factorial before treating any model as confirmed.** Record all competitive models;
 commit only after the factorial data rules one in.
 
-## Fix direction (hold until factorial resolves)
+## Fix direction (hold until factorial + shift-series resolve)
 
-Strategy depends on which model the factorial confirms:
+Strategy depends on which model the experiments confirm:
 
 - M-A: snap ramp length L outside ~[51, 64] (e.g. enforce L ≤ 50 or L ≥ 68).
 - M-B: snap either held or ramp below the respective threshold.
 - M-C: ensure a trailing free (m=1) region follows any long ramp.
+- M-D: snap the fade midpoint (ekf+efo)/2 outside ~[60, 64.5] — or equivalently, outside
+  the absolute grid danger zone around frame 62. Note: M-D fix = M-A fix algebraically
+  within efo=90; they diverge only in user-exposed constraint for multi-sweep configs.
 
-Do not implement any fix until the factorial experiments are run.
+Do not implement any fix until both experiment sets are run.
+
+## Speculative mechanism note (M-D framing)
+
+M-D reframes the hunt: what is special about the output-latent grid around frames 60–64?
+Frame 64 = chunk3 offset 13, approaching the chunk3/chunk4 reset at frame 68. This is
+speculative; treat as a prior for experiment design, not an established finding. The shift
+series decides it empirically.
