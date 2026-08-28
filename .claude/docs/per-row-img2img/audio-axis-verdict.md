@@ -1,8 +1,7 @@
-<!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 carry-contract fractional-audio renoise ROOT CAUSE CONFIRMED by discriminator matrix 2026-08-28; fix designed, awaiting GPU) -->
-<!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch);
-     Fix A: no-fractional-injects run VALIDATED; H2 matrix: euler+fade=CLEAN isolates renoise as fault;
-     σ_a-label proof from source comfy-ref @b78cec87; commit 41c488d; prior branch fix-audio-carrier-recovery @2483914 -->
-# Audio ancestral axis mismatch — Fix A VALIDATED for free audio; one separate fractional bug remains
+<!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28; primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid) -->
+<!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by late fade-length GPU data (same date);
+     euler-discriminator collapsed (tests differed in fade length, not sampler); σ_a-label proof from comfy-ref @b78cec87 -->
+# Audio ancestral axis mismatch — Fix A VALIDATED for free audio; H2 FALSIFIED; primary long-fade video bug open
 
 Consequence 3 of the [audio carry identity](audio-carry-identity.md).
 Read when debugging `_euler_ancestral_rf_step`, Fix A, or fractional-region audio ([bugs.md](bugs.md)).
@@ -22,8 +21,9 @@ free-audio case:
 | OUR node, Fix A branch, same free-audio setup | CLEAN | **CLEAN** |
 | OUR node, Fix A branch, WITH a video fade-in inject | CLEAN (confirmed) | audio distortion + loud noise IN THE FADE REGION only (ancestral only — see H2 section below) |
 
-euler+fade is now CONFIRMED CLEAN (discriminator matrix, 2026-08-28). The loud noise under the
-fade inject is ancestral-specific; root cause and fix design in the H2 section below.
+⚠ euler+fade=CLEAN and euler_ancestral+fade=NOISY are NO LONGER a valid sampler discriminator —
+those tests used different fade lengths (~30f vs ~60f). See the H2 section below for the
+falsification and the primary open bug (long-fade video interference, sampler-independent).
 
 ## Fix A — VALIDATED for the free-audio (m=1) ancestral case
 
@@ -48,50 +48,36 @@ sampler-independent noise floor" framing is **WRONG and retracted** — there is
 under euler. The floor/noise the user heard under euler in the earlier session was in the
 WITH-fractional-injects setup: a different, fractional-region phenomenon (next section).
 
-## Fractional-region audio distortion — H2 carry-contract: ROOT CAUSE CONFIRMED, FIX DESIGNED
+## Fractional-region audio distortion — H2 FALSIFIED (fade-length confound); primary bug is video-primary, open
 
-**Discriminator matrix** (controlled GPU, user, 2026-08-28, branch fix-audio-ancestral-axis-mismatch):
+**The original discriminator** (earlier this branch) showed euler+fade=CLEAN vs euler_ancestral+fade=NOISY.
+⚠ **This discriminator has COLLAPSED.** New controlled data (user, 2026-08-28 late) reveals those
+tests used different fade lengths (~30f clean vs ~60f noisy). Fade length, not sampler, was the
+real independent variable.
 
-| setup | result |
-|---|---|
-| euler + fade (audio fractional 0<m<1) | CLEAN |
-| euler_ancestral + drop (audio m=1 free) | CLEAN |
-| euler_ancestral + keep (audio m=0 frozen) | CLEAN |
-| euler_ancestral + fade (audio fractional 0<m<1) | AUDIO NOISY |
-| video fractional under euler_ancestral | CLEAN |
+**What the new controlled data shows:**
+- Short fade (~30f): CLEAN under both euler and euler_ancestral.
+- Long fade (~60f): VIDEO-latent INTERFERENCE — moiré, jagged streamers/ribbons/electric patterns —
+  under BOTH euler AND euler_ancestral (sampler-independent).
+- Audio tracks the visual interference via A/V joint-attention coupling (SFX matches visual texture).
+  The artifact is VIDEO-PRIMARY; audio is a secondary symptom, not an independent audio bug.
+- Present on main BEFORE either fix: rollback to Fix A only (d70d1767) AND to pre-both-fixes
+  both still show the long-fade artifact. Our σ̃ fix and Fix A neither cause nor fix it.
 
-**What the matrix proves:** euler+fade CLEAN rules out [Consequence 2](audio-carry-identity.md) (ρ
-mis-scale) as the audible cause — euler exercises the identical σ_a init lerp and fractional clean
-blend, and is clean. It also rules out an init-axis mismatch (euler uses the same init). The ONLY
-difference between clean euler and noisy euler_ancestral is the ancestral RENOISE block
-(sampler.py:395-408). The fault is renoise-specific.
+**H2 carry-contract renoise hypothesis — REJECTED as cause of the primary artifact.**
+H2 targeted the ancestral-renoise mis-scale (σ̃ ≠ sig_row_v for fractional audio). The evidence
+that isolated it conflated short-fade with euler vs long-fade with euler_ancestral. The σ̃
+implementation is video-byte-identical and m=1 bit-exact (harmless), but its justifying
+discriminator is falsified. Do NOT present it as a validated fix for the audible artifact.
 
-**Root cause (H2, confirmed):** the H3 model applies a GLOBAL scalar carry = σ_a/σ_v to the audio
-slice every step (comfy-ref/comfy/ldm/minimax/model.py:528-538; output :548-550). The sampler's
-packed audio lives at scaled amplitude σ̃ = (σ_v/σ_a)·sig_row = w·σ_v. Fix A renoises on
-sig_row_v = σ̃ correctly ONLY when carry=1: video (carry=1, exact) and m=1 (w→1, validated).
-For fractional audio, sig_row = time_shift_sigma(sig_row_v) is nonlinear while carry ≠ 1, so
-σ̃ ≠ sig_row_v; the ancestral renoise (sigma_down/ratio/renoise_coeff on sig_row_v at :395-404)
-injects a mis-scaled noise magnitude every step → accumulates → audible noise. Masked at m=1
-(σ̃≡sig_row_v) and at m=0 (renoise_coeff→0). This is the audio-vs-video renoise divergence the
-user predicted: video renoise composes correctly (carry=1), audio's does not (carry≠1).
+**Minor open thread (AMBIGUOUS):** on the σ̃ branch, short euler_ancestral+fade was heard as
+"clean-ish, maybe a whistle" — possibly the Consequence-2 ρ residual, possibly prompt variation.
+Status: AMBIGUOUS, not validated. Separate minor thread; do not conflate with the primary bug.
 
-**Fix design (H2 fix, on top of Fix A):** in `_euler_ancestral_rf_step`, swap sig_row_v/
-sig_row_v_next → carry-consistent σ̃/σ̃_next for ALL ancestral terms (denoised_r projection,
-si, sip1, sigma_down, alpha, renoise_coeff, ratio). Per row: construct `sig_row_c = sig_row_v`
-(video/m=1) or `w*sig_v[i]` (fractional audio, w=sig_row/sig_g.clamp(min=1e-8)).
-Guarantees: video byte-identical, m=1 bit-exact (w=1→σ̃=sig_row_v), m=0/terminal unchanged.
-The +1 term uses next-step globals (carry re-evaluated each model call). Leave global
-noise_sampler args (sigmas[i], sigmas[i+1]) unchanged.
-
-**Residual caveat:** σ̃ corrects renoise noise magnitude but NOT the packed clean-coefficient
-mismatch (Consequence 2 ρ). ρ is NOT the audible fault (euler+fade is clean despite identical ρ).
-If a faint residual survives the H2 fix on GPU, ρ-compensation is the next suspect.
-
-**Status:** fix designed + being implemented on branch fix-audio-ancestral-axis-mismatch;
-awaiting user GPU confirmation (task #77). Falsifiable prediction: euler_ancestral+fade audio
-becomes CLEAN; drop(m=1)/keep(m=0)/video stay clean and m=1 stays bit-identical.
-Tracked in [bugs.md](bugs.md).
+**Primary open bug (see [bugs.md](bugs.md) Bug E):** long-fade (~60f) VIDEO-latent interference
+(moiré/streamers/electric), sampler-independent, present on main, audio tracks via joint attention.
+RCA IN PROGRESS (anchored on fade length and the m→row→k_d schedule-tail remap / 17-frame grid
+interaction). Root cause NOT yet asserted — mark OPEN / under investigation.
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 
