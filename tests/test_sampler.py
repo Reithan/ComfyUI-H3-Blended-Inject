@@ -1277,8 +1277,15 @@ class TestAudioAncestralAxisSplit:
         model: Any,
         noise_sampler: Any,
         eta: float = 0.0,
+        sig_row_c: torch.Tensor | None = None,
+        sig_row_c_next: torch.Tensor | None = None,
     ) -> _StepContext:
-        """Build a minimal _StepContext for a single-step call to _euler_ancestral_rf_step."""
+        """Build a minimal _StepContext for a single-step call to _euler_ancestral_rf_step.
+
+        sig_row_c / sig_row_c_next default to sig_row_v / sig_row_v_next (video-row / m=1 case
+        where σ̃ ≡ σ_v).  Pass explicit values to simulate a fractional audio row where the
+        carry-consistent sigma diverges from the raw σ_v axis.
+        """
         return _StepContext(
             model=model,
             x_prev=x_prev,
@@ -1288,6 +1295,8 @@ class TestAudioAncestralAxisSplit:
             sig_row_next=sig_row_next,
             sig_row_v=sig_row_v,
             sig_row_v_next=sig_row_v_next,
+            sig_row_c=sig_row_v if sig_row_c is None else sig_row_c,
+            sig_row_c_next=sig_row_v_next if sig_row_c_next is None else sig_row_c_next,
             sig_g=sig_row_v,  # unused by _euler_ancestral_rf_step; any value is fine
             sig_g_next=sig_row_v_next,
             extra_args=None,
@@ -1387,4 +1396,124 @@ class TestAudioAncestralAxisSplit:
         assert torch.allclose(out, stock_out, atol=1e-6), (
             f"m=1 with audio must match stock RF-ancestral; max diff="
             f"{float((out - stock_out).abs().max())}"
+        )
+
+    def test_fractional_audio_carry_consistent_renoise(self) -> None:
+        """Fractional audio rows renoise on carry-consistent σ̃ = w·σ_v, not raw σ_v.
+
+        FAIL-THEN-PASS: pre-fix code did not populate sig_row_c / sig_row_c_next in
+        _StepContext, so the ancestral integration fell back to sig_row_v for all rows.
+        For fractional audio where sig_row_c (= w·σ_v) ≠ sig_row_v, the renoise amplitude
+        was wrong.  After the fix the step uses sig_row_c and the output matches the
+        carry-consistent reference.
+
+        sig_row_c = 0.3 and sig_row_v = 0.6 are deliberately distinct, ensuring the two
+        axes produce numerically different outputs so the test can unambiguously distinguish
+        which one is used.
+        """
+        carrier_val = 0.7
+        sigmas = torch.tensor([carrier_val, 0.4])
+
+        sig_row = torch.tensor([0.2])  # σ_a-shifted sig_row for the audio row
+        sig_row_next = torch.tensor([0.1])
+        sig_row_v = torch.tensor([0.6])  # raw σ_v axis (pre-fix would use this)
+        sig_row_v_next = torch.tensor([0.4])
+        # carry-consistent: σ̃ = w·σ_v where w ≈ sig_row/sig_g ≈ 0.5 → σ̃ = 0.3
+        sig_row_c = torch.tensor([0.3])
+        sig_row_c_next = torch.tensor([0.2])
+
+        x_prev = torch.tensor([[1.0, 2.0]])
+        model = _ScaleModel(0.8)
+        ns = _FixedNoiseSampler(torch.zeros_like(x_prev))
+
+        ctx = self._make_ctx(
+            sig_row,
+            sig_row_next,
+            sig_row_v,
+            sig_row_v_next,
+            sigmas,
+            x_prev,
+            model,
+            ns,
+            eta=0.0,
+            sig_row_c=sig_row_c,
+            sig_row_c_next=sig_row_c_next,
+        )
+        result = _euler_ancestral_rf_step(ctx)
+
+        carrier = torch.tensor(carrier_val)
+        denoised = model(x_prev, carrier)
+        v = (x_prev - denoised) / carrier
+
+        # Carry-consistent axis (post-fix expected, eta=0 → sigma_down=sip1 → ratio=sip1/si).
+        denoised_r_c = x_prev - sig_row_c * v
+        si_c = sig_row_c.clamp(min=1e-8)
+        ratio_c = sig_row_c_next / si_c
+        expected_c = ratio_c * x_prev + (1.0 - ratio_c) * denoised_r_c
+
+        # Raw σ_v axis (pre-fix behavior).
+        denoised_r_v = x_prev - sig_row_v * v
+        si_v = sig_row_v.clamp(min=1e-8)
+        ratio_v = sig_row_v_next / si_v
+        expected_v = ratio_v * x_prev + (1.0 - ratio_v) * denoised_r_v
+
+        # Sanity: two axis results must be numerically distinct (ensures test is valid).
+        assert not torch.allclose(expected_c, expected_v, atol=1e-4), (
+            "test setup invalid: carry-consistent and σ_v-axis results must differ"
+        )
+
+        # Post-fix: result must match carry-consistent axis.
+        assert torch.allclose(result, expected_c, atol=1e-6), (
+            f"fractional audio must renoise on carry-consistent σ̃; "
+            f"result={result}, expected_c={expected_c}"
+        )
+        # Post-fix: result must NOT match raw σ_v axis.
+        assert not torch.allclose(result, expected_v, atol=1e-4), (
+            f"fractional audio must NOT use raw σ_v axis; result={result}, expected_v={expected_v}"
+        )
+
+    def test_video_and_m1_audio_carry_is_noop(self) -> None:
+        """Video rows and m=1 audio rows: sig_row_c == sig_row_v → identical output.
+
+        When the carry-consistent sigma equals the raw σ_v axis (video rows: carry=1;
+        audio m=1: w=1), the ancestral integration is bit-exact to the pre-fix behavior.
+        Passing sig_row_c=sig_row_v and sig_row_c_next=sig_row_v_next must produce the
+        same result as if sig_row_c were not a separate field at all.
+        """
+        carrier_val = 0.7
+        sigmas = torch.tensor([carrier_val, 0.4])
+        sig_row_v = torch.tensor([0.6])
+        sig_row_v_next = torch.tensor([0.4])
+
+        x_prev = torch.tensor([[1.0, 2.0]])
+        model = _ScaleModel(0.8)
+        ns = _FixedNoiseSampler(torch.zeros_like(x_prev))
+
+        # sig_row_c equals sig_row_v (video / m=1 case).
+        ctx = self._make_ctx(
+            sig_row_v,
+            sig_row_v_next,
+            sig_row_v,
+            sig_row_v_next,
+            sigmas,
+            x_prev,
+            model,
+            ns,
+            eta=0.0,
+            sig_row_c=sig_row_v.clone(),
+            sig_row_c_next=sig_row_v_next.clone(),
+        )
+        result = _euler_ancestral_rf_step(ctx)
+
+        # Reference: ancestral update manually computed on the σ_v axis (eta=0).
+        carrier = torch.tensor(carrier_val)
+        denoised = model(x_prev, carrier)
+        v = (x_prev - denoised) / carrier
+        denoised_r = x_prev - sig_row_v * v
+        ratio = sig_row_v_next / sig_row_v.clamp(min=1e-8)
+        expected = ratio * x_prev + (1.0 - ratio) * denoised_r
+
+        assert torch.allclose(result, expected, atol=1e-7), (
+            f"video/m=1 rows with sig_row_c==sig_row_v must match σ_v reference; "
+            f"result={result}, expected={expected}"
         )
