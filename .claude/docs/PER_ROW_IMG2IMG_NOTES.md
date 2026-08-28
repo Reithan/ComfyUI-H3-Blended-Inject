@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (branch `wiki-dpmpp-spine`). stochastic-recovery-theory.md + sampler-class-support.md + audio-carry-identity.md: #76 root cause CONFIRMED (carrier vs sig_g).
+Last updated: 2026-08-27 (branch `wiki-dpmpp-spine`). audio-carry-identity.md: Consequence 2 first GPU observation (fractional-audio ringing); isolation pending fix-audio-carrier-recovery retest.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
