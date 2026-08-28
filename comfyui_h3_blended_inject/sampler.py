@@ -244,6 +244,11 @@ class _StepContext:
     # used by the ancestral integration so audio integrates on the σ_v trajectory,
     # matching stock sample_euler_ancestral_RF.
     sig_row_v_next: torch.Tensor  # per-row sigma on the σ_v axis at step i+1
+    sig_row_c: torch.Tensor  # carry-consistent per-row sigma: σ̃ = w·σ_v = sig_row·σ_v/σ_a.
+    # Equals sig_row_v for video rows (carry=1) and for audio rows at m=1 (w=1, bit-exact).
+    # Diverges from sig_row_v only for fractional (0<m<1) audio rows, where the packed audio's
+    # true noise amplitude follows the global carry σ_a/σ_v ratio, not the raw σ_v axis.
+    sig_row_c_next: torch.Tensor  # carry-consistent per-row sigma at step i+1 (same contract)
     sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
     sig_g_next: torch.Tensor  # global_sigma(i+1), per-row
     extra_args: dict[str, Any] | None
@@ -315,30 +320,35 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
 def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row RF-ancestral step (kills Bug B for euler_ancestral on H3).
 
-    Implements one step of ``sample_euler_ancestral_RF`` elementwise over the per-row sigma
-    tensors from the schedule-tail remap.  No r-scaling — the per-row sigma integration is
-    handled directly by the ancestral math.
+    Implements one step of ``sample_euler_ancestral_RF`` elementwise over the carry-consistent
+    per-row sigma tensors from the schedule-tail remap.  No r-scaling — the per-row sigma
+    integration is handled directly by the ancestral math.
 
     One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered by
-    projecting the velocity onto the σ_v-axis per-row sigma:
-    ``denoised_r = x_prev − σ_row_v·(x_prev − denoised)/σ_carrier``
+    projecting the velocity onto the carry-consistent sigma σ̃ = ``sig_row_c``:
+    ``denoised_r = x_prev − sig_row_c·(x_prev − denoised)/σ_carrier``
     (the conditioning wrapper labels the model with ``t_row = 1 − σ_row`` so it returns the
     per-row denoised; the velocity ``v = (x − denoised) / σ_carrier`` maps back to per-row
-    ``x0`` via ``sig_row_v``).  All ancestral integration terms (``sigma_down``,
+    ``x0`` via ``sig_row_c``).  All ancestral integration terms (``sigma_down``,
     ``alpha_ip1/alpha_down``, ``renoise_coeff``, ``ratio``) are computed elementwise over the
-    ``sig_row_v`` / ``sig_row_v_next`` tensors so that AUDIO rows integrate on the σ_v
-    trajectory (matching stock ``sample_euler_ancestral_RF``), while the per-row model LABEL
-    ``w = sig_row/sig_g`` remains on σ_a as required.
+    ``sig_row_c`` / ``sig_row_c_next`` tensors.
+
+    ``sig_row_c = w·σ_v`` where ``w = sig_row/sig_g`` is the per-row label fraction.  For
+    video rows carry=1 so ``sig_row_c == sig_row_v`` (no-op).  For audio rows at m=1, ``w=1``
+    so ``sig_row_c == σ_v == sig_row_v`` (bit-exact).  Only fractional (0<m<1) audio rows
+    diverge: the packed audio's true noise amplitude follows the global carry σ_a/σ_v ratio,
+    so renoise must integrate on σ̃ rather than the raw σ_v axis to avoid a carry-contract
+    violation.  The per-row model LABEL ``w = sig_row/sig_g`` remains on σ_a as required.
 
     Guarantees:
 
     - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
-      ``sig_row_v == sigmas[i] == carrier``, so ``denoised_r == denoised`` and all per-row
-      terms match the scalar stock values — given an identical noise draw the outputs are
-      bit-for-bit equal.
-    - **Terminal step** (``sig_row_v_next == 0``) falls out without a branch: ``sigma_down=0``,
+      ``sig_row_c == sig_row_v == sigmas[i] == carrier``, so ``denoised_r == denoised`` and
+      all per-row terms match the scalar stock values — given an identical noise draw the
+      outputs are bit-for-bit equal.
+    - **Terminal step** (``sig_row_c_next == 0``) falls out without a branch: ``sigma_down=0``,
       ``ratio=0`` → ``x = denoised_r``; ``renoise_coeff=0`` → no noise added.
-    - **m=0 rows** freeze: ``sig_row_v=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
+    - **m=0 rows** freeze: ``sig_row_c=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
       ``x = denoised_r = x_prev``; the outer ``where(never, clean, x)`` guard restores clean.
 
     The seeded noise sampler is built once on the first call (or taken from
@@ -384,16 +394,18 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
             }
         )
 
-    # Recover per-row x0 from global-carrier velocity (project onto σ_v axis for all rows).
+    # Recover per-row x0 from global-carrier velocity (project onto carry-consistent axis).
     v = (ctx.x_prev - denoised) / carrier
-    denoised_r = ctx.x_prev - ctx.sig_row_v * v
+    denoised_r = ctx.x_prev - ctx.sig_row_c * v
 
-    # Elementwise ancestral update over σ_v-axis per-row sigma tensors.
-    # Audio rows integrate on σ_v (matching stock sample_euler_ancestral_RF); the per-row
-    # model LABEL (w = sig_row/sig_g) remains on σ_a and is computed separately in the loop.
+    # Elementwise ancestral update over carry-consistent per-row sigma tensors (sig_row_c).
+    # For video rows and m=1 audio rows sig_row_c == sig_row_v (bit-exact, no change).
+    # For fractional audio rows sig_row_c = w·σ_v corrects the renoise axis to match the
+    # packed audio carry (σ_a/σ_v ratio encoded in the model label); the per-row LABEL
+    # (w = sig_row/sig_g) remains on σ_a and is computed separately in the outer loop.
     eps = 1e-8
-    si = ctx.sig_row_v.clamp(min=eps)
-    sip1 = ctx.sig_row_v_next
+    si = ctx.sig_row_c.clamp(min=eps)
+    sip1 = ctx.sig_row_c_next
     downstep_ratio = 1.0 + (sip1 / si - 1.0) * eta
     sigma_down = sip1 * downstep_ratio
     alpha_ip1 = 1.0 - sip1
@@ -589,6 +601,16 @@ def build_per_row_sampler_function(
             x_prev = x_cur
             sig_row_next = row_sigma(i + 1)
             sig_row_v_next = row_sigma_v(i + 1)
+            # Carry-consistent per-row sigma: σ̃ = w·σ_v.  For video rows carry=1 so this
+            # equals sig_row_v exactly.  For m=1 audio rows w=1 so σ̃=σ_v=sig_row_v (bit-exact).
+            # Only fractional (0<m<1) audio rows diverge, correcting the renoise axis mismatch.
+            w_next = (sig_row_next / sig_g_next.clamp(min=1e-8)).clamp(max=1.0)
+            if audio_mask is None:
+                sig_row_c = sig_row_v
+                sig_row_c_next = sig_row_v_next
+            else:
+                sig_row_c = torch.where(audio_mask, w * sig_v[i], sig_row_v)
+                sig_row_c_next = torch.where(audio_mask, w_next * sig_v[i + 1], sig_row_v_next)
             ctx = _StepContext(
                 model=model,
                 x_prev=x_prev,
@@ -598,6 +620,8 @@ def build_per_row_sampler_function(
                 sig_row_next=sig_row_next,
                 sig_row_v=sig_row_v,
                 sig_row_v_next=sig_row_v_next,
+                sig_row_c=sig_row_c,
+                sig_row_c_next=sig_row_c_next,
                 sig_g=sig_g,
                 sig_g_next=sig_g_next,
                 extra_args=extra_args,
