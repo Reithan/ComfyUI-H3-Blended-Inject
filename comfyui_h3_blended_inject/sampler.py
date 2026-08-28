@@ -27,6 +27,11 @@ sigmas for audio rows and raw video sigmas for video rows.  ``k_d`` / ``span`` d
 ``m`` and are identical for both modalities.  Audio rows are located by the packed video
 prefix length (the same boundary :func:`scale_packed_audio` uses).
 
+The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
+``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
+is the only native step registered here (PR1); stochastic (PR2) and multistep (PR3) steps plug in
+via the same ``_StepContext`` protocol.
+
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
 imports stay lazy so this module loads without a ComfyUI environment.
 """
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -219,6 +225,94 @@ def _shift_schedule(sig: torch.Tensor, from_shift: float, to_shift: float) -> to
     return to_shift * base / (1.0 + (to_shift - 1.0) * base)
 
 
+@dataclass
+class _StepContext:
+    """Per-step context passed to each row step function.
+
+    Carries all information a step function needs to compute the r-scaled row update for one
+    global step interval.  ``state`` is a mutable per-row history store reserved for multistep
+    samplers (PR3); it is unused in PR1.
+    """
+
+    model: Any
+    x_prev: torch.Tensor
+    i: int
+    sigmas: torch.Tensor  # raw schedule arg — same tensor the original passed to base_fn
+    sig_row: torch.Tensor  # per-row sigma at step i (audio rows on shifted schedule)
+    sig_row_next: torch.Tensor  # per-row sigma at step i+1
+    sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
+    sig_g_next: torch.Tensor  # global_sigma(i+1), per-row
+    extra_args: dict[str, Any] | None
+    callback: Any  # _cb(i)-wrapped callback, or None
+    disable: Any
+    kwargs: dict[str, Any]
+    base_fn: Callable[..., Any]
+    state: dict[str, Any] = field(default_factory=dict)
+
+
+#: Type alias for a per-row step function.
+StepFn = Callable[[_StepContext], torch.Tensor]
+
+
+def _fallback_step(ctx: _StepContext) -> torch.Tensor:
+    """Reproduce the original loop body: delegate to ``base_fn`` then apply r-scale.
+
+    This is the default path for any sampler not registered in ``_NATIVE_ROW_STEPS``.  It
+    preserves the original behavior exactly — no numerical change for any sampler.
+    """
+    x_base = ctx.base_fn(
+        ctx.model,
+        ctx.x_prev,
+        ctx.sigmas[ctx.i : ctx.i + 2],
+        extra_args=ctx.extra_args,
+        callback=ctx.callback,
+        disable=True,
+        **ctx.kwargs,
+    )
+    r = ((ctx.sig_row - ctx.sig_row_next) / (ctx.sig_g - ctx.sig_g_next).clamp(min=1e-8)).clamp(
+        min=0.0
+    )
+    return ctx.x_prev + r * (x_base - ctx.x_prev)
+
+
+def _euler_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row euler step: inline comfy's deterministic euler then apply r-scale.
+
+    Numerically equivalent to ``_fallback_step`` when ``base_fn`` is ``sample_euler`` with
+    default ``s_churn=0``.  Using the inlined version opens the seam for PR2 (RF-ancestral)
+    and PR3 (multistep) to extend this protocol without going through ``base_fn``.
+
+    The denom and dt use the raw ``ctx.sigmas[i]`` / ``ctx.sigmas[i+1]`` (the unmodified
+    schedule tensor, same dtype/device as the original ``base_fn`` call), exactly as
+    ``sample_euler`` would see; the per-row/audio behavior enters only through ``r``.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
+    sigma_i = ctx.sigmas[ctx.i]
+    denoised = ctx.model(ctx.x_prev, sigma_i * s_in, **extra_args)
+    d = (ctx.x_prev - denoised) / sigma_i
+    if ctx.callback is not None:
+        ctx.callback(
+            {
+                "i": 0,
+                "denoised": denoised,
+                "x": ctx.x_prev,
+                "sigma": sigma_i,
+                "sigma_hat": sigma_i,
+            }
+        )
+    x_base = ctx.x_prev + d * (ctx.sigmas[ctx.i + 1] - sigma_i)
+    r = ((ctx.sig_row - ctx.sig_row_next) / (ctx.sig_g - ctx.sig_g_next).clamp(min=1e-8)).clamp(
+        min=0.0
+    )
+    return ctx.x_prev + r * (x_base - ctx.x_prev)
+
+
+#: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
+#: this dict fall back to ``_fallback_step`` (original behavior, no change).
+_NATIVE_ROW_STEPS: dict[str, StepFn] = {"sample_euler": _euler_step}
+
+
 def build_per_row_sampler_function(
     base_fn: Callable[..., Any],
     m_packed: torch.Tensor,
@@ -353,6 +447,9 @@ def build_per_row_sampler_function(
                 flush=True,
             )
 
+        # Resolve the per-row step function once before the loop (keyed by base sampler name).
+        step = _NATIVE_ROW_STEPS.get(getattr(base_fn, "__name__", ""), _fallback_step)
+
         x_cur = x
         sig_row = row_sigma(0)
         for i in range(steps_n):
@@ -369,19 +466,24 @@ def build_per_row_sampler_function(
             if i == 0:
                 x_cur = w * x_cur + (1.0 - w) * clean
             x_prev = x_cur
-            x_cur = base_fn(
-                model,
-                x_cur,
-                sigmas[i : i + 2],
+            sig_row_next = row_sigma(i + 1)
+            ctx = _StepContext(
+                model=model,
+                x_prev=x_prev,
+                i=i,
+                sigmas=sigmas,  # raw schedule arg — matches what the original passed to base_fn
+                sig_row=sig_row,
+                sig_row_next=sig_row_next,
+                sig_g=sig_g,
+                sig_g_next=sig_g_next,
                 extra_args=extra_args,
                 callback=_cb(i),
-                disable=True,
-                **kwargs,
+                disable=disable,
+                kwargs=kwargs,
+                base_fn=base_fn,
             )
             # Per-row step scaling: each row integrates its OWN Δσ_row, not the global Δσ.
-            sig_row_next = row_sigma(i + 1)
-            r = ((sig_row - sig_row_next) / (sig_g - sig_g_next).clamp(min=1e-8)).clamp(min=0.0)
-            x_cur = x_prev + r * (x_cur - x_prev)
+            x_cur = step(ctx)
             sig_row = sig_row_next
         return torch.where(never, clean, x_cur)  # belt-and-braces d == 0 exact preserve
 

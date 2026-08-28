@@ -658,3 +658,253 @@ class TestBuildPerRowSamplerFunction:
         )
         out = fn(object(), torch.randn(1, 4), _decreasing(steps + 1))
         assert out.shape == (1, 4)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for step-dispatch tests
+# ---------------------------------------------------------------------------
+
+
+class _ScaleModel:
+    """Deterministic toy denoiser: denoised = x * scale (ignores sigma, extra_args)."""
+
+    def __init__(self, scale: float = 0.9) -> None:
+        self.scale = scale
+
+    def __call__(self, x: torch.Tensor, sigma_t: Any, **extra_args: Any) -> torch.Tensor:
+        return x * self.scale
+
+
+def _local_sample_euler(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    **kwargs: Any,
+) -> torch.Tensor:
+    """Deterministic euler matching comfy's sample_euler with s_churn=0.
+
+    Used as a reference base_fn for the equivalence tests.  Its ``__name__`` is patched
+    to ``"sample_euler"`` below so the dispatch registry routes it to ``_euler_step``.
+    The fallback path uses a copy renamed to something else.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        d = (x - denoised) / sigmas[i]
+        if callback is not None:
+            callback(
+                {
+                    "x": x,
+                    "i": i,
+                    "sigma": sigmas[i],
+                    "sigma_hat": sigmas[i],
+                    "denoised": denoised,
+                }
+            )
+        x = x + d * (sigmas[i + 1] - sigmas[i])
+    return x
+
+
+# Patch __name__ so the dispatch registry maps it to _euler_step.
+_local_sample_euler.__name__ = "sample_euler"
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: native euler step == fallback-wrapped euler step
+# ---------------------------------------------------------------------------
+
+
+class TestEulerStepEquivalence:
+    """_euler_step is algebraically identical to _fallback_step when base_fn is euler.
+
+    Tests run both paths over the same inputs and assert torch.allclose(atol=1e-6).
+    """
+
+    def _run_both(
+        self,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        *,
+        video_element_count: int | None = None,
+        sigmas_dense: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (native_out, fallback_out) for the same inputs.
+
+        Native: base_fn.__name__ == "sample_euler" → dispatches to _euler_step.
+        Fallback: base_fn.__name__ == "not_euler" → dispatches to _fallback_step,
+        wrapping the identical euler algorithm.
+        """
+        sched_kw = {"sigmas_dense": sigmas_dense} if sigmas_dense is not None else {}
+
+        # Native path: __name__ matches registry → inlined euler step.
+        euler_native = _local_sample_euler  # __name__ == "sample_euler" by definition
+        fn_native = build_per_row_sampler_function(
+            euler_native,
+            m,
+            clean,
+            _sched(**sched_kw),
+            video_element_count=video_element_count,
+        )
+        out_native = fn_native(model, x.clone(), sigmas)
+
+        # Fallback path: rename so registry misses → wraps euler via base_fn call.
+        def not_euler(  # noqa: ANN202
+            mod: Any,
+            xin: torch.Tensor,
+            sig: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kw: Any,
+        ) -> torch.Tensor:
+            return _local_sample_euler(mod, xin, sig, extra_args, callback, disable, **kw)
+
+        fn_fallback = build_per_row_sampler_function(
+            not_euler,
+            m,
+            clean,
+            _sched(**sched_kw),
+            video_element_count=video_element_count,
+        )
+        out_fallback = fn_fallback(model, x.clone(), sigmas)
+
+        return out_native, out_fallback
+
+    def test_equivalence_m_zero(self) -> None:
+        """m=0 rows: both paths return clean (where-guard), trivially equal."""
+        model = _ScaleModel(0.9)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.ones(1, 3) * 5.0
+        out_native, out_fallback = self._run_both(m, x, clean, _decreasing(4), model)
+        assert torch.allclose(out_native, out_fallback, atol=1e-6)
+
+    def test_equivalence_m_fractional(self) -> None:
+        """m=0.5 (fractional row): native euler == fallback euler."""
+        model = _ScaleModel(0.8)
+        m = torch.full((1, 3), 0.5)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        out_native, out_fallback = self._run_both(m, x, clean, _decreasing(5), model)
+        assert torch.allclose(out_native, out_fallback, atol=1e-6)
+
+    def test_equivalence_m_one(self) -> None:
+        """m=1 (fully denoised row): native euler == fallback euler."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        out_native, out_fallback = self._run_both(m, x, clean, _decreasing(4), model)
+        assert torch.allclose(out_native, out_fallback, atol=1e-6)
+
+    def test_equivalence_with_audio(self) -> None:
+        """With audio rows (video_element_count=2, shift_v=12, shift_a=3): still equal."""
+        model = _ScaleModel(0.85)
+        m = torch.full((1, 4), 0.5)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        out_native, out_fallback = self._run_both(
+            m, x, clean, _decreasing(4), model, video_element_count=2
+        )
+        assert torch.allclose(out_native, out_fallback, atol=1e-6)
+
+    def test_equivalence_with_dense_grid(self) -> None:
+        """Dense sigma grid active: native euler == fallback euler."""
+        model = _ScaleModel(0.9)
+        m = torch.full((1, 2), 0.5)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        steps = 3
+        sigmas = _decreasing(steps + 1)
+        dense = _decreasing(steps * steps + 1)
+        out_native, out_fallback = self._run_both(m, x, clean, sigmas, model, sigmas_dense=dense)
+        assert torch.allclose(out_native, out_fallback, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Step dispatch: native path chosen vs fallback path chosen
+# ---------------------------------------------------------------------------
+
+
+class TestStepDispatch:
+    """Dispatch selects _euler_step for 'sample_euler', _fallback_step for everything else."""
+
+    def test_native_euler_does_not_call_base_fn(self) -> None:
+        """When dispatched natively, base_fn is bypassed (inlined euler, not called)."""
+        base_called: list[bool] = []
+
+        def sample_euler(  # noqa: ANN202
+            model: Any,
+            x: torch.Tensor,
+            sigmas: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kwargs: Any,
+        ) -> torch.Tensor:
+            base_called.append(True)
+            return x  # would be called if fallback path were taken
+
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(sample_euler, m, torch.zeros(1, 2), _sched())
+        fn(model, x, _decreasing(3))
+        assert base_called == [], "native euler must not call the base_fn wrapper"
+
+    def test_fallback_calls_base_fn(self) -> None:
+        """Unknown sampler name → fallback path → base_fn called once per step."""
+        base = _RemapBase()
+        m = torch.ones(1, 2)
+        fn = build_per_row_sampler_function(base, m, torch.zeros(1, 2), _sched())
+        fn(object(), torch.randn(1, 2), _decreasing(3))
+        assert len(base.calls) == 2  # steps_n == 2 for _decreasing(3)
+
+    def test_euler_step_callback_none(self) -> None:
+        """_euler_step with callback=None takes the callback-None branch (no crash)."""
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(_local_sample_euler, m, torch.zeros(1, 2), _sched())
+        out = fn(model, x, _decreasing(3), callback=None)
+        assert out.shape == (1, 2)
+
+    def test_euler_step_callback_present(self) -> None:
+        """_euler_step with callback fires it once per step, index remapped to global step."""
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(_local_sample_euler, m, torch.zeros(1, 2), _sched())
+        fn(model, x, _decreasing(4), callback=cb)  # steps_n == 3
+        assert [d["i"] for d in seen] == [0, 1, 2]  # _cb remaps 0 → i each step
+        assert all("denoised" in d for d in seen)
+
+    def test_fallback_forwards_raw_sigmas_dtype(self) -> None:
+        """Fallback path must pass the raw sigmas (not sig_v) to base_fn.
+
+        sig_v = sigmas.to(device=x.device, dtype=x.dtype) silently down-converts a
+        float64 schedule to float32 when x is float32.  The original code passed the
+        raw schedule; this test would FAIL if sigmas=sig_v were used in _StepContext.
+        """
+        base = _RemapBase()
+        m = torch.ones(1, 2)
+        # x is float32; sigmas are float64 — mismatched dtype exposes any sig_v conversion.
+        x = torch.randn(1, 2, dtype=torch.float32)
+        sigmas = _decreasing(3).to(dtype=torch.float64)
+        fn = build_per_row_sampler_function(base, m, torch.zeros(1, 2), _sched())
+        fn(object(), x, sigmas)
+        assert base.calls[0]["sigmas"].dtype == torch.float64, (
+            "fallback must forward the raw sigmas dtype (float64), not the sig_v cast (float32)"
+        )
