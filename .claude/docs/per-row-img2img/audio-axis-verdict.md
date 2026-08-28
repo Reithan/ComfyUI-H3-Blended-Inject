@@ -74,10 +74,10 @@ discriminator is falsified. Do NOT present it as a validated fix for the audible
 "clean-ish, maybe a whistle" — possibly the Consequence-2 ρ residual, possibly prompt variation.
 Status: AMBIGUOUS, not validated. Separate minor thread; do not conflate with the primary bug.
 
-**Primary open bug (see [bugs.md](bugs.md) Bug E):** long-fade (~60f) VIDEO-latent interference
-(moiré/streamers/electric), sampler-independent, present on main, audio tracks via joint attention.
-RCA IN PROGRESS (anchored on fade length and the m→row→k_d schedule-tail remap / 17-frame grid
-interaction). Root cause NOT yet asserted — mark OPEN / under investigation.
+**Primary open bug (see [bugs.md](bugs.md) Bug E and [long-fade-grid-beat.md](long-fade-grid-beat.md)):**
+long-fade (~60f) VIDEO-latent interference (moiré/streamers/electric), sampler-independent, present
+on main, audio tracks via joint attention. Leading RCA: 17-frame grid-beat theory (CPU-supported,
+GPU-unverified); see [long-fade-grid-beat.md](long-fade-grid-beat.md) for mechanism and experiments.
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 

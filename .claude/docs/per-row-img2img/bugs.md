@@ -1,6 +1,7 @@
 <!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
      GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
-     D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN/RCA-in-progress) -->
+     D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, leading
+     RCA = 17-frame grid-beat theory, CPU-supported/GPU-unverified) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 subsequently falsified by fade-length GPU data (same date, late) · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -127,25 +128,14 @@ passthrough/no-inject run.
 **Fix** (branch `fix-optional-inject-list`): make `inject_list` optional so zero injects ==
 passthrough (no-op inject). **Status: FIXED, pending merge.**
 
-## Bug E — OPEN: Long-fade video-latent interference (moiré/streamers), sampler-independent, RCA in progress
+## Bug E — OPEN: Long-fade video-latent interference (moiré/streamers), sampler-independent
 
-**Symptom** (user, GPU 2026-08-28 late, multiple rollbacks): with a long fade (~60f), the video
-latent shows moiré / jagged interference / streamers / ribbons / electric-like patterns. Audio
-tracks the visual artifact (SFX: fabric/wrinkling, water, electricity) via A/V joint-attention
-coupling. At short fade (~30f) the artifact is absent regardless of sampler.
+**Symptom** (user, GPU 2026-08-28): moiré / streamers / electric patterns at ~60f fade, absent at ~30f,
+sampler-independent, audio tracks via joint attention, present on main before Fix A or σ̃.
 
-**Key controlled findings:**
-- Short fade (~30f): CLEAN under both euler and euler_ancestral.
-- Long fade (~60f): ARTIFACT under both euler AND euler_ancestral (sampler-independent).
-- Present on main before either fix: rollback to Fix A only (d70d1767) AND to pre-both-fixes
-  both still show it. Our σ̃ fix and Fix A neither cause nor fix it.
-- The artifact is VIDEO-PRIMARY; audio is a secondary symptom via joint attention.
-
-**Controlled variable:** fade length (30f vs 60f) — NOT sampler type.
-
-**RCA in progress.** Investigation is anchored on fade length and the m→row→k_d schedule-tail
-remap / 17-frame grid interaction. Root cause NOT yet asserted. A dedicated detail doc for this
-bug will be added as the investigation produces findings.
+**Leading RCA:** 17-frame grid-beat theory (CPU-supported, GPU-unverified) — see
+[long-fade-grid-beat.md](long-fade-grid-beat.md) for mechanism, contradicted alternatives, GPU
+experiments, and fix directions.
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).

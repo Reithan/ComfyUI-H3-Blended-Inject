@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). H2 FALSIFIED (fade-length confound); primary bug = long-fade video interference, RCA in progress — [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md).
+Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). Bug E RCA: 17-frame grid-beat theory, CPU-supported/GPU-unverified — [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -86,24 +86,22 @@ single engine via a per-row ancestral step. See
   debugging why comfy/H3 behaves a certain way.*
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
-- [bugs.md](per-row-img2img/bugs.md): A (audio scale, fixed), B (stochastic), E (long-fade video
-  interference, open, RCA in progress). *Read when debugging fractional-region artifacts.*
+- [bugs.md](per-row-img2img/bugs.md): A (fixed), B (stochastic/open), E (long-fade/open). *Read for fractional-region artifacts.*
+- [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
+  RCA — 17-frame grid-beat; contradicted alternatives; GPU experiments; fix directions. *Read for Bug E.*
 - [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived):**
-  ×S fix exact globally but leaks per-row for m<1 (C1/C2); C2 audibility AMBIGUOUS post-H2-falsification.
-  *Read when reasoning about fractional AUDIO artifacts or the carry.*
+  ×S fix globally exact; leaks per-row for m<1; C2 audibility AMBIGUOUS. *Read for fractional audio / carry.*
 - [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED free audio; H2 FALSIFIED (fade-length confound); primary long-fade video bug open; σ_a-LABEL proof valid.** *Read for euler_a audio.*
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*
-- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 source-confirmed finding:** multistep samplers degrade to first order under
-  the remap loop; per-row step-function design to support stochastic + restore 2nd order. *Read when revisiting sampler-class support.*
+- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 confirmed:** multistep degrades to
+  first-order under remap; step-function design for stochastic + 2nd-order. *Read when revisiting sampler support.*
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
-- [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md): MC's non-masked "H3
-  Custom Keyframes" injects `minimax_keyframes` cond rows (native context tokens, no
-  denoise/preserve); verdict: different tool, not a substitute; interop is free through our
-  sampler. *Read when considering a conditioning-target inject variant/toggle.*
+- [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md): MC's non-masked "H3 Custom Keyframes"
+  (`minimax_keyframes` cond rows); verdict: different tool, not substitute; interop free. *Read for conditioning-target inject.*
 - [highres-singleframe-underdenoise.md](per-row-img2img/highres-singleframe-underdenoise.md):
   **THEORY (UNVERIFIED):** single-frame stills at fractional `min_denoise` come out
   source-identical @1MP but clean @0.2MP; leading cause: fixed sigma-shift giving
@@ -118,18 +116,16 @@ single engine via a per-row ancestral step. See
   MODEL:** the two questions (neighbor-view vs anchor-resolution) + four knobs (A latent-content /
   B mask / C cond-aug / D composite); maps the "neighbors see clean, keyframe denoises full-time"
   ideal onto hybrid/route-2 (route-1 = worst fit). *Read to reason about cond+latent composition.*
-- [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md): **DESIGN
-  (build-first):** timed cond-removal on knob C; mechanism source-verified (payload COPY + layout
-  drop); gating, surface (`cond_hold_frac`). *Read when building/tuning the timed-removal prototype.*
+- [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md): **DESIGN:**
+  timed cond-removal on knob C; source-verified (payload COPY + layout drop). *Read when building timed-removal.*
 - [lanpaint-langevin-corrector.md](per-row-img2img/lanpaint-langevin-corrector.md): **REFERENCE
   (external code read):** LanPaint's Langevin inpainting corrector; verdict: new **route 4
   (per-σ inner-loop equilibration)** and two transplants; attention-logit boost (route-3) REJECTED
   2026-08-27. KILL RISK: if neighbor conditioning is t_row-label-gated not content-gated, both
   collapse to single-pass. *Read when considering a corrector/equilibration mechanism.*
-- [latent-hold-release/](per-row-img2img/latent-hold-release/index.md): **STATUS (SUPERSEDED,
-  route-1):** route-1 latent hold-and-release (branch `proto-latent-hold-release`); subfolder:
-  index + `mechanism-and-early-findings` + `attraction-and-envelope` + `hold-mechanism-and-confounds`
-  + full HOLD-series debug log. *Read only when working the superseded latent hold-and-release prototype.*
+- [latent-hold-release/](per-row-img2img/latent-hold-release/index.md): **STATUS (SUPERSEDED, route-1):**
+  hold-and-release prototype (branch `proto-latent-hold-release`); see subfolder index for child docs.
+  *Read only when working the superseded prototype.*
 - [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md): confirmed-working state +
   open paths. *Read when planning.*
 - [per-row-img2img/experiments-run.md](per-row-img2img/experiments-run.md): run-results index (40
@@ -141,8 +137,7 @@ single engine via a per-row ancestral step. See
   stabilization/cleanup work.*
 - [schedule-tail-late-delta](per-row-img2img/schedule-tail-late-delta.md): **SHIPPED (observer-label
   K/V split = production mechanism); H1 sole primary; H2/route-3/renoise-release/label-lie/ramp-join
-  FALSIFIED or DEAD; OFFLABEL-1 GPU 2026-08-28.** Fork resolved: observer-label K/V split (H4)
-  shipped; route-2 and accept-trade-off dropped. *Read for schedule-tail blend-fight.*
+  FALSIFIED or DEAD; OFFLABEL-1 GPU 2026-08-28.** *Read for schedule-tail blend-fight.*
 
 ## comfy-ref access (meta)
 
