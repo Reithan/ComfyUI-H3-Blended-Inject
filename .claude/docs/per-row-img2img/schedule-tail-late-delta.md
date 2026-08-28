@@ -1,4 +1,4 @@
-<!-- provenance: theory (H1 sole primary; H2/label-cliff FALSIFIED; label-confound PERMANENT; v1 withdrawn; v2 DISFAVORED; route-3/renoise-release/label-lie/ramp-join REJECTED or DEAD — OFFLABEL-1 GPU 2026-08-28) -->
+<!-- provenance: status (observer-split SHIPPED; H1 sole primary; H2/label-cliff FALSIFIED; label-confound PERMANENT; v1 withdrawn; v2 DISFAVORED; route-3/renoise-release/label-lie/ramp-join REJECTED/DEAD — OFFLABEL-1 GPU 2026-08-28) -->
 <!-- verified: 2026-08-27 · sampler.py @34a5925 lines ~404/487-516 (k_d, w-label, held composite); attention.py @b78cec87 lines 171-204 (wrap_attn, optimized_attention_override) -->
 # Schedule-tail blend fight: H1 legibility / H2 late-delta / H3 locality
 
@@ -19,12 +19,13 @@ own velocity prediction; label-lie family CLOSED. **H1 confound now PERMANENT:**
 label manipulation can cleanly isolate the label channel (structural property of the model).
 **Knob-B crux confirmed:** with label≡content consistency forced, a single latent row has one dof;
 blend and in-frame strength both ride it; true decoupling requires a second channel or second pass.
-**Open fork (no decision yet):** three candidates. (1) **observer-label K/V split** (leading
-candidate, built 2026-08-28, GPU-pending): inject row emits K/V under official label d while own
-prediction runs on rescheduled label; pins observed differential at d:1; H4-vs-H1 discriminating
-experiment; see [label-ratio-and-observer-split](schedule-tail-late-delta/label-ratio-and-observer-split.md).
-(2) route-2 two-pass (oracle-correct, 2× cost). (3) accept the single-trajectory trade-off and
-tune d per shot.
+**Fork RESOLVED — observer-label K/V split SHIPPED to production** (branch
+`implement-inject-schedule-remap`, off `main`) as the sole per-row mechanism, kv-only, audio port
+completed: inject row emits K+V under official label d while own prediction runs on rescheduled
+label; pins observed differential at d:1; H4-vs-H1 discriminated (H4 CONFIRMED on GPU); see
+[label-ratio-and-observer-split](schedule-tail-late-delta/label-ratio-and-observer-split.md). The
+two other candidates were DROPPED: (2) route-2 two-pass (oracle-correct, 2× cost); (3) accept the
+single-trajectory trade-off and tune d per shot.
 
 ## Children (read only the one your task needs)
 
@@ -40,5 +41,6 @@ tune d per shot.
   pre-build, 2026-08-28):** analytical falsification: official-level hold skips σ range between
   start values; compressed tail cannot recover; same under-denoised shape as all hold variants.
 - [label-ratio-and-observer-split](schedule-tail-late-delta/label-ratio-and-observer-split.md):
-  **THEORY/DESIGN (UNVERIFIED, BUILT 2026-08-28):** H4 label-ratio hypothesis + observer-label K/V split;
-  leading candidate; H4-vs-H1 discriminating experiment; source grounding, design, ablations.
+  **SHIPPED (production, `implement-inject-schedule-remap`):** H4 label-ratio hypothesis +
+  observer-label K/V split; H4 CONFIRMED on GPU; sole production mechanism, kv-only, audio port
+  completed; source grounding, design, ablations.

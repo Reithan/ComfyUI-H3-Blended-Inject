@@ -1,8 +1,13 @@
-<!-- provenance: confirmed (GPU-VALIDATED 2026-08-27, proto-schedule-tail-release) -->
+<!-- provenance: confirmed (PRODUCTION SHIPPED 2026-08-27, `implement-inject-schedule-remap`; GPU-VALIDATED as prototype 2026-08-27, proto-schedule-tail-release) -->
 <!-- verified: n/a — analytical only; comfy-ref model.py @b78cec87 lines 171/286-291/698-706 cited for source grounding -->
 # H4: Label-ratio hypothesis + Observer-label K/V split
 
-**Proposed:** 2026-08-28, branch `proto-schedule-tail-release`. **Built 2026-08-28** (commits 8da7cd9 + 3eee965). Leading candidate; GPU-unverified.
+**Proposed:** 2026-08-28, branch `proto-schedule-tail-release`. **Built 2026-08-28** (commits 8da7cd9 + 3eee965). GPU-CONFIRMED as prototype.
+
+**SHIPPED to production** (branch `implement-inject-schedule-remap`, off `main`) as the SOLE
+per-row img2img mechanism — always on, no toggles, kv-only (the `k`-only ablation was dropped).
+The **audio port is completed:** audio rows run the remap on the sigma-shifted audio schedule via
+`time_shift_sigma` (only σ VALUES differ by modality; `k_d`/`span` shared).
 
 Cross-links: [parent index](../schedule-tail-late-delta.md) · [data-and-hypotheses](data-and-hypotheses.md) ·
 [label-channel-probe](label-channel-probe.md) · [native-h3-mechanism](../native-h3-mechanism.md).

@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (`proto-schedule-tail-release`). H4 observer-label K/V split GPU-CONFIRMED — prototype bar met: [label-ratio-and-observer-split](per-row-img2img/schedule-tail-late-delta/label-ratio-and-observer-split.md).
+Last updated: 2026-08-27 (`implement-inject-schedule-remap`). Schedule-tail remap + observer KV split SHIPPED as the sole production mechanism; stock three-lever path + stochastic shim removed; audio port completed.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -56,11 +56,20 @@ single engine via a per-row ancestral step. See
 
 ## Current direction
 
-- **Deterministic-only**, prototype mode. Stochastic-sampler gate DEFERRED; the stochastic shim
-  may rot (user doesn't care).
-- Our approach: three levers (init-lerp + fractional denoise_mask conditioning + REQUIRED denoised
-  correction) with `noise_mask=None` and a post-composite for exact-preserve rows. See
-  [our-architecture.md](per-row-img2img/our-architecture.md).
+- **SHIPPED (production, branch `implement-inject-schedule-remap`, off `main`):** the schedule-tail
+  remap + observer-label K/V split is the SOLE, always-on per-row img2img mechanism — no toggles.
+  Mode is `rescheduled`: per-row schedule-tail remap (dense `steps²+1` σ-grid, exact stretched-tail
+  sigma) with per-row `r`-scaling onto each row's own compressed σ-tail, init-only clean composite
+  at step 0, truthful `w` labels, observer KV split always on (full K+V splice). **Audio port
+  completed:** audio rows run the remap on the sigma-shifted audio schedule via `time_shift_sigma`
+  (only σ VALUES differ by modality; `k_d`/`span` shared). Canonical detail:
+  [label-ratio-and-observer-split](per-row-img2img/schedule-tail-late-delta/label-ratio-and-observer-split.md).
+- **RETIRED:** the stock three-lever path (init-lerp + fractional denoise_mask conditioning +
+  denoised correction) and the deferred stochastic-sampler shim (Bug B) were DELETED; the remap's
+  per-row `r`-scaling replaces the denoised correction. [our-architecture.md](per-row-img2img/our-architecture.md)
+  now describes the retired stock path only.
+- **Deterministic-only** still holds: deterministic samplers correct; stochastic warns (RF renoise
+  not scale-invariant, gate still deferred).
 - **GPU-VERIFIED (2026-08-23, full user checklist @06c6bda):** fractional audio clean after the
   ×S fix (incl. non-default shift), keyframe `min_denoise` 0.2–0.3 good, keep-mode audio good,
   preview working. HEADLINE: at `min_denoise>0` from a keyframe, **MC pops over a ghost frame;
@@ -127,10 +136,10 @@ single engine via a per-row ancestral step. See
 - [code-quality-audit-2026-08-23.md](per-row-img2img/code-quality-audit-2026-08-23.md): module
   grades + prioritized cleanup findings from the end-of-prototype audit. *Read when doing
   stabilization/cleanup work.*
-- [schedule-tail-late-delta](per-row-img2img/schedule-tail-late-delta.md): **THEORY (H1 sole
-  primary; H2/route-3/renoise-release/label-lie/ramp-join FALSIFIED or DEAD; OFFLABEL-1 GPU
-  2026-08-28):** H1 confound permanent; open fork: observer-label K/V split (H4, leading
-  candidate) vs route-2 vs accept-trade-off. *Read for schedule-tail blend-fight.*
+- [schedule-tail-late-delta](per-row-img2img/schedule-tail-late-delta.md): **SHIPPED (observer-label
+  K/V split = production mechanism); H1 sole primary; H2/route-3/renoise-release/label-lie/ramp-join
+  FALSIFIED or DEAD; OFFLABEL-1 GPU 2026-08-28.** Fork resolved: observer-label K/V split (H4)
+  shipped; route-2 and accept-trade-off dropped. *Read for schedule-tail blend-fight.*
 
 ## comfy-ref access (meta)
 
