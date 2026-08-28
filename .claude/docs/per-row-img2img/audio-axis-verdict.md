@@ -1,6 +1,6 @@
-<!-- provenance: bug+proof (free-audio ancestral axis fix VALIDATED, controlled GPU 2026-08-28; earlier falsification retracted; σ_a-load-bearing-for-LABEL proof valid; one separate fractional-audio Consequence-2 bug OPEN) -->
-<!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch, no fractional injects, minimal graph);
-     supersedes the 94b1597 falsification (that run used fractional injects → conflated two phenomena);
+<!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 carry-contract fractional-audio renoise ROOT CAUSE CONFIRMED by discriminator matrix 2026-08-28; fix designed, awaiting GPU) -->
+<!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch);
+     Fix A: no-fractional-injects run VALIDATED; H2 matrix: euler+fade=CLEAN isolates renoise as fault;
      σ_a-label proof from source comfy-ref @b78cec87; commit 41c488d; prior branch fix-audio-carrier-recovery @2483914 -->
 # Audio ancestral axis mismatch — Fix A VALIDATED for free audio; one separate fractional bug remains
 
@@ -20,10 +20,10 @@ free-audio case:
 | STOCK KSampler (our node OUT), no injects | CLEAN | CLEAN |
 | OUR node, `main`, free audio (1 guide, no injects → all rows m=1) | CLEAN | **TINNY/REVERB/NOISY** |
 | OUR node, Fix A branch, same free-audio setup | CLEAN | **CLEAN** |
-| OUR node, Fix A branch, WITH a video fade-in inject | CLEAN* | audio distortion + loud noise IN THE FADE REGION only |
+| OUR node, Fix A branch, WITH a video fade-in inject | CLEAN (confirmed) | audio distortion + loud noise IN THE FADE REGION only (ancestral only — see H2 section below) |
 
-\*euler behaviour in the fade-region case is TBD (A/B pending); the loud noise was observed under
-the fade inject, localized to the fractional region — a SEPARATE bug (see below).
+euler+fade is now CONFIRMED CLEAN (discriminator matrix, 2026-08-28). The loud noise under the
+fade inject is ancestral-specific; root cause and fix design in the H2 section below.
 
 ## Fix A — VALIDATED for the free-audio (m=1) ancestral case
 
@@ -48,19 +48,50 @@ sampler-independent noise floor" framing is **WRONG and retracted** — there is
 under euler. The floor/noise the user heard under euler in the earlier session was in the
 WITH-fractional-injects setup: a different, fractional-region phenomenon (next section).
 
-## Remaining OPEN bug — fractional-region audio distortion (Consequence 2 shaped)
+## Fractional-region audio distortion — H2 carry-contract: ROOT CAUSE CONFIRMED, FIX DESIGNED
 
-With a VIDEO fade-in inject, audio distorts + emits loud noise IN THE FADE / fractional region.
-Mechanism (from `schedule.py:200-215` `RowSchedule.audio_denoise`): in `audio_mode="fade"` the
-audio rows follow the video denoise envelope, so a video fade compresses AUDIO rows to fractional m
-and they blend toward the packed clean S·A under the **[Consequence 2](audio-carry-identity.md) ρ
-mis-scale** (ρ≠1 for 0<m<1). This is the long-known fractional-audio ρ mis-scale, now reproduced —
-SEPARATE from the free-audio ancestral bug Fix A fixes.
+**Discriminator matrix** (controlled GPU, user, 2026-08-28, branch fix-audio-ancestral-axis-mismatch):
 
-**Still TBD (characterization in progress):** sampler-dependence (does deterministic euler also
-distort in the fade region?) and the exact `audio_mode` used. A euler A/B + an audio_mode
-confirmation are pending. Do NOT yet assert it is ancestral-specific OR fully sampler-independent.
-Tracked as the open item in [bugs.md](bugs.md).
+| setup | result |
+|---|---|
+| euler + fade (audio fractional 0<m<1) | CLEAN |
+| euler_ancestral + drop (audio m=1 free) | CLEAN |
+| euler_ancestral + keep (audio m=0 frozen) | CLEAN |
+| euler_ancestral + fade (audio fractional 0<m<1) | AUDIO NOISY |
+| video fractional under euler_ancestral | CLEAN |
+
+**What the matrix proves:** euler+fade CLEAN rules out [Consequence 2](audio-carry-identity.md) (ρ
+mis-scale) as the audible cause — euler exercises the identical σ_a init lerp and fractional clean
+blend, and is clean. It also rules out an init-axis mismatch (euler uses the same init). The ONLY
+difference between clean euler and noisy euler_ancestral is the ancestral RENOISE block
+(sampler.py:395-408). The fault is renoise-specific.
+
+**Root cause (H2, confirmed):** the H3 model applies a GLOBAL scalar carry = σ_a/σ_v to the audio
+slice every step (comfy-ref/comfy/ldm/minimax/model.py:528-538; output :548-550). The sampler's
+packed audio lives at scaled amplitude σ̃ = (σ_v/σ_a)·sig_row = w·σ_v. Fix A renoises on
+sig_row_v = σ̃ correctly ONLY when carry=1: video (carry=1, exact) and m=1 (w→1, validated).
+For fractional audio, sig_row = time_shift_sigma(sig_row_v) is nonlinear while carry ≠ 1, so
+σ̃ ≠ sig_row_v; the ancestral renoise (sigma_down/ratio/renoise_coeff on sig_row_v at :395-404)
+injects a mis-scaled noise magnitude every step → accumulates → audible noise. Masked at m=1
+(σ̃≡sig_row_v) and at m=0 (renoise_coeff→0). This is the audio-vs-video renoise divergence the
+user predicted: video renoise composes correctly (carry=1), audio's does not (carry≠1).
+
+**Fix design (H2 fix, on top of Fix A):** in `_euler_ancestral_rf_step`, swap sig_row_v/
+sig_row_v_next → carry-consistent σ̃/σ̃_next for ALL ancestral terms (denoised_r projection,
+si, sip1, sigma_down, alpha, renoise_coeff, ratio). Per row: construct `sig_row_c = sig_row_v`
+(video/m=1) or `w*sig_v[i]` (fractional audio, w=sig_row/sig_g.clamp(min=1e-8)).
+Guarantees: video byte-identical, m=1 bit-exact (w=1→σ̃=sig_row_v), m=0/terminal unchanged.
+The +1 term uses next-step globals (carry re-evaluated each model call). Leave global
+noise_sampler args (sigmas[i], sigmas[i+1]) unchanged.
+
+**Residual caveat:** σ̃ corrects renoise noise magnitude but NOT the packed clean-coefficient
+mismatch (Consequence 2 ρ). ρ is NOT the audible fault (euler+fade is clean despite identical ρ).
+If a faint residual survives the H2 fix on GPU, ρ-compensation is the next suspect.
+
+**Status:** fix designed + being implemented on branch fix-audio-ancestral-axis-mismatch;
+awaiting user GPU confirmation (task #77). Falsifiable prediction: euler_ancestral+fade audio
+becomes CLEAN; drop(m=1)/keep(m=0)/video stay clean and m=1 stays bit-identical.
+Tracked in [bugs.md](bugs.md).
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 

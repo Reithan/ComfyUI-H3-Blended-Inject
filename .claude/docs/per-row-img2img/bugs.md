@@ -1,4 +1,6 @@
-<!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A, GPU-validated 2026-08-28; C-remaining fractional-region audio: open/characterization-in-progress; D optional inject_list: fixed-pending-merge) -->
+<!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
+     GPU-validated 2026-08-28; C-remaining: H2 carry-contract renoise ROOT CAUSE CONFIRMED
+     2026-08-28, fix designed, awaiting GPU; D optional inject_list: fixed-pending-merge) -->
 <!-- verified: 2026-08-28 · controlled GPU A/B (user, branch fix-audio-ancestral-axis-mismatch, no fractional injects) reinstates Fix A; supersedes 94b1597 · repo @72b61c6 · D added 2026-08-28 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -98,21 +100,26 @@ by Fix A** (move denoised_r + si/sigma_down/ratio/renoise_coeff to the σ_v axis
 bit-exact vs stock ancestral, video byte-identical. σ_a stays load-bearing for the LABEL
 (model-contract proof still valid). Full verdict: [audio-axis-verdict.md](audio-axis-verdict.md).
 
-## Bug C-remaining (OPEN — fractional-region audio distortion, characterization in progress)
+## Bug C-remaining (H2 carry-contract renoise mis-scale — ROOT CAUSE CONFIRMED; fix designed, awaiting GPU)
 
 **Symptom** (user, GPU 2026-08-28, Fix A branch): with a VIDEO fade-in inject, audio distorts +
-loud noise IN THE FADE / fractional region only.
+loud noise IN THE FADE / fractional region only. euler+fade is CLEAN; only euler_ancestral+fade
+is noisy.
 
-**Mechanism (Consequence 2 shaped):** in `audio_mode="fade"` (`schedule.py:200-215`
-`RowSchedule.audio_denoise`) audio rows follow the video denoise envelope, so a video fade
-compresses AUDIO rows to fractional m; they blend toward the packed clean S·A under the
-[Consequence 2](audio-carry-identity.md) ρ mis-scale (ρ≠1 for 0<m<1). This is the long-known
-fractional-audio ρ mis-scale, now reproduced — SEPARATE from the free-audio ancestral bug above.
+**Root cause (H2, confirmed by discriminator matrix 2026-08-28):** the H3 model applies a GLOBAL
+carry = σ_a/σ_v to audio every step (comfy-ref/comfy/ldm/minimax/model.py:528-538). The sampler's
+packed audio lives at scaled amplitude σ̃ = (σ_v/σ_a)·sig_row. Fix A renoises on sig_row_v = σ̃
+correctly only when carry=1 (video) or m=1 (w→1). For fractional audio (0<m<1), σ̃ ≠ sig_row_v;
+the ancestral renoise (sigma_down/ratio/renoise_coeff on sig_row_v) injects a mis-scaled noise
+magnitude every step → accumulates → audible noise. euler has no renoise → clean with identical ρ
+mis-scale, which RULES OUT Consequence 2 ρ as the audible cause (real but inaudible for now).
 
-**Still TBD:** sampler-dependence (does deterministic euler also distort in the fade region?) and
-the exact `audio_mode` used. A euler A/B + audio_mode confirmation are pending. Do NOT yet assert
-it is ancestral-specific OR fully sampler-independent. **Status: OPEN, characterization in
-progress.**
+**Fix design (H2 fix, on top of Fix A):** swap sig_row_v → carry-consistent σ̃ for ALL ancestral
+terms in `_euler_ancestral_rf_step` (denoised_r, si, sip1, sigma_down, alpha, renoise_coeff,
+ratio). Full fix spec + falsifiable prediction: [audio-axis-verdict.md](audio-axis-verdict.md).
+
+**Status: fix designed + implemented on branch fix-audio-ancestral-axis-mismatch; awaiting GPU
+confirmation (task #77). Consequence 2 ρ is next suspect only if H2 fix leaves a residual.**
 
 ## Bug D
 

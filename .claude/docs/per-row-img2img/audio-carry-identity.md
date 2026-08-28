@@ -1,4 +1,6 @@
-<!-- provenance: confirmed C1/C2 (source-derived); C3 free-audio ancestral axis fix VALIDATED, GPU 2026-08-28 (audio-axis-verdict.md); σ_a-LABEL proof valid; Consequence 2 = live suspect for remaining fractional-audio distortion -->
+<!-- provenance: confirmed C1/C2 (source-derived); C3 free-audio ancestral axis fix VALIDATED,
+     GPU 2026-08-28; σ_a-LABEL proof valid; C2 ruled out as audible cause (euler+fade CLEAN,
+     discriminator matrix 2026-08-28); real-but-inaudible packed-clean error; next suspect if H2 fix leaves residual -->
 <!-- verified: 2026-08-28 · source-derived algebra (C1/C2); C3 Fix A validated (free audio), earlier falsification retracted — audio-axis-verdict.md;
      source base comfy-ref @b78cec87 · repo @06c6bda -->
 # Audio carry identity: why ×S is exact globally but leaks per-row
@@ -39,10 +41,14 @@ Error ratio `ρ = k·S·(1−m·σ_v)/(1−m·σ_a)`:
 - `σ → 1` (early steps): ρ → S for any m < 1; e.g. m=0 rows present up-to-×S-too-loud audio
   context to the DiT early in sampling.
 
-So fractional/preserved AUDIO rows see a mis-scaled clean component early. **Consequence 2 is the
-live suspect for the remaining fractional-region audio distortion** (video fade compresses audio
-rows to 0<m<1 under `audio_mode="fade"`; ρ≠1). It does NOT touch free (m=1) audio, where ρ = 1
-exactly — the free-audio ancestral distortion was a separate axis bug now FIXED by Fix A (below).
+So fractional/preserved AUDIO rows see a mis-scaled clean component early. **Consequence 2 is a
+real packed-clean error but is NOT the audible cause of the fractional-region audio distortion.**
+The discriminator matrix (2026-08-28, audio-axis-verdict.md) shows euler+fade=CLEAN — euler carries
+the identical ρ mis-scale and is clean, so ρ is inaudible. The actual audible cause is the H2
+carry-contract renoise mis-scale (ancestral-specific; see [audio-axis-verdict.md](audio-axis-verdict.md)).
+**Consequence 2 becomes the next suspect only if a faint residual survives the H2 fix on GPU.**
+It does NOT touch free (m=1) audio, where ρ = 1 exactly — that free-audio ancestral distortion was
+a separate axis bug now FIXED by Fix A (below).
 
 ## Consequence 3 — free-audio ancestral axis fix VALIDATED (controlled GPU 2026-08-28)
 
@@ -57,8 +63,10 @@ m=1 audio bit-exact, video byte-identical. Controlled GPU A/B (2026-08-28, no fr
 VALIDATED this. An earlier commit (94b1597) had called it FALSIFIED / "not the cure" based on a run
 WITH fractional injects that conflated two phenomena — RETRACTED as premature. σ_a remains
 LOAD-BEARING for the LABEL (model-contract proof, still valid). The one REMAINING open issue —
-fractional-region audio distortion under a video fade — is Consequence 2 shaped (see above and
-[bugs.md](bugs.md)), separate from this free-audio fix, characterization in progress.
+fractional-region audio distortion under a video fade — ROOT CAUSE CONFIRMED as H2 carry-contract
+renoise mis-scale (ancestral-specific; NOT Consequence 2 ρ), fix designed, awaiting GPU.
+Consequence 2 is real but inaudible; next suspect only if H2 fix leaves residual.
+See [audio-axis-verdict.md](audio-axis-verdict.md) and [bugs.md](bugs.md).
 
 ## If artifacts survive the axis fix — Consequence-2 (ρ) compensation
 
