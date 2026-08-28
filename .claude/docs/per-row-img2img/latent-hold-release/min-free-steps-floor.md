@@ -1,6 +1,6 @@
-<!-- provenance: theory (HOLD-26 design — IMPLEMENTED commit 074e443, GPU-FALSIFIED HOLD-27 2026-08-27) -->
-<!-- verified: 2026-08-27 · HOLD-27 GPU run (see section below); code-confirmed vs sampler.py ~502-570 / nodes.py 305-316 @074e443; branch proto-latent-hold-release -->
-# Min-free-steps floor for per-frame scheduled release
+<!-- provenance: status (SUPERSEDED — route-1; HOLD-26 design IMPLEMENTED 074e443, GPU-FALSIFIED HOLD-27 2026-08-27) -->
+<!-- verified: 2026-08-27 · HOLD-27 GPU run; code-confirmed vs sampler.py ~502-570 / nodes.py 305-316 @074e443; branch proto-latent-hold-release -->
+# Min-free-steps floor for per-frame scheduled release (SUPERSEDED)
 
 **Design status:** HOLD-26 — implemented (`074e443`), GPU-FALSIFIED (HOLD-27, 2026-08-27).
 Motivated by the HOLD-25 QA smudge (low-d rows lose spatial resolution) plus the pre-refinement

@@ -50,6 +50,7 @@ It maps onto the routes as follows (and NOT cleanly onto route-1):
   bias neighbor→anchor logits. Caveat: neighbors then attend MORE to the anchor's ACTUAL (partially-noised)
   hidden state — it boosts attention to a noisy representation, so it does NOT by itself deliver "see it as
   clean." Weaker fit to the ideal than the hybrid/route-2.
+  **Briefly PROMOTED under H1, then REJECTED 2026-08-27 (latent-side mandate + SDPA kernel-fallback perf); see [schedule-tail-late-delta](schedule-tail-late-delta.md).**
 - **Route-1 anchor-then-release (time-split):** does NOT match the ideal — the keyframe is frozen during hold
   (no denoise) then denoises in a TRUNCATED tail, and neighbors react to the release transition. The user's two
   worries about hold-and-release are BOTH valid; route-1 trades the ideal's simultaneity for one cheap scalar.
@@ -67,3 +68,9 @@ The user's ideal is sound and is the decoupling stated crisply. Its cheapest fai
 always-on hybrid** (watch for anchor re-freeze); its guaranteed-correct form is **route-2** (2× cost, no
 re-freeze, no truncation). Route-1 remains the cheap single-pass fallback but is the WORST fit to the stated
 ideal — note this when choosing the build order.
+
+**Schedule-tail expression of knob-B coupling (σ-shift convexity, source-confirmed):** step-space `k_d` maps
+to hugely superlinear start-σ via H3's shift (d=0.2→σ≈0.75), so a low-d inject presents as ~75%-noise to
+neighbors through the structure-setting window — treated as a peer, not an anchor. Only d=0.0 gets anchor
+treatment (GPU-confirmed 2026-08-27). The earlier "late-delta" timing theory is DEMOTED; the σ-shift account
+subsumes it. Proposed fix = select k_d in σ-space (UNVERIFIED). See [schedule-tail-late-delta](schedule-tail-late-delta.md).

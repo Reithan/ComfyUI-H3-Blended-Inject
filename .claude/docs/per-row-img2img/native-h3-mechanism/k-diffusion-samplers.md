@@ -1,14 +1,14 @@
 <!-- provenance: reference (comfy-ref file:line map) -->
 <!-- verified: 2026-08-23 · comfy-ref @b78cec87 -->
-# k_diffusion samplers — deterministic vs stochastic
+# k_diffusion samplers: deterministic vs stochastic
 
 Part of [native-h3-mechanism](../native-h3-mechanism.md). Read when deciding which samplers are
 supported or debugging per-row scale-invariance. Sibling internals:
 [model-and-scaling](model-and-scaling.md) · [sampler-loop](sampler-loop.md) ·
 [dit-forward](dit-forward.md).
 
-The real axis is **DETERMINISTIC (works free) vs genuinely-STOCHASTIC (ancestral/SDE, eta>0)** —
-NOT sampler order/family. `sampler_accepts_noise_sampler` (checks for `noise_sampler` in the
+The real axis is **DETERMINISTIC (works free) vs genuinely-STOCHASTIC (ancestral/SDE, eta>0)**,
+not sampler order/family. `sampler_accepts_noise_sampler` (checks for `noise_sampler` in the
 signature) OVER-detects: res_multistep has the param but is deterministic.
 
 - `sample_euler`[^euler]: plain, deterministic, NO RF reroute. `x += (x−denoised)·(σ_next−σ)/σ`

@@ -8,7 +8,7 @@ Index: [conditioning-row-inject](../conditioning-row-inject.md). What the cond p
 
 `visual_cond_noise_aug` is read ONLY in `_cond_video_rows` (line 502) + the segment-timestep table
 (581-585). It sets the timestep for the `"cond"` AND `"ref_img"` segments; the **`"text"` segment uses
-`t_v` — the USER PROMPT is NOT touched by the global** (answers user worry, 2026-08-24). BUT the global
+`t_v` — the USER PROMPT is NOT touched by the global.** BUT the global
 is SHARED across every keyframe cond row AND every ref2va reference image uniformly. ⚠ **lever 1 (bake
 per-keyframe strength into each latent) is FALSIFIED — see the ⚠ FALSIFIED section:** the timestep half of
 `aug` is global and not per-row-settable for cond rows, so a latent-only per-keyframe pre-blend renders as
@@ -54,9 +54,7 @@ single-scalar `aug` and the single concatenated `cond_video_latents` list (model
   refs all land in ONE `cond_video_latents` list (model_base.py:2186+2191) under one `vis_aug`; audio refs under
   one `aud_aug`. "Row-anchored" (keyframes/guide, positioned by `resolved_frame_index`) vs "not" (refs) affects
   POSITION only, never aug.
-- To get the *coupled* behavior per-frame you'd need either (a) a forward-wrapper overriding the cond segment's
-  per-row mod index (invasive core patch), or (b) accept **global** `aug` when no conflicting refs are present.
-  Global `aug` is the only native lever that actually works — it just isn't per-frame.
+- Global `aug` is the only native lever that works; per-frame equivalent requires an invasive core patch.
 
 ## ⚠ CLARIFIED (GPU+source, 2026-08-24) — the mask relabels the OUTPUT row, NOT the guide
 
@@ -93,12 +91,10 @@ lever (H3 A/V temporal inpaint; LanPaint's m=0 masks) whose composite preserves 
 designed for hard preserve (m∈{0,1}), where clean-composite + clean-label is self-consistent. It is **not**
 "meant to augment the guide," and it needs a real clean latent in the row (not a guide) to be meaningful.
 
-**RESOLUTION — where per-frame fractional denoise actually lives:** OUTPUT-row per-frame timestep (mask) **+
-clean still injected into that row's latent**, WITHOUT the composite ghost = **exactly our per-row img2img**
-(`noise_mask=None` so `KSamplerX0Inpaint` is skipped, per-row timestep supplied through the model path, +
-manual denoised correction — [our-architecture](../our-architecture.md)). The guide (global-aug cond token) is an
-optional, separate neighbor-anchor. So the fractional home is confirmed to be the **latent + mask** path, and
-the high-res under-denoise bug we chase is a property of THAT path (T_N collapse), not of the missing cond knob.
+**RESOLUTION:** per-frame fractional denoise lives in the OUTPUT-row latent + mask path
+(`noise_mask=None`, per-row timestep, denoised correction — [our-architecture](../our-architecture.md)).
+A clean-aug cond token is an optional neighbor-anchor on top. The high-res under-denoise bug
+(T_N collapse) is a property of that latent path, not a missing cond knob.
 
 ## ⚠ DATA — fractional-aug cond token is itself a CONTAGION SOURCE (GPU, 2026-08-24)
 
@@ -107,12 +103,9 @@ the high-res under-denoise bug we chase is a property of THAT path (T_N collapse
 BUT "contagion" noise blobs propagate out from the injected frames — milder than test 2 (our faithful latent
 denoise partly counteracts) but present.
 
-**Diagnosis:** `aug=0.4` means the cond latent is `0.4·clean + 0.6·noise` labeled at `t=0.4` (= "40% denoised"
-in the user's correct mental model). So the guide is a **60%-noise reference** and neighbors attending to it
-pick up its noise structure → contagion. **Rule: a fractional-aug cond token SPREADS its own noise via
-attention.** If a cond token is used at all it should be **clean (`aug→0.999`)**; fractional strength does NOT
-belong on the cond token (it belongs on the latent row, where the denoise trajectory lives). This prunes the
-cond/latent composition space: **no fractional-aug cond in any hybrid.**
+**Diagnosis:** `aug=0.4` means the cond latent is `0.4·clean + 0.6·noise` labeled at `t=0.4`. The guide is a **60%-noise reference**;
+neighbors pick up its noise → contagion. **Rule:** clean cond only (`aug→0.999`); fractional strength belongs on the latent row,
+not the cond token. **No fractional-aug cond in any hybrid.**
 
 ## ⚠ DATA — clean-aug (0.999) cond token FREEZES the anchor (GPU, 2026-08-24)
 
@@ -140,15 +133,10 @@ in one pass alongside a cond token). But the MECHANISM is NOT settled — two ca
 
 - **(A) suppression/freeze** *(weaker)* — the clean cond PREVENTS the latent from denoising; the raw latent
   leaks separately. ⚠ **Disfavored by data:** a true freeze would show anchor `|inp|` NOT moving.
-- **(B) row-pinned ATTRACTOR** *(user, 2026-08-24 — preferred)* — the latent DOES undergo the fractional
-  denoise, but the row-pinned cond token is a **persistent attractor**: every denoise step pulls the anchor's
-  trajectory back toward the originally-injected latent, AND drags neighbors toward it too. The pre-denoise
-  textures/shapes spreading through the timeline are the attractor winning each step, not denoise being absent.
-  **Supported by the 1MP debug data:** the anchor row `|inp|` moved `0.56→0.70` ("denoises fully, not frozen")
-  while predicted x0 kept tracking `clean`=source — the row IS denoising but is continuously re-pulled to source.
+- **(B) row-pinned ATTRACTOR** *(preferred)* — the latent undergoes fractional denoise, but the row-pinned cond token
+  re-pulls the anchor toward source each step and drags neighbors with it. **Supported by 1MP debug data:** anchor
+  `|inp|` moved `0.56→0.70` (denoising, not frozen); predicted x0 tracked `clean`=source throughout.
 
-**Why the distinction matters for the fix:** under (B) the denoise machinery works — the cond token is a
-standing pull. Removing/weakening that cond token late (mode-switch hold-and-release) should let the
-already-happening denoise stand → the release path is well-motivated. Under (A) a late release would have to
-start denoise from scratch. Either way, a cond token co-present with a raw latent gives freeze-look + contagion;
-fractional aug gives denoise-with-contagion — never clean anchor + no contagion.
+**Why the distinction matters:** under (B), denoise is ongoing; cond token removal lets it stand. Under (A), removal
+would restart denoise from scratch. Either way: cond token co-present with raw latent gives freeze-look + contagion;
+fractional aug gives denoise-with-contagion. No config gives clean anchor + no contagion.

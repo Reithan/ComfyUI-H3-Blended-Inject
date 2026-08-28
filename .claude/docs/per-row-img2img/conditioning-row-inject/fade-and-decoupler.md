@@ -44,7 +44,7 @@ rows* and reduce VAE-interior softness, at ~zero ghost risk. Test as **pass-thro
 (wire MC's `H3 Custom Keyframes` upstream of our sampler — it already flows through, see below),
 measure, and only then consider a convenience toggle.
 
-## SHARPENED (2026-08-24) — the cond token as a NATIVE crux-decoupler (route 3 by other means)
+## SHARPENED (2026-08-24) — the cond token as a NATIVE crux-decoupler (achieves route-3 goal via cond channel; attention-logit route 3 itself REJECTED 2026-08-27)
 
 **New GPU data (user, 2026-08-24):** MC "H3 Custom Keyframes" (= this native `minimax_keyframes`
 path) blends r40 & r60 **very well at 1MP**, but the anchors look "wrong" — the output rows COPY the

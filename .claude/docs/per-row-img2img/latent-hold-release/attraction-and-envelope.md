@@ -1,6 +1,6 @@
-<!-- provenance: status (live GPU debug thread + Fable analysis; route-1 latent hold-and-release) -->
+<!-- provenance: status (SUPERSEDED — route-1; live GPU debug thread + Fable analysis) -->
 <!-- verified: 2026-08-25 · GPU runs (hold A/B, denoise=0.0) + Fable code audit @proto-latent-hold-release -->
-# Attraction & the envelope fork (Findings 4–6)
+# Attraction & the envelope fork (Findings 4–6, SUPERSEDED)
 
 Index: [index](index.md). Build + earlier findings: [mechanism-and-early-findings](mechanism-and-early-findings.md).
 Mechanism trace, invariance, and the provenance confound (Findings 7–10):

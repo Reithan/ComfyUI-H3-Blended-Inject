@@ -48,20 +48,15 @@ the primary path; this is a fallback if raising effective-m alone doesn't restor
   **α=√5 is a LOWER bound**; the true resolution correction is steeper (self-reconstruction is a
   soft threshold in SNR, not the √(token-ratio) power law alone). Recalibrate α from the kill-shot's
   displacement ratio `R`, don't assume √5.
-- **REBOUND (0.7 run, live, row 40 `|inp|`):** fell through steps ~20-30 then **rebounded UP to
-  0.7058 by step 38** — landing on the same ~0.70 source-structure norm as the 0.5 run's final 0.697.
-  **This is the self-reconstruction fixed point caught in the act, and it is fully deterministic** —
-  NB the sampler is plain `euler`, which injects NO per-step noise (that's euler_a/SDE). The only
-  noise anywhere is the ONE-TIME initial lerp (lever 1, `x_r=m·noise+(1−m)·clean`) baked into the
-  start latent at σ≈m·σ_max. So the dip-then-rebound is purely the shape of the deterministic ODE
-  trajectory of H3's rectified-flow velocity field: early/mid (higher σ) the field still carries the
-  latent AWAY from source (the dip, real divergence); as σ→0 an RF field collapses to the nearest
-  data-manifold point, which for a barely-perturbed structured latent IS the source → the trajectory
-  curves back (rebound). Even at 0.7 the frame is **recaptured** → strong confirmation that **0.7 is
-  still below threshold and α=√5 undershoots.** The fix must push m past the point where the
-  mid-trajectory divergence escapes the source's basin before the σ→0 collapse re-captures it.
-  ("RF" throughout = H3's model formulation, integrated deterministically by euler — NOT an
-  ancestral sampler.)
+- **REBOUND (0.7 run, live, row 40 `|inp|`):** fell through steps ~20-30 then rebounded to 0.7058 by
+  step 38 — the same ~0.70 source-structure norm as the 0.5 run's 0.697. Fully deterministic: the
+  sampler is plain `euler` (no per-step noise; only the ONE-TIME initial lerp at σ≈m·σ_max). The
+  dip-then-rebound is the deterministic ODE trajectory of H3's rectified-flow field: early/mid the
+  field carries the latent AWAY from source; as σ→0 the RF field collapses to the nearest
+  data-manifold point, which for a barely-perturbed structured latent IS the source → trajectory
+  curves back. Even at 0.7 the frame is **recaptured** → confirms **0.7 is below threshold and
+  α=√5 undershoots.** The fix must push m past the point where mid-trajectory divergence escapes
+  the source basin before σ→0 re-captures it.
 
 ## Cross-inject temporal contagion (user, 0.95 run — injects are NOT independent)
 

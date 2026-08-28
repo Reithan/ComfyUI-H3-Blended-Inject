@@ -1,6 +1,6 @@
-<!-- provenance: status (prototype design + early GPU debug findings; route-1 latent hold-and-release) -->
+<!-- provenance: status (SUPERSEDED — route-1; prototype design + early GPU debug findings) -->
 <!-- verified: 2026-08-25 · GPU runs + Fable audit + comfy-ref source -->
-# Mechanism & early findings (1–3)
+# Mechanism & early findings (1–3, SUPERSEDED)
 
 Index: [index](index.md). Current live thread: [attraction-and-envelope](attraction-and-envelope.md).
 
