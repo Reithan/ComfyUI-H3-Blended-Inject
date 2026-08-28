@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (`implement-inject-schedule-remap`). Schedule-tail remap + observer KV split SHIPPED as the sole production mechanism; stock three-lever path + stochastic shim removed; audio port completed.
+Last updated: 2026-08-27 (`main`). sampler-class-support.md: source-confirmed first-order finding + per-row step design (stochastic/2nd-order) + 3-PR delivery plan (tasks #66–#70).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -69,7 +69,7 @@ single engine via a per-row ancestral step. See
   per-row `r`-scaling replaces the denoised correction. [our-architecture.md](per-row-img2img/our-architecture.md)
   now describes the retired stock path only.
 - **Deterministic-only** still holds: deterministic samplers correct; stochastic warns (RF renoise
-  not scale-invariant, gate still deferred).
+  not scale-invariant, gate still deferred). (Multistep runs first-order under remap — see [sampler-class-support.md](per-row-img2img/sampler-class-support.md).)
 - **GPU-VERIFIED (2026-08-23, full user checklist @06c6bda):** fractional audio clean after the
   ×S fix (incl. non-default shift), keyframe `min_denoise` 0.2–0.3 good, keep-mode audio good,
   preview working. HEADLINE: at `min_denoise>0` from a keyframe, **MC pops over a ghost frame;
@@ -94,6 +94,8 @@ single engine via a per-row ancestral step. See
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*
+- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 source-confirmed finding:** multistep samplers degrade to first order under
+  the remap loop; per-row step-function design to support stochastic + restore 2nd order. *Read when revisiting sampler-class support.*
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
@@ -151,8 +153,6 @@ for a single file). Checked out now:
 `comfy/k_diffusion/sampling.py`, `comfy/ldm/minimax/`,
 `comfy_extras/{nodes_differential_diffusion,nodes_minimax_h3}.py`.
 
-**Verification stamps:** every wiki doc carries a `<!-- verified: <date> · <source> @<sha> -->`
-comment on line 2. It names the date and exact HEAD SHA(s) of each source repo its file:line refs
-were checked against. Refresh the stamp (date + SHA) whenever you re-verify a doc. When a cited
-SHA no longer matches the current checkout, treat line numbers as approximate hints and navigate
-by symbol name instead.
+**Verification stamps:** line 2 of every wiki doc — `<!-- verified: <date> · <source> @<sha> -->`.
+Refresh date + SHA whenever you re-verify. Stale SHA ⇒ treat line numbers as hints; navigate by
+symbol name instead.

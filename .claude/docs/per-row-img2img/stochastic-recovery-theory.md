@@ -2,7 +2,12 @@
 <!-- verified: 2026-08-23 · repo @c2b3bc6 -->
 # THEORY: recovering stochastic samplers via a per-row ancestral step
 
-**Status: THEORY / hypothesis. Not implemented, not GPU-verified.** This revises the earlier
+**Status: THEORY / hypothesis. Not implemented, not GPU-verified.** The theory carries over to
+the shipped schedule-tail remap in simplified form — the remap loop already owns per-row σ tensors
+and truthful labels, so the corrected-denoised identity is not needed; see
+[sampler-class-support.md](sampler-class-support.md) for the remap-era design and the
+SOURCE-CONFIRMED finding that multistep samplers currently run first-order under the remap loop.
+This revises the earlier
 "stochastic is a fundamental dead end / would need two engines" verdict in
 [differential-diffusion · duality](differential-diffusion.md#the-duality-the-real-reason-this-isnt-simple)
 and memory `prototype-goal-fade-mask-parity`. That verdict was correct **about the magnitude
