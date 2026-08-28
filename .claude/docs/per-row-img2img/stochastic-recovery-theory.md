@@ -117,9 +117,19 @@ injects at fractional min_denoise d=0.20 and d=0.15, fade-in at start, 20 steps;
 (deterministic baseline) and `euler_ancestral` (new RF-ancestral path) tested.
 Result: no grey static, no corruption on fractional or preserved rows, no ghosting;
 euler_ancestral quality matches euler.
-The linchpin identity `v = (x − denoised)/σ_carrier`, `denoised_r = x − σ_row·v` holds on the
-real H3 model for the single-eval RF-ancestral path — **no hidden σ-dependence detected beyond
-the label channel**. Bug B is killed for euler_ancestral.
+The linchpin identity `v = (x − denoised)/σ_g`, `denoised_r = x − σ_row·v` (σ_g = per-modality
+global: σ_v for video, σ_a for audio) holds for video on the real H3 model — **no hidden
+σ-dependence detected beyond the label channel**. Bug B is killed for euler_ancestral (video).
 Generalizing: PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add
 multistep history / a second in-step eval — de-risked by this result, but their own GPU gates
 are still required (tasks #70, #73).
+
+→ **AUDIO: OPEN — root cause CONFIRMED 2026-08-27 (task #76).** GPU spike revealed euler_a audio
+hiss. Root cause: implementation divides by `ctx.sigmas[i]` (σ_v, video carrier) instead of
+`ctx.sig_g` (per-modality global). Packed audio lives on the σ_v trajectory
+([audio-carry-identity.md](audio-carry-identity.md):24) so comfy's `denoised` is correct, but
+recovery multiplies by `sig_row` at σ_a scale — effective lerp weight `w/S ≈ w/4`: audio rows
+under-denoise ~4×; at m=1 ~75% of terminal noise survives → the hiss (matches observed symptom).
+Fix: `v = (x−denoised)/ctx.sig_g`. Video is a provable no-op (sig_g == sigmas[i] for video;
+#68 GPU pass cannot regress). Bug also in PR3's recovery reuse; PR3 held (user decision 2026-08-27).
+`renoise_coeff` undershoot is a secondary contributor. GPU perceptual confirm pending (task #76).

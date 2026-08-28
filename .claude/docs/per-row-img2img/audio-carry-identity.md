@@ -41,6 +41,17 @@ Error ratio `ρ = k·S·(1−m·σ_v)/(1−m·σ_a)`:
 So fractional/preserved AUDIO rows see a mis-scaled clean component early; whether this is
 perceptible is **unverified** (the DiT may be robust to context loudness; the label is correct).
 
+## Consequence 3 / #76 root cause: velocity recovery must use per-modality σ_g
+
+Line 24 above: packed audio lives on the σ_v trajectory (`x_audio = σ_v·ε + (1−σ_v)·S·A`), so
+comfy's `denoised` (formed with σ_v) is correct. But per-row velocity recovery forms
+`denoised_r = x − σ_row·v` where `σ_row` is at σ_a scale for audio rows. If the recovery divides
+by σ_v (`ctx.sigmas[i]`, the video carrier) instead of `ctx.sig_g` (per-modality global), the
+effective lerp weight becomes `σ_a/σ_v = w/S ≈ w/4`: audio rows under-denoise ~4×; at m=1 ~75%
+of pre-final noise survives → the euler_a hiss (task #76, CONFIRMED analytically 2026-08-27).
+Fix: divide by `ctx.sig_g`. Video is a no-op (`sig_g == sigmas[i]` for video), so this cannot
+regress the #68 GPU pass. GPU perceptual confirm pending (task #76 verify).
+
 ## If GPU retest shows fractional-audio artifacts
 
 A wrapper-side per-row affine compensation is derivable: adjust the audio slice of the wrapper's
