@@ -1,8 +1,8 @@
 <!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
      GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, leading
-     RCA = ramp-start row adjacent to chunk reset row (local_row∈{1,4}); CPU-exact 13/13, GPU
-     out-of-sample pending; chunk-seam decode-overlap mechanism) -->
+     pattern = ramp-length band (L∈~[51,64]); S2 cell-alignment GPU-FALSIFIED 2026-08-28;
+     3-model confound (ramp-band/held+ramp/trailing-free-heals), decoupling factorial pending) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 subsequently falsified by fade-length GPU data (same date, late) · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -135,11 +135,18 @@ passthrough (no-op inject). **Status: FIXED, pending merge.**
 frozen held block coexists with a long fade ramp; sampler-independent; audio tracks via joint
 attention; present on main before Fix A or σ̃.
 
-**Leading RCA:** ramp-start row adjacent to a chunk reset row (`local_row ∈ {1,4}`,
-i.e. `global_row % 5 ∈ {1,4}`); CPU-exact separator (13/13), GPU out-of-sample pending;
-mechanism = chunk-seam decode-overlap (same confirmed H3 failure as task #25 pop).
-See [long-fade-grid-beat.md](long-fade-grid-beat.md) for the full table, retired
-held+ramp confound, structural evidence, and pending GPU predictions.
+**Descriptive pattern (17 configs):** error iff ramp length L = fade_out − end_keyframe ∈ ~[51,64];
+CLEAN iff L ≤ 50 or L ≥ 68. The c=39→40 flip (L 51→50, same latent row) shows a continuous
+frame-length threshold, not grid-quantized.
+
+**S2 cell-alignment — GPU-FALSIFIED 2026-08-28.** S2 predicted error iff ramp-start
+`local_row ∈ {1,4}`; broke on 3 of 4 out-of-sample GPU runs. Retirement of "held+ramp" framing
+(commit 4f695e0) is REVERSED — held+ramp is back as one of 3 equally-fitting models.
+
+**Three-model confound (all fit 17 points):** M-A ramp band L∈~[51,64]; M-B held≥~30 AND
+ramp≥~51; M-C ramp≥~51 AND no trailing free region. Decoupling factorial (3 runs) PENDING.
+See [long-fade-grid-beat.md](long-fade-grid-beat.md) for full data table, factorial design,
+and epistemic note on covariable sweeps.
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).

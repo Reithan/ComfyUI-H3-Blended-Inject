@@ -76,9 +76,9 @@ Status: AMBIGUOUS, not validated. Separate minor thread; do not conflate with th
 
 **Primary open bug (see [bugs.md](bugs.md) Bug E and [long-fade-grid-beat.md](long-fade-grid-beat.md)):**
 long-fade VIDEO-latent interference (moiré/streamers/electric), sampler-independent, present on
-main, audio tracks via joint attention. Leading RCA (S2): artifact iff ramp-start row is adjacent
-to a chunk reset row (`local_row ∈ {1,4}`); CPU-exact 13/13, GPU out-of-sample pending;
-mechanism = chunk-seam decode-overlap. Prior "held+long-ramp" framing retired as a confound.
+main, audio tracks via joint attention. Leading pattern: ramp-length band L∈~[51,64] (ERROR);
+S2 cell-alignment GPU-FALSIFIED 2026-08-28 (3/4 mispredicted); held+ramp hypothesis UN-RETIRED;
+3-model confound (ramp-band / held+ramp / trailing-free-heals), decoupling factorial pending.
 See [long-fade-grid-beat.md](long-fade-grid-beat.md).
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
