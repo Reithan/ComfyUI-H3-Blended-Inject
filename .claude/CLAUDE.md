@@ -24,6 +24,19 @@ Start at [`.claude/docs/PER_ROW_IMG2IMG_NOTES.md`](docs/PER_ROW_IMG2IMG_NOTES.md
 summary + direction doc. It links into `.claude/docs/per-row-img2img/` for drill-down detail.
 Read the top doc first, then only the child docs the current task needs.
 
+### Search the wiki, don't just follow links
+
+Top-down reading from the index is for ORIENTATION. When investigating a **specific** thing — a
+symbol, a value, a rationale ("why does audio use σ_a?"), a past decision — SEARCH the whole
+`.claude/docs/` tree with a content-search tool (Grep, or `grep -rn` via Bash) BEFORE concluding.
+The index and cross-links are incomplete: the page that answers your question is often NOT linked
+from the docs you're already reading (the σ_a design rationale lived in `schedule-tail-late-delta/`,
+unlinked from the fix docs). Link-following alone misses it; a grep finds it. When you hand a wiki
+question to a subagent, tell it to grep the tree, not just read linked docs.
+
+Grep-pattern gotcha: a shell-safety hook rejects `grep` patterns containing `|` (reads as a pipe).
+Use repeated `-e PATTERN` flags for alternation instead of `-E 'a|b'`.
+
 ### Wiki edits and audit passes run in a subagent
 
 All wiki updates and audit passes MUST be performed inside a subagent — UNLESS the wiki update

@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (branch `wiki-dpmpp-spine`). audio-carry-identity.md: Consequence 2 first GPU observation (fractional-audio ringing); isolation pending fix-audio-carrier-recovery retest.
+Last updated: 2026-08-28 (branch `fix-audio-ancestral-axis-mismatch`). Model-contract proof confirms σ_a load-bearing for label; Fix B REJECTED with proof; Fix A stands. New child doc: [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
@@ -88,9 +88,12 @@ single engine via a per-row ancestral step. See
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
 - [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed) and Bug B (stochastic). *Read
   when debugging fractional-region artifacts.*
-- [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **THEORY (source-derived
-  math):** why the ×S audio fix is exact globally but leaks per-row for m<1; candidate wrapper
-  compensation. *Read when fractional AUDIO artifacts appear.*
+- [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived
+  math):** why the ×S audio fix is exact globally but leaks per-row for m<1 (Consequences 1 & 2);
+  pointer to Consequence 3 (axis mismatch). *Read when fractional AUDIO artifacts appear.*
+- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **CONFIRMED (2026-08-28):**
+  axis mismatch DEFINITE; σ_a load-bearing for label (model-contract proof); Fix B REJECTED;
+  Fix A design. *Read when debugging euler_ancestral audio ringing or the axis-split fix.*
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*

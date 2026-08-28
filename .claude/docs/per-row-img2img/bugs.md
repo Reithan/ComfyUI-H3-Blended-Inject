@@ -57,6 +57,11 @@ affine `alpha = 1−sigma` terms (see
 [k-diffusion-samplers](native-h3-mechanism/k-diffusion-samplers.md)) that are NOT scale-invariant,
 so per-row compression can't be reproduced by scaling the injected noise. The old
 `make_per_row_noise_sampler` shim only scales noise magnitude; insufficient.
+Additionally, our sampler.py runs audio's ancestral integration (denoised_r, si/sigma_down/ratio/
+renoise_coeff) on σ_a instead of σ_v — the axis mismatch confirmed DEFINITE (2026-08-28) and the
+specific cause of fractional audio ringing under euler_ancestral. Fix A corrects this while leaving
+the label on σ_a (CONFIRMED REQUIRED by model-contract proof; Fix B REJECTED). Full verdict:
+[audio-axis-verdict.md](audio-axis-verdict.md).
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
