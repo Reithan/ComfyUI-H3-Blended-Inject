@@ -237,7 +237,7 @@ class _StepContext:
     model: Any
     x_prev: torch.Tensor
     i: int
-    sigmas: torch.Tensor  # full video sigma schedule (length steps_n+1, device-aligned)
+    sigmas: torch.Tensor  # raw schedule arg — same tensor the original passed to base_fn
     sig_row: torch.Tensor  # per-row sigma at step i (audio rows on shifted schedule)
     sig_row_next: torch.Tensor  # per-row sigma at step i+1
     sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
@@ -282,8 +282,9 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     default ``s_churn=0``.  Using the inlined version opens the seam for PR2 (RF-ancestral)
     and PR3 (multistep) to extend this protocol without going through ``base_fn``.
 
-    The denom and dt use the raw video ``sigmas[i]`` / ``sigmas[i+1]``, exactly as
-    ``base_fn=euler`` would see; the per-row/audio behavior enters only through ``r``.
+    The denom and dt use the raw ``ctx.sigmas[i]`` / ``ctx.sigmas[i+1]`` (the unmodified
+    schedule tensor, same dtype/device as the original ``base_fn`` call), exactly as
+    ``sample_euler`` would see; the per-row/audio behavior enters only through ``r``.
     """
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
@@ -470,7 +471,7 @@ def build_per_row_sampler_function(
                 model=model,
                 x_prev=x_prev,
                 i=i,
-                sigmas=sig_v,
+                sigmas=sigmas,  # raw schedule arg — matches what the original passed to base_fn
                 sig_row=sig_row,
                 sig_row_next=sig_row_next,
                 sig_g=sig_g,

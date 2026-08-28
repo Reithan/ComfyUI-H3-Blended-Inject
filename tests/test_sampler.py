@@ -890,3 +890,21 @@ class TestStepDispatch:
         fn(model, x, _decreasing(4), callback=cb)  # steps_n == 3
         assert [d["i"] for d in seen] == [0, 1, 2]  # _cb remaps 0 → i each step
         assert all("denoised" in d for d in seen)
+
+    def test_fallback_forwards_raw_sigmas_dtype(self) -> None:
+        """Fallback path must pass the raw sigmas (not sig_v) to base_fn.
+
+        sig_v = sigmas.to(device=x.device, dtype=x.dtype) silently down-converts a
+        float64 schedule to float32 when x is float32.  The original code passed the
+        raw schedule; this test would FAIL if sigmas=sig_v were used in _StepContext.
+        """
+        base = _RemapBase()
+        m = torch.ones(1, 2)
+        # x is float32; sigmas are float64 — mismatched dtype exposes any sig_v conversion.
+        x = torch.randn(1, 2, dtype=torch.float32)
+        sigmas = _decreasing(3).to(dtype=torch.float64)
+        fn = build_per_row_sampler_function(base, m, torch.zeros(1, 2), _sched())
+        fn(object(), x, sigmas)
+        assert base.calls[0]["sigmas"].dtype == torch.float64, (
+            "fallback must forward the raw sigmas dtype (float64), not the sig_v cast (float32)"
+        )
