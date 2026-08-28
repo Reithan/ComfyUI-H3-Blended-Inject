@@ -60,7 +60,10 @@ so per-row compression can't be reproduced by scaling the injected noise. The ol
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
-[stochastic-recovery-theory](stochastic-recovery-theory.md).
+[stochastic-recovery-theory](stochastic-recovery-theory.md). Under the shipped schedule-tail remap
+Bug B persists in a new form (r-scaling linearly rescales a displacement that contains the non-linear
+renoise term); the current-architecture per-row step-function design to recover it is in
+[sampler-class-support.md](sampler-class-support.md).
 
 **Status: deterministic-only (prototype).** DD (the native img2img-via-mask primitive) is the
 exact dual; it covers stochastic but cracks deterministic on H3 (see
