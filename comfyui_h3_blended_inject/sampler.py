@@ -29,8 +29,8 @@ prefix length (the same boundary :func:`scale_packed_audio` uses).
 
 The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
 ``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
-is the only native step registered here (PR1); stochastic (PR2) and multistep (PR3) steps plug in
-via the same ``_StepContext`` protocol.
+and ``sample_euler_ancestral`` (H3's RF-ancestral path, kills Bug B) are registered here (PR1 +
+PR2); multistep (PR3) steps plug in via the same ``_StepContext`` protocol.
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
 imports stay lazy so this module loads without a ComfyUI environment.
@@ -308,9 +308,102 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     return ctx.x_prev + r * (x_base - ctx.x_prev)
 
 
+def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row RF-ancestral step (kills Bug B for euler_ancestral on H3).
+
+    Implements one step of ``sample_euler_ancestral_RF`` elementwise over the per-row sigma
+    tensors from the schedule-tail remap.  No r-scaling — the per-row sigma integration is
+    handled directly by the ancestral math.
+
+    One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered as
+    ``denoised_r = x_prev − σ_row·(x_prev − denoised)/σ_carrier`` (the conditioning wrapper
+    labels the model with ``t_row = 1 − σ_row`` so it returns the per-row denoised; the
+    velocity ``v = (x − denoised) / σ_carrier`` then maps back to per-row ``x0``).  All
+    ancestral terms (``sigma_down``, ``alpha_ip1/alpha_down``, ``renoise_coeff``, ``ratio``)
+    are computed elementwise over the ``sig_row`` / ``sig_row_next`` tensors.
+
+    Guarantees:
+
+    - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
+      ``sig_row == sigmas[i]``, so ``denoised_r == denoised`` and all per-row terms match the
+      scalar stock values — given an identical noise draw the outputs are bit-for-bit equal.
+    - **Terminal step** (``sig_row_next == 0``) falls out without a branch: ``sigma_down=0``,
+      ``ratio=0`` → ``x = denoised_r``; ``renoise_coeff=0`` → no noise added.
+    - **m=0 rows** freeze: ``sig_row=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
+      ``x = denoised_r = x_prev``; the outer ``where(never, clean, x)`` guard restores clean.
+
+    The seeded noise sampler is built once on the first call (or taken from
+    ``ctx.kwargs["noise_sampler"]`` for CPU tests) and persists across steps via
+    ``ctx.state`` — the outer loop shares one ``step_state`` dict across all iterations so the
+    generator advances correctly, matching stock's single pre-loop build.
+    GPU-only paths (``noise_scale`` attribute, ``default_noise_sampler`` import) are
+    ``# pragma: no cover``.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    eta = ctx.kwargs.get("eta", 1.0)
+    s_noise = ctx.kwargs.get("s_noise", 1.0)
+    if hasattr(ctx.model, "inner_model"):  # pragma: no cover
+        s_noise = s_noise * getattr(
+            ctx.model.inner_model.model_patcher.get_model_object("model_sampling"),
+            "noise_scale",
+            1.0,
+        )
+
+    # Build or retrieve the seeded noise sampler (persists across steps via ctx.state).
+    if "noise_sampler" not in ctx.state:
+        ns = ctx.kwargs.get("noise_sampler")
+        if ns is None:
+            from comfy.k_diffusion.sampling import default_noise_sampler  # pragma: no cover
+
+            ns = default_noise_sampler(  # pragma: no cover
+                ctx.x_prev, seed=extra_args.get("seed")
+            )
+        ctx.state["noise_sampler"] = ns
+    noise_sampler = ctx.state["noise_sampler"]
+
+    carrier = ctx.sigmas[ctx.i]
+    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
+    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
+    if ctx.callback is not None:
+        ctx.callback(
+            {
+                "i": 0,
+                "denoised": denoised,
+                "x": ctx.x_prev,
+                "sigma": carrier,
+                "sigma_hat": carrier,
+            }
+        )
+
+    # Recover per-row x0 from global-carrier velocity.
+    v = (ctx.x_prev - denoised) / carrier
+    denoised_r = ctx.x_prev - ctx.sig_row * v
+
+    # Elementwise ancestral update over per-row sigma tensors.
+    eps = 1e-8
+    si = ctx.sig_row.clamp(min=eps)
+    sip1 = ctx.sig_row_next
+    downstep_ratio = 1.0 + (sip1 / si - 1.0) * eta
+    sigma_down = sip1 * downstep_ratio
+    alpha_ip1 = 1.0 - sip1
+    alpha_down = 1.0 - sigma_down
+    renoise_coeff = torch.sqrt(
+        torch.clamp(sip1**2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2, min=0.0)
+    )
+    ratio = sigma_down / si
+    x = ratio * ctx.x_prev + (1.0 - ratio) * denoised_r
+    if eta > 0:
+        noise = noise_sampler(carrier, ctx.sigmas[ctx.i + 1])
+        x = (alpha_ip1 / alpha_down) * x + noise * s_noise * renoise_coeff
+    return x
+
+
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
-_NATIVE_ROW_STEPS: dict[str, StepFn] = {"sample_euler": _euler_step}
+_NATIVE_ROW_STEPS: dict[str, StepFn] = {
+    "sample_euler": _euler_step,
+    "sample_euler_ancestral": _euler_ancestral_rf_step,
+}
 
 
 def build_per_row_sampler_function(
@@ -450,6 +543,11 @@ def build_per_row_sampler_function(
         # Resolve the per-row step function once before the loop (keyed by base sampler name).
         step = _NATIVE_ROW_STEPS.get(getattr(base_fn, "__name__", ""), _fallback_step)
 
+        # Shared mutable state for native steps that need persistence across iterations
+        # (e.g. the seeded noise sampler in _euler_ancestral_rf_step, old_denoised for PR3).
+        # Must be created once here so each step call shares the same dict object.
+        step_state: dict[str, Any] = {}
+
         x_cur = x
         sig_row = row_sigma(0)
         for i in range(steps_n):
@@ -481,6 +579,7 @@ def build_per_row_sampler_function(
                 disable=disable,
                 kwargs=kwargs,
                 base_fn=base_fn,
+                state=step_state,  # shared across iterations; native steps persist state here
             )
             # Per-row step scaling: each row integrates its OWN Δσ_row, not the global Δσ.
             x_cur = step(ctx)
