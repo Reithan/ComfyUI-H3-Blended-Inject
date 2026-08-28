@@ -1438,3 +1438,453 @@ class TestAudioAncestralAxisSplit:
             f"m=1 with audio must match stock RF-ancestral; max diff="
             f"{float((out - stock_out).abs().max())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Local CPU-testable scalar references for multistep samplers
+# ---------------------------------------------------------------------------
+
+
+def _local_sample_dpmpp_2m(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    **_kwargs: Any,
+) -> torch.Tensor:
+    """CPU reference for ``sample_dpmpp_2m`` (no comfy dependency).
+
+    Mirrors comfy's ``sample_dpmpp_2m`` (k_diffusion/sampling.py:796-818) exactly.
+    Used only in tests.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: (-t).exp()  # noqa: E731
+    t_fn = lambda sigma: -sigma.clamp(min=1e-8).log()  # noqa: E731  — t = −log σ
+    old_denoised = None
+
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        t = t_fn(sigmas[i])
+        t_next = t_fn(sigmas[i + 1])
+        h = t_next - t
+        if old_denoised is None or sigmas[i + 1] == 0:
+            x = sigma_fn(t_next) / sigma_fn(t) * x - (-h).expm1() * denoised
+        else:
+            h_last = t - t_fn(sigmas[i - 1])
+            r = h_last / h
+            denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
+            x = sigma_fn(t_next) / sigma_fn(t) * x - (-h).expm1() * denoised_d
+        old_denoised = denoised
+    return x
+
+
+_local_sample_dpmpp_2m.__name__ = "sample_dpmpp_2m"
+
+
+def _local_sample_res_multistep(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    **_kwargs: Any,
+) -> torch.Tensor:
+    """CPU reference for ``sample_res_multistep`` with eta=0, cfg_pp=False (no comfy dep).
+
+    Mirrors ``res_multistep(..., eta=0., cfg_pp=False)`` from
+    k_diffusion/sampling.py:1394-1456 with the noise branch dead (sigma_up=0 always).
+    Used only in tests.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: (-t).exp()  # noqa: E731
+    t_fn = lambda sigma: -sigma.clamp(min=1e-8).log()  # noqa: E731  — t = −log σ
+    phi1_fn = lambda t: t.expm1() / t  # noqa: E731
+    phi2_fn = lambda t: (phi1_fn(t) - 1.0) / t  # noqa: E731
+
+    old_denoised = None
+    old_sigma_down = None
+
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_down = sigmas[i + 1]  # eta=0 → get_ancestral_step returns (sigma_next, 0)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigma_down == 0 or old_denoised is None:
+            # Euler first-order
+            d = (x - denoised) / sigmas[i]
+            dt = sigma_down - sigmas[i]
+            x = x + d * dt
+        else:
+            t = t_fn(sigmas[i])
+            t_old = t_fn(old_sigma_down)
+            t_next = t_fn(sigma_down)
+            t_prev = t_fn(sigmas[i - 1])
+            h = t_next - t
+            c2 = (t_prev - t_old) / h
+            phi1_val = phi1_fn(-h)
+            phi2_val = phi2_fn(-h)
+            b1 = torch.nan_to_num(phi1_val - phi2_val / c2, nan=0.0)
+            b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
+            x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+        old_denoised = denoised
+        old_sigma_down = sigma_down
+    return x
+
+
+_local_sample_res_multistep.__name__ = "sample_res_multistep"
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: native DPM++ 2M step == stock scalar for m=1
+# ---------------------------------------------------------------------------
+
+
+class TestDpmpp2mStepEquivalence:
+    """_dpmpp_2m_step reproduces stock sample_dpmpp_2m bit-for-bit for m=1."""
+
+    def _run_native(
+        self,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        *,
+        video_element_count: int | None = None,
+    ) -> torch.Tensor:
+        """Run per-row sampler dispatched to _dpmpp_2m_step."""
+        fn = build_per_row_sampler_function(
+            _local_sample_dpmpp_2m,
+            m,
+            clean,
+            _sched(),
+            video_element_count=video_element_count,
+        )
+        return fn(model, x.clone(), sigmas)
+
+    def test_m1_equals_stock(self) -> None:
+        """All-m=1 over a 4-step schedule (hits 2nd-order at steps 2+): bit-for-bit vs stock."""
+        model = _ScaleModel(0.8)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)  # steps_n=4; 2nd-order kicks in at step 1+
+
+        stock_out = _local_sample_dpmpp_2m(model, x.clone(), sigmas)
+        native_out = self._run_native(m, x, clean, sigmas, model)
+
+        assert torch.allclose(native_out, stock_out, atol=1e-5), (
+            f"m=1 per-row dpmpp_2m must match stock; max diff="
+            f"{float((native_out - stock_out).abs().max())}"
+        )
+
+    def test_m0_returns_clean(self) -> None:
+        """m=0 rows: outer where(never, clean, x) restores clean exactly."""
+        model = _ScaleModel(0.9)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.full((1, 3), 7.0)
+        out = self._run_native(m, x, clean, _decreasing(4), model)
+        assert torch.allclose(out, clean), "m=0 rows must be restored from clean"
+
+    def test_fractional_row_is_finite(self) -> None:
+        """m=0.5 produces finite output with no NaN."""
+        model = _ScaleModel(0.85)
+        m = torch.tensor([[1.0, 0.5, 0.0]])
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        out = self._run_native(m, x, clean, _decreasing(5), model)
+        assert out.shape == (1, 3)
+        assert torch.isfinite(out).all(), "fractional dpmpp_2m row must produce finite values"
+
+    def test_audio_rows_no_error(self) -> None:
+        """Audio rows (video_element_count set, shifted sigma) run without NaN."""
+        model = _ScaleModel(0.9)
+        m = torch.full((1, 4), 0.5)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        out = self._run_native(m, x, clean, _decreasing(4), model, video_element_count=2)
+        assert out.shape == (1, 4)
+        assert torch.isfinite(out).all()
+
+    def test_callback_fires_once_per_step(self) -> None:
+        """Callback fires once per step with globally remapped index."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(4)  # steps_n=3
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        fn = build_per_row_sampler_function(_local_sample_dpmpp_2m, m, clean, _sched())
+        fn(model, x, sigmas, callback=cb)
+        assert [d["i"] for d in seen] == [0, 1, 2]
+        assert all("denoised" in d for d in seen)
+
+    def test_second_order_uses_history(self) -> None:
+        """With 4+ steps the 2nd-order result differs from pure 1st-order.
+
+        This confirms old_denoised_r is actually used (not reset each step).  We compare
+        the native output against a manually all-first-order reference: if they differ, the
+        2nd-order branch fired.
+        """
+        model = _ScaleModel(0.7)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(5)  # 4 steps; 2nd-order fires from step 1 onwards
+
+        native_out = self._run_native(m, x, clean, sigmas, model)
+
+        # All-first-order reference: euler with matching sigma scaling.
+        def euler_ref(
+            mod: Any,
+            xin: torch.Tensor,
+            sig: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kw: Any,
+        ) -> torch.Tensor:
+            extra_args = extra_args or {}
+            s_in = xin.new_ones([xin.shape[0]])
+            for i in range(len(sig) - 1):
+                d_val = mod(xin, sig[i] * s_in, **extra_args)
+                xin = xin + (xin - d_val) / sig[i] * (sig[i + 1] - sig[i])
+            return xin
+
+        fn_euler = build_per_row_sampler_function(euler_ref, m, clean, _sched())
+        euler_out = fn_euler(model, x.clone(), sigmas)
+        # 2nd-order should differ from 1st-order on a 4-step schedule.
+        assert not torch.allclose(native_out, euler_out, atol=1e-4), (
+            "dpmpp_2m 2nd-order must differ from euler 1st-order, proving history is used"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: native RES multistep step == stock scalar for m=1
+# ---------------------------------------------------------------------------
+
+
+class TestResMstepEquivalence:
+    """_res_multistep_step reproduces stock sample_res_multistep bit-for-bit for m=1."""
+
+    def _run_native(
+        self,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        *,
+        video_element_count: int | None = None,
+    ) -> torch.Tensor:
+        """Run per-row sampler dispatched to _res_multistep_step."""
+        fn = build_per_row_sampler_function(
+            _local_sample_res_multistep,
+            m,
+            clean,
+            _sched(),
+            video_element_count=video_element_count,
+        )
+        return fn(model, x.clone(), sigmas)
+
+    def test_m1_equals_stock(self) -> None:
+        """All-m=1 over a 4-step schedule (hits 2nd-order at steps 2+): bit-for-bit vs stock."""
+        model = _ScaleModel(0.8)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)  # steps_n=4; 2nd-order kicks in at step 1+
+
+        stock_out = _local_sample_res_multistep(model, x.clone(), sigmas)
+        native_out = self._run_native(m, x, clean, sigmas, model)
+
+        assert torch.allclose(native_out, stock_out, atol=1e-5), (
+            f"m=1 per-row res_multistep must match stock; max diff="
+            f"{float((native_out - stock_out).abs().max())}"
+        )
+
+    def test_m0_returns_clean(self) -> None:
+        """m=0 rows: outer where(never, clean, x) restores clean exactly."""
+        model = _ScaleModel(0.9)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.full((1, 3), 5.0)
+        out = self._run_native(m, x, clean, _decreasing(4), model)
+        assert torch.allclose(out, clean), "m=0 rows must be restored from clean"
+
+    def test_fractional_row_is_finite(self) -> None:
+        """m=0.5 produces finite output with no NaN."""
+        model = _ScaleModel(0.85)
+        m = torch.tensor([[1.0, 0.5, 0.0]])
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        out = self._run_native(m, x, clean, _decreasing(5), model)
+        assert out.shape == (1, 3)
+        assert torch.isfinite(out).all(), "fractional res_multistep row must produce finite values"
+
+    def test_audio_rows_no_error(self) -> None:
+        """Audio rows (video_element_count set, shifted sigma) run without NaN."""
+        model = _ScaleModel(0.9)
+        m = torch.full((1, 4), 0.5)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        out = self._run_native(m, x, clean, _decreasing(4), model, video_element_count=2)
+        assert out.shape == (1, 4)
+        assert torch.isfinite(out).all()
+
+    def test_callback_fires_once_per_step(self) -> None:
+        """Callback fires once per step with globally remapped index."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(4)  # steps_n=3
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        fn = build_per_row_sampler_function(_local_sample_res_multistep, m, clean, _sched())
+        fn(model, x, sigmas, callback=cb)
+        assert [d["i"] for d in seen] == [0, 1, 2]
+        assert all("denoised" in d for d in seen)
+
+    def test_second_order_uses_history(self) -> None:
+        """With 4+ steps the 2nd-order result differs from pure 1st-order.
+
+        Confirms old_denoised_r and prev_sig_row are actually carried (not reset each step).
+        """
+        model = _ScaleModel(0.7)
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        clean = torch.zeros(1, 2)
+        sigmas = _decreasing(5)  # 4 steps; 2nd-order fires from step 1 onwards
+
+        native_out = self._run_native(m, x, clean, sigmas, model)
+
+        # All-first-order reference: euler.
+        def euler_ref(
+            mod: Any,
+            xin: torch.Tensor,
+            sig: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kw: Any,
+        ) -> torch.Tensor:
+            extra_args = extra_args or {}
+            s_in = xin.new_ones([xin.shape[0]])
+            for i in range(len(sig) - 1):
+                d_val = mod(xin, sig[i] * s_in, **extra_args)
+                xin = xin + (xin - d_val) / sig[i] * (sig[i + 1] - sig[i])
+            return xin
+
+        fn_euler = build_per_row_sampler_function(euler_ref, m, clean, _sched())
+        euler_out = fn_euler(model, x.clone(), sigmas)
+        assert not torch.allclose(native_out, euler_out, atol=1e-4), (
+            "res_multistep 2nd-order must differ from euler 1st-order, proving history is used"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch: native multistep steps chosen when name matches registry
+# ---------------------------------------------------------------------------
+
+
+class TestMultistepDispatch:
+    """sample_dpmpp_2m and sample_res_multistep dispatch to native step functions."""
+
+    def test_dpmpp_2m_in_registry(self) -> None:
+        """sample_dpmpp_2m must be registered in _NATIVE_ROW_STEPS."""
+        assert "sample_dpmpp_2m" in _NATIVE_ROW_STEPS
+
+    def test_res_multistep_in_registry(self) -> None:
+        """sample_res_multistep must be registered in _NATIVE_ROW_STEPS."""
+        assert "sample_res_multistep" in _NATIVE_ROW_STEPS
+
+    def test_native_dpmpp_2m_does_not_call_base_fn(self) -> None:
+        """sample_dpmpp_2m dispatch: native step bypasses base_fn entirely."""
+        base_called: list[bool] = []
+
+        def sample_dpmpp_2m(  # noqa: ANN202
+            model: Any,
+            x: torch.Tensor,
+            sigmas: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kwargs: Any,
+        ) -> torch.Tensor:
+            base_called.append(True)
+            return x
+
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(sample_dpmpp_2m, m, torch.zeros(1, 2), _sched())
+        fn(model, x, _decreasing(3))
+        assert base_called == [], "native dpmpp_2m must not call the base_fn wrapper"
+
+    def test_native_res_multistep_does_not_call_base_fn(self) -> None:
+        """sample_res_multistep dispatch: native step bypasses base_fn entirely."""
+        base_called: list[bool] = []
+
+        def sample_res_multistep(  # noqa: ANN202
+            model: Any,
+            x: torch.Tensor,
+            sigmas: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kwargs: Any,
+        ) -> torch.Tensor:
+            base_called.append(True)
+            return x
+
+        m = torch.ones(1, 2)
+        x = torch.randn(1, 2)
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(sample_res_multistep, m, torch.zeros(1, 2), _sched())
+        fn(model, x, _decreasing(3))
+        assert base_called == [], "native res_multistep must not call the base_fn wrapper"
+
+    def test_dpmpp_2m_deterministic_no_stochastic_warning(self) -> None:
+        """sample_dpmpp_2m is deterministic: sampler_is_stochastic must return False."""
+
+        def fn(  # noqa: ANN202
+            model: Any, x: Any, sigmas: Any, extra_args: Any = None, callback: Any = None
+        ) -> Any:
+            pass
+
+        fn.__name__ = "sample_dpmpp_2m"
+        assert sampler_is_stochastic(fn) is False
+        # Warning condition: stochastic AND not in registry — must be False (no warning).
+        assert not (sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS)
+
+    def test_res_multistep_deterministic_no_stochastic_warning(self) -> None:
+        """sample_res_multistep is deterministic: sampler_is_stochastic must return False."""
+
+        def fn(  # noqa: ANN202
+            model: Any, x: Any, sigmas: Any, extra_args: Any = None, callback: Any = None
+        ) -> Any:
+            pass
+
+        fn.__name__ = "sample_res_multistep"
+        assert sampler_is_stochastic(fn) is False
+        assert not (sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS)
