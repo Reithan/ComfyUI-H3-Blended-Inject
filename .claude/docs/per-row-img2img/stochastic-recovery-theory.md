@@ -1,10 +1,12 @@
-<!-- provenance: theory (UNVERIFIED; analytical, no experimental confirmation) -->
-<!-- verified: 2026-08-23 · repo @c2b3bc6 -->
+<!-- provenance: theory/confirmed (CONFIRMED for single-eval RF-ancestral 2026-08-27; multistep and 2nd-eval generalizations UNVERIFIED) -->
+<!-- verified: 2026-08-27 · PR2 GPU pass task #68; repo @ede2d8c -->
 # THEORY: recovering stochastic samplers via a per-row ancestral step
 
-**Status: THEORY / hypothesis. Not implemented, not GPU-verified.** The theory carries over to
-the shipped schedule-tail remap in simplified form — the remap loop already owns per-row σ tensors
-and truthful labels, so the corrected-denoised identity is not needed; see
+**Status: CONFIRMED for single-eval RF-ancestral (PR2 GPU-validated, task #68, 2026-08-27).**
+Multistep (PR3) and DPM++ SDE (PR4) reuse the same identity but add history / a second in-step
+eval — those remain UNVERIFIED and need their own GPU gates (tasks #70, #73). The theory carries
+over to the shipped schedule-tail remap in simplified form — the remap loop already owns per-row σ
+tensors and truthful labels, so the corrected-denoised identity is not needed; see
 [sampler-class-support.md](sampler-class-support.md) for the remap-era design and the
 SOURCE-CONFIRMED finding that multistep samplers currently run first-order under the remap loop.
 This revises the earlier
@@ -108,11 +110,16 @@ Two ways to reconcile:
 
 The theory is the only route that keeps BOTH clean fractional-keyframe denoise AND stochastic.
 
-## Proposed spike
+## Spike result (PASSED, 2026-08-27)
 
-`euler_ancestral` only: read the exact RF formulas, replace the dead magnitude-shim
-(`make_per_row_noise_sampler` / `scale_stochastic_noise`, see
-[file-line-index](file-line-index.md)) with a per-row RF-ancestral step driven by `σ_r` +
-`corrected`, then GPU-test on the 39f fade case
-([status-and-open-paths](status-and-open-paths.md)). Holds ⇒ generalize; cracks ⇒ one small
-well-scoped experiment that pinpoints where the model's σ-dependence leaks.
+The spike was run as PR2 (`add-per-row-rf-ancestral-step`, merged ede2d8c). Config: 0.2MP, two
+injects at fractional min_denoise d=0.20 and d=0.15, fade-in at start, 20 steps; both `euler`
+(deterministic baseline) and `euler_ancestral` (new RF-ancestral path) tested.
+Result: no grey static, no corruption on fractional or preserved rows, no ghosting;
+euler_ancestral quality matches euler.
+The linchpin identity `v = (x − denoised)/σ_carrier`, `denoised_r = x − σ_row·v` holds on the
+real H3 model for the single-eval RF-ancestral path — **no hidden σ-dependence detected beyond
+the label channel**. Bug B is killed for euler_ancestral.
+Generalizing: PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add
+multistep history / a second in-step eval — de-risked by this result, but their own GPU gates
+are still required (tasks #70, #73).

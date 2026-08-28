@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (planning PR4 DPM++, no branch). sampler-class-support.md: 4-PR plan — PR4 = per-row dpmpp_sde + dpmpp_2m_sde, source-verified (tasks #72–#73).
+Last updated: 2026-08-27 (branch `record-pr2-gpu-validation`). sampler-class-support.md + stochastic-recovery-theory.md: #68 GPU pass — Bug B killed for euler_ancestral (PR2 validated).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
