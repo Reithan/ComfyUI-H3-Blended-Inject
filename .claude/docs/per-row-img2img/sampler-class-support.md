@@ -1,8 +1,10 @@
-<!-- provenance: theory (design + one SOURCE-CONFIRMED finding; per-row steps UNVERIFIED, no GPU) -->
-<!-- verified: 2026-08-27 · comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde, 796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
+<!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral 2026-08-27; Finding 1 SOURCE-CONFIRMED; PR3/PR4 design UNVERIFIED) -->
+<!-- verified: 2026-08-27 · PR2 GPU pass task #68 @ede2d8c -->
+<!-- source: comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde,
+     796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
 
-**Status: discussion-stage design, nothing built, direction not user-confirmed.**
+**Status: PR2 shipped + GPU-CONFIRMED (task #68, 2026-08-27); PR1 refactor pending; PR3/PR4 design stage.**
 See also: [bugs.md Bug B](bugs.md#bug-b) · [stochastic-recovery-theory.md](stochastic-recovery-theory.md)
 · [audio-carry-identity.md](audio-carry-identity.md) · [PER_ROW_IMG2IMG_NOTES.md](../PER_ROW_IMG2IMG_NOTES.md)
 
@@ -20,15 +22,23 @@ trajectories, and this was true for all GPU validation runs of the shipped mecha
 "supported: dpmpp_2m/res_multistep" currently means "runs as first-order," an accuracy
 regression vs the retired three-lever path where `base_fn` ran the full schedule once.
 
-## Finding 2: Bug B persists in remap form
+## Finding 2 (GPU-CONFIRMED 2026-08-27): Bug B killed for euler_ancestral
 
-For stochastic samplers the remap's per-row r-scaling `x_cur = x_prev + r·(x_cur − x_prev)`
-linearly rescales a displacement that contains the renoise term.
-`sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha terms:
+**CONFIRMED:** PR2 (`add-per-row-rf-ancestral-step`, shipped ede2d8c) GPU-validated in task #68.
+Config: 0.2MP, two injects at fractional min_denoise d=0.20 and d=0.15, fade-in at start, 20
+steps; both `euler` (deterministic baseline) and `euler_ancestral` (new RF-ancestral path) tested.
+Result: no grey static / no corruption on fractional or preserved rows, no ghosting;
+euler_ancestral quality matches euler. The per-row velocity-recovery identity
+`v = (x − denoised)/σ_carrier`, `denoised_r = x − σ_row·v` holds on the real H3 model with
+NO hidden σ-dependence beyond the label channel. Bug B is killed for euler_ancestral.
+
+*Historical context (why the remap form cracked before PR2):* the remap's per-row r-scaling
+`x_cur = x_prev + r·(x_cur − x_prev)` linearly rescales a displacement that contains the
+renoise term. `sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha terms:
 `alpha_ip1/alpha_down = (1−σ_{i+1})/(1−σ_down)` as the x-multiplier, and
 `renoise_coeff = (σ_{i+1}² − σ_down²·α_{i+1}²/α_down²)^½` — neither scales linearly under
-`σ → σ_row`, so fractional/preserved rows are still corrupted.
-Same root cause as [Bug B](bugs.md#bug-b); the mechanism changed but the crack is unchanged.
+`σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral case. Same root cause as
+[Bug B](bugs.md#bug-b); PR2 closes it for euler_ancestral; multistep / DPM++ not yet verified.
 
 ## Design (UNVERIFIED): per-row step functions replace the black-box base_fn
 
@@ -71,8 +81,10 @@ until PR4's label-refresh plumbing proves out.
 
 ## Risks and verification notes
 
-- **Leak risk** unchanged from stochastic-recovery-theory: internal model σ-dependence beyond the
-  label channel would break the identity; a GPU spike (euler_ancestral, 39f fade case) is the test.
+- **Leak risk (GPU-CONFIRMED clear for euler_ancestral, task #68):** the spike ran and passed; no
+  hidden σ-dependence detected beyond the label channel for the single-eval RF-ancestral path.
+  PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
+  history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
 - **Audio:** ancestral alpha terms on the SHIFTED audio σ need a pass through
   [audio-carry-identity.md](audio-carry-identity.md) before trusting fractional-audio + stochastic.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
@@ -89,13 +101,13 @@ sampler name. Native per-row euler step is numerically equivalent to the current
 euler; all other samplers keep the wrap+r-scale fallback unchanged. CPU equivalence tests:
 m=0 / fractional / m=1, audio-shifted rows. No GPU gate — zero behavior change.
 
-**PR2 `add-per-row-rf-ancestral-step` (task #67)** — per-row RF-ancestral step.
+**PR2 `add-per-row-rf-ancestral-step` (task #67) — SHIPPED (ede2d8c) + GPU-VALIDATED (task #68).**
 Elementwise `sample_euler_ancestral_RF` formulas over tensor σ_row; σ clamped ≥ε so m=0 rows
 freeze; seeded `default_noise_sampler`; `s_noise·noise_scale` replicated. Whitelisted
 euler_ancestral stops the stochastic warning; non-whitelisted stochastic still warns.
 CPU tests vs scalar reference; analytical audio-carry-identity check for shifted-σ audio rows.
-**Merge gated on USER GPU spike (task #68):** 39f fade Bug-B repro + min_denoise 0.2–0.3
-checklist — this is the leak-risk test (hidden σ-dependence beyond the label channel).
+GPU spike (task #68) passed: 0.2MP, d=0.20/0.15 injects, fade-in, 20 steps, both euler +
+euler_ancestral — no corruption, no ghosting; leak-risk test clear.
 
 **PR3 `add-per-row-multistep-steps` (task #69)** — per-row dpmpp_2m + res_multistep.
 Deterministic (eta=0) form; per-row `old_denoised` history carried across the outer loop — fixes
