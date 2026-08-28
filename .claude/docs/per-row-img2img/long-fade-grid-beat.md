@@ -1,5 +1,5 @@
-<!-- provenance: theory (UNVERIFIED — M-A & M-C falsified; survivors M-B/M-D/M-E confounded; short-ramp decoupler + code-quant dig pending) -->
-<!-- verified: 2026-08-28 · L=55 shift series GPU-falsified length model; 3 survivors remain confounded at fixed clip=90 -->
+<!-- provenance: theory (UNVERIFIED — M-A/M-C/S2/snap-rounding falsified; survivors M-B/M-D/M-E confounded; short-ramp decoupler pending) -->
+<!-- verified: 2026-08-28 · Fable 13-config CPU sweep falsifies snap/rounding family two-sided -->
 # Bug E: long-fade video interference — shift-series falsifies length model; 3 survivors confounded
 
 Bug E symptom: moiré / streamers / ribbons / electric patterns in video latent with long fades;
@@ -88,19 +88,46 @@ No tested config has ramp < 43. A short ramp (ramp < 51) separates all three sur
 Read-off: 0/0/50/70 ERROR → M-D confirmed; 0/0/35/65 ERROR → M-E confirmed;
 both CLEAN → M-B (held AND ramp both required). At most one model survives per run.
 
-## Code-quantization investigation (IN PROGRESS — Fable)
+## Code-quantization investigation — FALSIFIED (Fable, 2026-08-28)
 
-A Fable code-side dig is tracing whether quantization/rounding/snapping produces a degenerate
-mid-fade transition row. Bracket: 0/0/25/80 CLEAN vs 0/0/30/85 and 0/0/35/90 ERROR vs 0/0/40/90
-CLEAN. Placeholder — update with findings.
+A Fable agent computed the full per-row schedule for 13 clip=90 configs using the REAL
+`evaluate_envelope` + `k_d = round(20*(1-m)).clamp(0,20)`. It swept ~20 discrete quantities:
+SNAP20 (ramp row rounding to k_d=20 → preserve/never=True → hard clean-restore at sampler.py:638),
+SNAP0 (ramp row k_d=0, w saturates at 1.0), k_d collisions, idx collisions (sampler.py:521),
+w saturation (:592), round-half ties, etc.
+
+**Error configs (8):** 0/0/30/85, 0/0/30/90, 0/0/34/90, 0/0/35/90, 0/0/36/90, 0/0/37/90,
+0/0/38/90, 0/0/39/90.
+**Clean configs (5):** 0/0/15/70, 0/0/25/80, 0/0/40/90, 0/0/44/90, 0/0/47/90.
+
+**Verdict: no CPU-side rounding/snapping/collision quantity separates error from clean.**
+Endpoint-snap conjunction (SNAP20 AND NOT SNAP0) and its XOR refinement are BOTH falsified
+two-sided:
+- 0/0/36/90 is ERROR with NO snap of any kind (no k_d=20, no k_d=0, zero collisions).
+- 0/0/47/90 is CLEAN despite preserve-snap (row 13, m=0.0028 → k_d=20 → hard restore at
+  sampler.py:638) that every snap-bearing error config carries.
+
+k_d collisions fail independently: errors 36/37/39 have zero; clean 15/70 has one. The only
+features separating the 13 are monotone in ekf — trivial restatements of "held-end frame ~26–39",
+not mechanisms; the contiguous error bracket means any ekf-monotone quantity manufactures a window.
+Neither window edge aligns with a chunk boundary or rounding threshold.
+
+**Conclusion:** the binary artifact is NOT explained by CPU-side quantization
+(envelope.py/grid.py/sampler.py k_d/idx/w). The discrete gate is DOWNSTREAM in GPU dynamics —
+DiT/attention response to a held prefix of that size/proportion. This CONFIRMS the binary
+character ("happens or doesn't", no gradient) while locating the gate downstream. Survivors
+M-B/M-D/M-E remain confounded at clip=90; decouplers 0/0/50/70 and 0/0/35/65 still required.
+NEW open question: is the window PROPORTIONAL (held/total) or ABSOLUTE (held frame count)?
+0/0/60/90 (n_held=17, ~19% held) discriminates — absolute-band predicts CLEAN.
 
 ## Epistemic note
 
-Four falsified mono-causal rules committed from single-family covariable sweeps:
+Five falsified mono-causal rules committed from single-family covariable sweeps:
 1. Grid-cycle-count → falsified (early).
 2. Held+ramp → retired as confound when S2 appeared, un-retired after S2 fell.
 3. S2 cell-alignment → GPU-falsified 2026-08-28.
 4. Ramp-length band (M-A) → GPU-falsified 2026-08-28 by L=55 shift series.
+5. CPU snap/rounding family → CPU-falsified 2026-08-28 (Fable 13-config sweep, two-sided).
 
 **Lesson: do not declare a root cause from a sweep where candidate variables covary. Require a
 decoupling factorial before committing any model.** Three models still fit all 20 data points.
