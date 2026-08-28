@@ -1,5 +1,5 @@
 <!-- provenance: theory (design + one SOURCE-CONFIRMED finding; per-row steps UNVERIFIED, no GPU) -->
-<!-- verified: 2026-08-27 · comfy-ref k_diffusion/sampling.py @b78cec87 lines 240-266 (euler_ancestral_RF), 796-818 (dpmpp_2m), 1394+ (res_multistep); repo sampler.py build_per_row_sampler_function -->
+<!-- verified: 2026-08-27 · comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde, 796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
 
 **Status: discussion-stage design, nothing built, direction not user-confirmed.**
@@ -65,9 +65,9 @@ fallback (first-order-correct). Unknown stochastic → keep `sampler_is_stochast
 
 ### Deferred: within-interval multi-eval samplers
 
-Heun, dpm_2, dpmpp_2s_ancestral, dpmpp_sde additionally need pooled-label refresh before each
-inner model eval (`w_mid = σ_row_mid/σ_carrier`). Doable since we own the loop, but extra
-plumbing; deferred.
+Heun, dpm_2, dpmpp_2s_ancestral additionally need pooled-label refresh before each inner model
+eval (`w_mid = σ_row_mid/σ_mid`). `dpmpp_sde` graduated to PR4 below; the rest stay deferred
+until PR4's label-refresh plumbing proves out.
 
 ## Risks and verification notes
 
@@ -78,7 +78,7 @@ plumbing; deferred.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
-## Delivery plan (3 PRs, tasks #66–#70)
+## Delivery plan (4 PRs, tasks #66–#73)
 
 Ordering rationale: stochastic first — it is the user-visible failure and validates the leak risk
 before investing in multistep work.
@@ -102,3 +102,26 @@ Deterministic (eta=0) form; per-row `old_denoised` history carried across the ou
 Finding 1's first-order degradation. Key test: all-m=1 rows over a full schedule must reproduce
 the stock sampler bit-for-bit on a toy model. Gated on USER GPU quality check (task #70) at the
 d=0.2/0.15 sweet-spot config.
+
+**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde`. Sequenced
+AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
+(sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO model evals/step (denoised @σ_i, then
+denoised_2 @midpoint σ_s_1, r=1/2 default), NO history, noise injected after EACH sub-step (781,
+791); `sample_dpmpp_2m_sde` (822-873) = ONE eval/step, carries `old_denoised` AND `h_last`, SDE
+noise `σ_{i+1}·(−2hη).expm1().neg().sqrt()·s_noise` (869), solver_type midpoint (default) / heun
+(877). Both: BrownianTreeNoiseSampler, `s_noise·noise_scale`, `offset_first_sigma_for_snr`.
+Corrections vs the draft plan: no `_RF` variants, but RF is IMPLICIT — `sigma_to_half_log_snr`
+(152) branches on CONST → λ = −logit(σ), so α = 1−σ lives INSIDE the helpers; per-row steps run
+the logit form elementwise with σ_row clamped to [ε, 1−ε] (the first-σ offset at 168 fixes only
+the global scalar). `get_ancestral_step` operates in exp(−λ) = σ/α space (776, 785), python
+`min()` (73) → per-row reimpl needs `torch.minimum`. Label refresh is pooled-only: the observer self-refreshes
+per model call from the CALL's σ (`t_obs = 1 − m·σ`, observer_split.py:38-59), but the pooled `w`
+stash publishes once per outer step (sampler.py:558) → `_StepContext` gains a `publish_labels(w)`
+closure so the step sets `w_mid = σ_row_mid/σ_s_1` before eval 2 (elementwise midpoint:
+`λ_row_s1 = λ_row + r·h_row`, `σ_row_mid = sigma_fn(λ_row_s1)`). BrownianTreeNoiseSampler is
+scalar-interval-only (`sort` uses `a < b`, 116) → query at global carrier σ; output is
+unit-variance (149), so all per-row scaling stays in the elementwise coefficients (noise
+correlation structure follows the global schedule — accepted approximation).
+**Merge gated on NEW USER GPU spike (task #73):** leak surface LARGER than PR2's — these lean on
+the SNR mapping rather than the clean RF alpha identity, so rerun the label→timestep leak test
+(39f fade, min_denoise 0.2–0.3) with both samplers before merge.
