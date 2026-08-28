@@ -1,5 +1,5 @@
 <!-- provenance: reference (pointer index of RUN experiments; results live in the linked home docs) -->
-<!-- verified: 2026-08-25 · cross-checked against home docs @proto-latent-hold-release -->
+<!-- verified: 2026-08-27 · STR series added; cross-checked against home docs @proto-latent-hold-release -->
 # Experiment Run Index
 
 Before proposing an experiment, grep this file first. If an ID exists the run is done — check its
@@ -8,7 +8,7 @@ home doc for data and conclusions. This file is a pointer table only; results li
 Experiment rows are split into two child files (original exceeded the 12,000-char ceiling at 40 rows):
 
 - [early-series.md](experiments-run/early-series.md) — RES, DATA, HYP, early HOLD (HOLD-2 through HOLD-14)
-- [hold-continued.md](experiments-run/hold-continued.md) — HOLD-15 through HOLD-25 (current), STILL, MC, AUG, AUD, BUG-B, DD, VER
+- [hold-continued.md](experiments-run/hold-continued.md) — HOLD-15 through HOLD-27, STILL, MC, AUG, AUD, BUG-B, DD, VER, SCHED, OFFLABEL, STR (current)
 
 ## DEFERRED / NOT-RUN
 

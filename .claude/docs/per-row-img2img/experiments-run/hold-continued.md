@@ -1,6 +1,6 @@
-<!-- provenance: reference (experiment pointer table — HOLD-15 onward, STILL, MC, AUG, AUD, BUG-B, DD, VER; child of experiments-run.md) -->
-<!-- verified: 2026-08-27 · HOLD-27 added; prior cross-checked against home docs @proto-latent-hold-release -->
-# Experiment Run — Hold Continued + Other Series (HOLD-15 through HOLD-27, STILL, MC, AUG, AUD, BUG-B, DD, VER)
+<!-- provenance: reference (experiment pointer table — HOLD-15 onward, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER; child of experiments-run.md) -->
+<!-- verified: 2026-08-27 · STR-1 through STR-8 added; prior cross-checked against home docs @proto-latent-hold-release -->
+# Experiment Run — Hold Continued + Other Series (HOLD-15 through HOLD-27, STR, STILL, MC, AUG, AUD, BUG-B, DD, VER)
 
 Child of [experiments-run.md](../experiments-run.md). Results live in the linked home docs.
 Fields per entry: **ID** · config | result | home link.
@@ -110,3 +110,30 @@ Fields per entry: **ID** · config | result | home link.
   Result: TOTALLY BROKEN: abstract/psychedelic patterns; label load-bearing for own velocity prediction;
   label-lie family CLOSED.
   [label-channel-probe.md](../schedule-tail-late-delta/label-channel-probe.md)
+- **STR-1** · 0.2MP · both injects · d=0.5 · schedule-tail mode `both` @c7afc85 · euler/40-step
+  Result: Solid blend, denoise level looks correct; minor blur on part of 2nd inject (suspected prompt/inject, not mechanistic).
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-2** · 0.2MP · r40 d=0.4 + r60 d=0.2 · schedule-tail mode `both` @c7afc85 · euler/20-step
+  Result: BOTH under-denoise well below dial (0.4 reads ~0.2, 0.2 reads ~0.1), step-count-dependent;
+  hypothesis (UNVERIFIED): only steps·d free steps for the whole stretched tail → under-discretized underbake.
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-3** · 0.2MP · r40 d=0.4 + r60 d=0.2 · schedule-tail mode `rescheduled` @1fea318 · euler/steps PRESUMED 20
+  Result: Both injects somewhat TOO denoised (overbake vs dial) but smooth + well blended; no errors/seams — first fully-clean blend result.
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-4** · 0.2MP · d=0.2/0.1 · schedule-tail mode `rescheduled` @1fea318 · euler
+  Result: d=0.2 still slightly over, d=0.1 slightly UNDER; no errors/blending issues; weakens STR-2 under-discretization hypothesis (held-phase composite anchoring dominates `both` underbake);
+  open = dial calibration (σ_eff=sigmas[k_d], perceived-redraw nonlinear).
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-5** · 0.2MP · d={0.2,0.15} · schedule-tail mode `rescheduled` @1fea318 · euler
+  Result: Solid, matches user intent "spot-on" — first dial-calibrated fully-satisfying result.
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-6** · 0.5MP · d={0.2,0.15} · schedule-tail mode `rescheduled` @1fea318 · euler
+  Result: Res-invariance test: very solid; d=0.2 possibly slightly under but very close; 0.5MP notably higher quality (ordinary res reasons) → mechanism res-invariance effectively HOLDS, mild res-sensitivity of perceived denoise.
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-7** · 0.5MP · d={0.3,0.2} · schedule-tail mode `rescheduled` @1fea318 · euler
+  Result: "Almost perfect" → `rescheduled` = WORKING candidate (clean blends 0.2/0.5MP, calibratable dial; mask-drop/official legs unrun).
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
+- **STR-8** · settings as recent STR runs · schedule-tail mode `mask-drop` @1fea318 · euler
+  Result: FAILURE: audio freak-out + fade-in color flashing + bad inject blending; theory (design-predicted): label jumps m→1 without remap = level/label lie, per-row release cascade in fades, σ-shift amplifies audio;
+  → naive DD-style drop on raw labels FALSIFIED for H3; remap = the seamless-release ingredient.
+  [schedule-tail-late-delta.md](../schedule-tail-late-delta.md)
