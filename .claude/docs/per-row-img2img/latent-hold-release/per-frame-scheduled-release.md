@@ -66,6 +66,15 @@ Fractional release decouples entry level from free-step count: `σ* = lerp(sigma
 `t_row = σ*`. Carries a per-row-sigma-vs-global-Euler mismatch on the release step (acceptable for
 deterministic Euler, NOT free for stochastic samplers).
 
+*Coupling diagnosis + caveat (archival — MOOT, the whole per_frame path is HOLD-27-falsified below; kept as
+the design constraint if fractional release is ever revived).* Step math `k=floor(steps·(1−d))`:
+d=0.30→k=14/6 free steps; d=0.25→k=15/5 free; d=0.20→k=16/4 free. Dropping one integer rung does TWO things
+at once — lowers entry sigma `sigmas[k]` AND subtracts a free step; that lost resolve step is the smudge.
+Fractional breaks the coupling (d=0.27: raw=14.6, k=14, frac=0.6 → releases at step 14 with all 6 free steps
+but enters at the lerp'd lower level). **Honest caveat:** fractional preserves the higher-d neighbor's
+free-step count but cannot manufacture steps beyond the schedule tail — if softness persists even at 6 free
+steps, the real lever is total step count, not fractional.
+
 ## HOLD-26 design + HOLD-27 GPU-FALSIFIED
 
 HOLD-26 (`074e443`) decouples release LEVEL (`sig_L`, always intended-d) from release TIMING (`k_rel`,
