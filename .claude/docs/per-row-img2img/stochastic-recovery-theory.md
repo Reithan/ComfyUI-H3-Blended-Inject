@@ -1,8 +1,10 @@
-<!-- provenance: theory/confirmed (CONFIRMED for single-eval RF-ancestral 2026-08-27; multistep and 2nd-eval generalizations UNVERIFIED) -->
-<!-- verified: 2026-08-27 · PR2 GPU pass task #68; repo @ede2d8c -->
+<!-- provenance: theory/confirmed (CONFIRMED for single-eval RF-ancestral VIDEO 2026-08-27; audio /sig_g fix GPU-FALSIFIED 2026-08-27 — live leads: ancestral-axis mismatch + Consequence 2; multistep/DPM++ UNVERIFIED) -->
+<!-- verified: 2026-08-27 · PR2 GPU pass task #68 @ede2d8c; audio /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
 # THEORY: recovering stochastic samplers via a per-row ancestral step
 
-**Status: CONFIRMED for single-eval RF-ancestral (PR2 GPU-validated, task #68, 2026-08-27).**
+**Status: CONFIRMED for VIDEO single-eval RF-ancestral (PR2 GPU-validated, task #68, 2026-08-27);
+audio stochastic path OPEN (hiss observed under euler_a, task #68 — see
+[audio-carry-identity.md](audio-carry-identity.md)).**
 Multistep (PR3) and DPM++ SDE (PR4) reuse the same identity but add history / a second in-step
 eval — those remain UNVERIFIED and need their own GPU gates (tasks #70, #73). The theory carries
 over to the shipped schedule-tail remap in simplified form — the remap loop already owns per-row σ
@@ -110,26 +112,28 @@ Two ways to reconcile:
 
 The theory is the only route that keeps BOTH clean fractional-keyframe denoise AND stochastic.
 
-## Spike result (PASSED, 2026-08-27)
+## Spike result (PARTIAL PASS, 2026-08-27)
 
 The spike was run as PR2 (`add-per-row-rf-ancestral-step`, merged ede2d8c). Config: 0.2MP, two
 injects at fractional min_denoise d=0.20 and d=0.15, fade-in at start, 20 steps; both `euler`
 (deterministic baseline) and `euler_ancestral` (new RF-ancestral path) tested.
-Result: no grey static, no corruption on fractional or preserved rows, no ghosting;
-euler_ancestral quality matches euler.
+**VIDEO: PASSED.** No grey static, no corruption on fractional or preserved rows, no ghosting;
+euler_ancestral video quality matches euler.
 The linchpin identity `v = (x − denoised)/σ_g`, `denoised_r = x − σ_row·v` (σ_g = per-modality
 global: σ_v for video, σ_a for audio) holds for video on the real H3 model — **no hidden
 σ-dependence detected beyond the label channel**. Bug B is killed for euler_ancestral (video).
-Generalizing: PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add
-multistep history / a second in-step eval — de-risked by this result, but their own GPU gates
-are still required (tasks #70, #73).
 
-→ **AUDIO: OPEN — root cause CONFIRMED 2026-08-27 (task #76).** GPU spike revealed euler_a audio
-hiss. Root cause: implementation divides by `ctx.sigmas[i]` (σ_v, video carrier) instead of
-`ctx.sig_g` (per-modality global). Packed audio lives on the σ_v trajectory
-([audio-carry-identity.md](audio-carry-identity.md):24) so comfy's `denoised` is correct, but
-recovery multiplies by `sig_row` at σ_a scale — effective lerp weight `w/S ≈ w/4`: audio rows
-under-denoise ~4×; at m=1 ~75% of terminal noise survives → the hiss (matches observed symptom).
-Fix: `v = (x−denoised)/ctx.sig_g`. Video is a provable no-op (sig_g == sigmas[i] for video;
-#68 GPU pass cannot regress). Bug also in PR3's recovery reuse; PR3 held (user decision 2026-08-27).
-`renoise_coeff` undershoot is a secondary contributor. GPU perceptual confirm pending (task #76).
+→ **AUDIO: OPEN — root cause DISPUTED (GPU falsification 2026-08-27).** GPU spike revealed
+euler_a audio hiss ("slight microphone feedback"); euler is clean. Audio stochastic renoise is NOT
+correctly calibrated. Earlier diagnosis named divisor `/carrier` (σ_v) instead of `/sig_g`
+(per-modality global) as root cause. **A/B GPU test (branch fix-audio-carrier-recovery, commit
+2483914) FALSIFIED the /sig_g fix:** non-injected (m=1) audio regions went LOUDER, not quieter —
+clearly worse than `/carrier`. The "terminal carrier bug" is now doubted; `/carrier` is empirically
+better and likely load-bearing. Live leads: ancestral-axis mismatch + Consequence 2 fractional
+ringing (see [audio-carry-identity.md](audio-carry-identity.md)). Recommendation: keep `/carrier`;
+abandon PR #20's code fix. Video is a no-op (sig_g == carrier for video); #68 GPU pass unaffected.
+PR3 still held.
+
+Generalizing: PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add
+multistep history / a second in-step eval — de-risked by the video result, but their own GPU
+gates are still required (tasks #70, #73). The audio defect applies to them as well.

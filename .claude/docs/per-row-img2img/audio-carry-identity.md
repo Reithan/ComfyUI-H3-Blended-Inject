@@ -1,5 +1,9 @@
-<!-- provenance: theory (source-derived math; Consequence 2 GPU-OBSERVED 2026-08-27, isolation pending) -->
-<!-- verified: 2026-08-27 · comfy-ref @b78cec87 · repo @06c6bda; GPU obs added, math unchanged -->
+<!-- provenance: confirmed C1/C2 (source-derived); C3 free-audio ancestral axis fix VALIDATED,
+     GPU 2026-08-28; σ_a-LABEL proof valid; C2 status AMBIGUOUS (H2 FALSIFIED as fade-length confound;
+     primary audible artifact is video-primary long-fade interference, not C2 and not H2 renoise axis);
+     velocity-recovery divisor /sig_g GPU-FALSIFIED 2026-08-27 (/carrier load-bearing, corroborates Fix A) -->
+<!-- verified: 2026-08-28 · source-derived algebra (C1/C2); C3 Fix A validated (free audio), earlier falsification retracted — audio-axis-verdict.md;
+     H2 subsequently falsified by fade-length GPU data (same date, late); /sig_g A/B branch fix-audio-carrier-recovery @2483914; source base comfy-ref @b78cec87 · repo @06c6bda -->
 # Audio carry identity: why ×S is exact globally but leaks per-row
 
 Derived 2026-08-23 from comfy-ref source. Read when reasoning about fractional-AUDIO artifacts
@@ -38,47 +42,51 @@ Error ratio `ρ = k·S·(1−m·σ_v)/(1−m·σ_a)`:
 - `σ → 1` (early steps): ρ → S for any m < 1; e.g. m=0 rows present up-to-×S-too-loud audio
   context to the DiT early in sampling.
 
-So fractional/preserved AUDIO rows see a mis-scaled clean component early; perceptibility is
-**GPU-observed 2026-08-27** (attribution pending — see "GPU observation" section below).
+So fractional/preserved AUDIO rows see a mis-scaled clean component early. **Consequence 2 is a
+real packed-clean error; its audibility is AMBIGUOUS.** The earlier euler+fade=CLEAN claim that
+"ruled out" ρ rested on a confounded discriminator (fade length was uncontrolled — see
+[audio-axis-verdict.md](audio-axis-verdict.md)). The H2 renoise hypothesis that replaced it is
+also REJECTED — the primary audible artifact is a video-primary long-fade interference bug
+(moiré/streamers, sampler-independent; see [bugs.md](bugs.md) Bug E). C2 ρ is NOT that bug.
+Whether a faint C2 residual is audible after the primary bug is resolved remains unknown.
+C2 does NOT touch free (m=1) audio, where ρ = 1 exactly.
 
-## Consequence 3 / #76 root cause: velocity recovery must use per-modality σ_g
+## Consequence 3 — free-audio ancestral axis fix VALIDATED (controlled GPU 2026-08-28)
 
-Line 24 above: packed audio lives on the σ_v trajectory (`x_audio = σ_v·ε + (1−σ_v)·S·A`), so
-comfy's `denoised` (formed with σ_v) is correct. But per-row velocity recovery forms
-`denoised_r = x − σ_row·v` where `σ_row` is at σ_a scale for audio rows. If the recovery divides
-by σ_v (`ctx.sigmas[i]`, the video carrier) instead of `ctx.sig_g` (per-modality global), the
-effective lerp weight becomes `σ_a/σ_v = w/S ≈ w/4`: audio rows under-denoise ~4×; at m=1 ~75%
-of pre-final noise survives → the euler_a hiss (task #76, CONFIRMED analytically 2026-08-27).
-Fix: divide by `ctx.sig_g`. Video is a no-op (`sig_g == sigmas[i]` for video), so this cannot
-regress the #68 GPU pass. GPU perceptual confirm pending (task #76 verify).
+Full detail, the retraction of the earlier falsification, the σ_a-load-bearing-for-LABEL proof, and
+Fix A/B status are in the child doc: **[audio-axis-verdict.md](audio-axis-verdict.md)**.
 
-## GPU observation 2026-08-27 (Consequence 2 candidate; attribution pending)
+Short summary: on `main`, our `euler_ancestral` distorted FREE (m=1) audio (tinny/reverb) while
+stock KSampler ancestral was clean — an OUR-NODE bug. Root cause: audio rows ran the ancestral
+RENOISE terms on the σ_a schedule while the packed audio lives on the σ_v trajectory. **Fix A**
+(move the ancestral integration to σ_v) makes free-audio euler_ancestral CLEAN, matching stock;
+m=1 audio bit-exact, video byte-identical. Controlled GPU A/B (2026-08-28, no fractional injects)
+VALIDATED this. An earlier commit (94b1597) had called it FALSIFIED / "not the cure" based on a run
+WITH fractional injects that conflated two phenomena — RETRACTED as premature. σ_a remains
+LOAD-BEARING for the LABEL (model-contract proof, still valid). The primary open issue — long-fade VIDEO-latent interference (moiré/streamers, ~60f noisy vs ~30f
+clean, sampler-independent, present on main) — is VIDEO-PRIMARY, not a C2 or H2 audio bug.
+H2 (carry-contract renoise) is REJECTED as the cause. RCA in progress; see
+[audio-axis-verdict.md](audio-axis-verdict.md) and [bugs.md](bugs.md) Bug E.
 
-**Build tested:** `wiki-dpmpp-spine @ b21dd87` — `sampler.py` is stock `main`.
+### Corroborating evidence — velocity-recovery divisor A/B (/sig_g FALSIFIED, 2026-08-27)
 
-**Confound:** the #76 carrier bug (`/σ_v` instead of `/ctx.sig_g`) is LIVE in this build.
-The observation is therefore NOT yet cleanly attributed to either cause.
+A separate 2026-08-27 GPU A/B (branch `fix-audio-carrier-recovery` @2483914) independently tested
+the per-row velocity-recovery divisor. Only change vs main: `/carrier` (σ_v) → `/sig_g` (σ_a for
+audio). Free (m=1) audio then produced LOUD FLUCTUATING NOISE — clearly worse than main's residual.
+So `/sig_g` is **FALSIFIED** and `/carrier` (σ_v) is **load-bearing**, corroborating Fix A's σ_v
+axis choice (video a no-op: sig_g == carrier). Hypothesis (mechanism unverified): `/carrier` keeps a
+residual `denoised_r = C + (σ_v−σ_a)(ε−C)` that self-consistently offsets the σ_a-vs-σ_v mismatch;
+`/sig_g` drops it → mismatch accumulates step-over-step. The standalone `/sig_g` code fix (PR #20)
+is abandoned.
 
-**Symptom:** a "ringing feedback" audio artifact originating specifically in fractional-denoise
-(0<m<1) frames — the fade-out of inject 1 and the blend boundaries of keyframe injects 1 & 2.
-The artifact then echoes and resolves diegetically forward into following frames, including regions
-with no injected audio.
+The #68 GPU run (euler_a "slight microphone feedback"; euler clean) was the first sighting of this
+free-audio miscalibration — now attributed to the σ_a-axis renoise bug and FIXED by Fix A
+([bugs.md](bugs.md) Bug C). Its earlier "OPEN" status is superseded.
 
-**Leading hypothesis:** the symptom matches Consequence 2 (×ρ mis-scaling worst early, σ→1,
-localised to fractional rows) far better than the #76 carrier bug (which is broadband
-under-denoise, uniform across the run, worst at m=1).
-The forward propagation is consistent with H3's overlapping VAE decode windows
-(memory `h3-vae-decode-overlap`) plus the model carrying excess energy until it decays.
-
-**Decisive retest PENDING:** same workflow on `fix-audio-carrier-recovery` (= `main` + `/sig_g` only).
-
-- Ringing persists → Consequence 2 **CONFIRMED**; build the 1/ρ wrapper compensation (next section).
-- Ringing vanishes → symptom was the #76 carrier bug; Consequence 2 still unconfirmed perceptually.
-
-## If GPU retest shows fractional-audio artifacts
+## If artifacts survive the axis fix — Consequence-2 (ρ) compensation
 
 A wrapper-side per-row affine compensation is derivable: adjust the audio slice of the wrapper's
 input per row by `1/ρ` on the clean component (requires `clean_packed`, per-step σ_v/σ_a, and
-inverting `forward`'s output transform `out[1] = (1−S)·(A·k) + (1+(S−1)·σ_a)·out[1]`). Native
-precedent: `scale_latent_inpaint` pre-divides injected clean audio by `(σ_v/σ_a)/S` for exactly
-this reason. Do NOT build this until an artifact is actually observed.
+inverting `forward`'s output transform). Native precedent: `scale_latent_inpaint` pre-divides
+injected clean audio by `(σ_v/σ_a)/S` for this reason. Do NOT build until an artifact is
+actually observed on pure euler after the axis fix is applied.
