@@ -1058,9 +1058,20 @@ class H3InjectSampler:
                 ),
                 "positive": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
-                "inject_list": (INJECT_LIST,),
             },
             "optional": {
+                "inject_list": (
+                    INJECT_LIST,
+                    {
+                        "tooltip": (
+                            "Optional chain of H3AddInject / H3AddGuide entries. Leave "
+                            "unconnected (or connect a chain whose nodes are all bypassed, "
+                            "so it resolves to nothing) to sample the latent with no "
+                            "injects — a plain passthrough: all rows free, m=1, native "
+                            "sampling, no per-row denoise compression."
+                        ),
+                    },
+                ),
                 "negative": (
                     "CONDITIONING",
                     {
@@ -1089,7 +1100,7 @@ class H3InjectSampler:
         scheduler: str,
         positive: Any,
         latent_image: dict[str, Any],
-        inject_list: InjectList,
+        inject_list: InjectList | None = None,
         negative: Any | None = None,
     ) -> tuple[dict[str, Any]]:
         """Run the H3 sampler with per-row img2img inject.
@@ -1113,9 +1124,10 @@ class H3InjectSampler:
         latent_image:
             ComfyUI LATENT dict with ``"samples"`` key.
         inject_list:
-            Ordered chain of :class:`~comfyui_h3_blended_inject.schedule.Inject` and
-            :class:`~comfyui_h3_blended_inject.schedule.Guide` instances (partitioned
-            by type here).
+            Optional ordered chain of :class:`~comfyui_h3_blended_inject.schedule.Inject`
+            and :class:`~comfyui_h3_blended_inject.schedule.Guide` instances (partitioned
+            by type here).  ``None`` or an empty list means "no injects" — the node runs as
+            a plain passthrough (empty schedule, no guides, native sampling of the latent).
         negative:
             Optional negative conditioning.  ``None`` (the default) means "no uncond" —
             the H3 CFG-distilled default.  When provided, it is forwarded verbatim to the
@@ -1164,7 +1176,10 @@ class H3InjectSampler:
 
         # 2. Partition the chain: Inject entries feed the per-row img2img schedule;
         #    Guide entries feed the native keyframe cond path (appended at sample time).
-        injects, guide_list = guides.partition_inject_list(inject_list)
+        #    ``inject_list`` is optional: None / empty means "no injects" — partition
+        #    yields empty lists, the schedule is empty, and sampling runs as a plain
+        #    passthrough (all rows free, m=1, native sampling, no per-row compression).
+        injects, guide_list = guides.partition_inject_list(inject_list or [])
 
         # 3. Validate all injects: resolution first (so the CPU test can raise before
         #    touching the model), then envelope indices.

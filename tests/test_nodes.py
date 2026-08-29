@@ -247,9 +247,16 @@ class TestH3InjectSamplerInputTypes:
             "scheduler",
             "positive",
             "latent_image",
-            "inject_list",
         }
         assert expected <= required
+
+    def test_inject_list_is_optional_not_required(self):
+        """inject_list must be optional so the node runs with zero injects (passthrough)."""
+        types = H3InjectSampler.INPUT_TYPES()
+        assert "inject_list" not in types["required"], "inject_list must not be required"
+        optional = types.get("optional", {})
+        assert "inject_list" in optional, "inject_list must be in optional"
+        assert optional["inject_list"][0] == INJECT_LIST
 
     def test_chaining_widgets_hidden(self):
         """Chaining widgets are deliberately hidden while unsupported (per-row
@@ -1911,6 +1918,27 @@ class TestH3InjectSamplerGuideBehavior:
         captured, _ = self._sample([guide], monkeypatch)
         assert captured["schedule"] == []
         assert len(captured["guide_entries"]) == 1
+
+    def test_none_inject_list_runs_as_passthrough(self, monkeypatch):
+        """inject_list=None must not raise: empty schedule + empty guides = passthrough.
+
+        Regression for the required-input bug — with no injects wired (or all bypassed),
+        ComfyUI passes nothing and sample() previously died partitioning None. The node
+        must sample natively: empty schedule, no guides, and return a LATENT dict.
+        """
+        captured, result = self._sample(None, monkeypatch)
+        assert captured["schedule"] == []
+        assert captured["guide_entries"] == []
+        assert isinstance(result, tuple)
+        assert "samples" in result[0]
+
+    def test_empty_inject_list_runs_as_passthrough(self, monkeypatch):
+        """inject_list=[] must behave identically to None: clean passthrough sampling."""
+        captured, result = self._sample([], monkeypatch)
+        assert captured["schedule"] == []
+        assert captured["guide_entries"] == []
+        assert isinstance(result, tuple)
+        assert "samples" in result[0]
 
     def test_foreign_entry_in_chain_raises_type_error(self):
         with pytest.raises(TypeError, match="Inject or Guide"):
