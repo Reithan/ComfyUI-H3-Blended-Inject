@@ -180,7 +180,7 @@ def _run_sampler(  # pragma: no cover
         existing = list(positive[0][1].get("minimax_keyframes", [])) if positive else []
         positive = node_helpers.conditioning_set_values(
             positive,
-            {"minimax_keyframes": existing + [kf for kf, _ in guide_entries]},
+            {"minimax_keyframes": existing + [kf for kf, *_ in guide_entries]},
         )
 
     # --- 1. Split the target latent into components (H3 FLOW_AV is NestedTensor). ---
