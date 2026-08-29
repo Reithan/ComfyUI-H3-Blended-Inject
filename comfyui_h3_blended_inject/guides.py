@@ -6,13 +6,15 @@ removal (see the wiki's ``timed-cond-removal-prototype`` doc):
 - :func:`snap_guide_length` / :func:`resolve_frame_index` / :func:`frame_count_for_rows` /
   :func:`crop_audio_latent` mirror comfy's ``MiniMaxH3AddGuide`` node logic
   (``comfy_extras/nodes_minimax_h3.py``), relocated to node/sample time on our side.
-- :func:`release_threshold` converts a guide's ``hold_frac`` into the sigma threshold the
-  conditioning wrapper compares the per-step sigma against.
 - :func:`filter_released_keyframes` builds the released payload copy — keyframe entries
   removed by object identity, ``layout`` popped (its signature does NOT encode keyframes,
   so a stale prebuilt layout would silently desync; forward rebuilds when absent), and the
   cond latent lists rebuilt exactly as ``model_base.MiniMaxH3.extra_conds`` builds them
   (held keyframes first, then refs, with the same presence predicates).
+
+Guide start/end step indices are computed directly in ``nodes._run_sampler`` from
+``start_percent`` / ``end_percent`` and the sampler's ``steps`` count; the conditioning
+wrapper compares the sampler loop's ``schedule_tail["current_step"]`` against those indices.
 
 This module imports only stdlib + :mod:`~comfyui_h3_blended_inject.grid` (also pure);
 latents are duck-typed (``.shape`` / slicing / ``.clone()``) so no torch import is needed.
@@ -153,30 +155,6 @@ def crop_audio_latent(audio_latent: Any, audio_ticks: int, resolved_frame_index:
     if audio_latent.shape[-1] > max_rt:
         audio_latent = audio_latent[..., :max_rt].clone()
     return audio_latent
-
-
-def release_threshold(hold_frac: float, sigmas: list[float]) -> float | None:
-    """Convert a guide's ``hold_frac`` into the wrapper's sigma release threshold.
-
-    ``k_sw = round(hold_frac * K)`` (``K`` = step count = ``len(sigmas) - 1``) is the
-    number of steps the cond row is held.  The threshold is the midpoint of the boundary
-    sigma pair ``sigmas[k_sw - 1]`` / ``sigmas[k_sw]`` so float jitter in the wrapper's
-    per-step sigma cannot flip the comparison; release fires when ``sigma < threshold``.
-
-    Returns
-    -------
-    float | None
-        ``None`` when ``hold_frac >= 1.0`` (never released — official behavior; the
-        wrapper skips the guide entirely).  ``inf`` when ``k_sw <= 0`` (released from
-        step 0 = no-reference ablation).  Otherwise the boundary-sigma midpoint.
-    """
-    if hold_frac >= 1.0:
-        return None
-    n_steps = len(sigmas) - 1
-    k_sw = round(hold_frac * n_steps)
-    if k_sw <= 0:
-        return float("inf")
-    return (float(sigmas[k_sw - 1]) + float(sigmas[k_sw])) / 2.0
 
 
 def build_keyframe(guide: Guide, resolved_frame_index: int, audio_ticks: int) -> dict[str, Any]:

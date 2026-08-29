@@ -111,16 +111,23 @@ class Guide:
 
     Attributes
     ----------
-    frame_idx:
+    inject_at:
         PIXEL-frame index to anchor at (raw, as entered).  Negative values count from the
-        end of the video.  NOTE: deliberately different from :attr:`Inject.inject_at`,
-        which is a latent-frame index snapped to the 17-frame grid.
-    hold_frac:
-        Fraction of the sampling schedule for which this guide's cond row is held, in
+        end of the video.  NOTE: these are pixel-frame indices unlike
+        :attr:`Inject.inject_at`, which is a latent-frame index snapped to the 17-frame
+        grid.
+    start_percent:
+        Fraction of the sampling schedule at which this guide's cond row is first added,
+        in [0.0, 1.0].  ``0.0`` = present from step 0 (official/native behavior).  Higher
+        values delay the guide's activation; it is absent from conditioning while sigma is
+        still above the start threshold.  Half-open with ``end_percent``:
+        ``[start_percent, end_percent)``.
+    end_percent:
+        Fraction of the sampling schedule at which this guide's cond row is removed, in
         [0.0, 1.0].  ``1.0`` = held for the whole run (official/native behavior, never
-        removed).  ``0.0`` = removed from step 0 (no-reference ablation).  Fractional
-        values release the cond row partway so a co-located fractional latent inject can
-        finish denoising without the cond-token attractor re-pulling it toward source.
+        removed).  Lower values release the cond row partway so a co-located fractional
+        latent inject can finish denoising without the cond-token attractor re-pulling it
+        toward source.  ``0.0`` = removed from step 0 (no-reference ablation).
     video_latent:
         Pre-encoded video latent for the anchored frame(s) (from the video VAE at node
         time), or ``None`` for an audio-only guide.
@@ -135,8 +142,9 @@ class Guide:
         length ``17k + 5``.  Used for the sample-time bounds check.
     """
 
-    frame_idx: int
-    hold_frac: float
+    inject_at: int
+    start_percent: float
+    end_percent: float
     video_latent: Any | None = None
     audio_latent: Any | None = None
     resolution: tuple[int, int] = (0, 0)

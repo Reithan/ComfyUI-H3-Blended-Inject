@@ -15,7 +15,6 @@ from comfyui_h3_blended_inject.guides import (
     filter_released_keyframes,
     frame_count_for_rows,
     partition_inject_list,
-    release_threshold,
     resolve_frame_index,
     snap_guide_length,
 )
@@ -47,7 +46,10 @@ def _make_inject() -> Inject:
 class TestPartitionInjectList:
     def test_mixed_list_partitions_preserving_order(self) -> None:
         i1, i2 = _make_inject(), _make_inject()
-        g1, g2 = Guide(frame_idx=0, hold_frac=1.0), Guide(frame_idx=5, hold_frac=0.5)
+        g1, g2 = (
+            Guide(inject_at=0, start_percent=0.0, end_percent=1.0),
+            Guide(inject_at=5, start_percent=0.0, end_percent=0.5),
+        )
         injects, guides = partition_inject_list([i1, g1, i2, g2])
         assert injects == [i1, i2]
         assert guides == [g1, g2]
@@ -177,35 +179,6 @@ class TestCropAudioLatent:
 
 
 # ---------------------------------------------------------------------------
-# release_threshold
-# ---------------------------------------------------------------------------
-
-
-class TestReleaseThreshold:
-    SIGMAS = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0]  # K = 10 steps
-
-    def test_hold_frac_one_returns_none(self) -> None:
-        assert release_threshold(1.0, self.SIGMAS) is None
-
-    def test_hold_frac_zero_returns_inf(self) -> None:
-        assert release_threshold(0.0, self.SIGMAS) == float("inf")
-
-    def test_tiny_hold_frac_rounding_to_zero_steps_returns_inf(self) -> None:
-        assert release_threshold(0.01, self.SIGMAS) == float("inf")
-
-    def test_midpoint_of_boundary_sigma_pair(self) -> None:
-        # hold_frac=0.6, K=10 → k_sw=6 → midpoint of sigmas[5]=0.5 and sigmas[6]=0.4.
-        assert release_threshold(0.6, self.SIGMAS) == pytest.approx(0.45)
-
-    def test_hold_frac_rounding_to_full_schedule_uses_last_pair(self) -> None:
-        # hold_frac=0.99, K=10 → k_sw=10 → midpoint of sigmas[9]=0.1 and sigmas[10]=0.0.
-        assert release_threshold(0.99, self.SIGMAS) == pytest.approx(0.05)
-
-    def test_single_entry_schedule_releases_immediately(self) -> None:
-        assert release_threshold(0.5, [1.0]) == float("inf")
-
-
-# ---------------------------------------------------------------------------
 # build_keyframe
 # ---------------------------------------------------------------------------
 
@@ -213,13 +186,13 @@ class TestReleaseThreshold:
 class TestBuildKeyframe:
     def test_video_only_guide(self) -> None:
         latent = torch.zeros(1, 24, 2, 4, 4)
-        g = Guide(frame_idx=0, hold_frac=1.0, video_latent=latent)
+        g = Guide(inject_at=0, start_percent=0.0, end_percent=1.0, video_latent=latent)
         kf = build_keyframe(g, resolved_frame_index=40, audio_ticks=178)
         assert kf == {"resolved_frame_index": 40, "latent": latent}
 
     def test_audio_only_guide_crops_audio(self) -> None:
         z = torch.zeros(1, 32, 2, 500)
-        g = Guide(frame_idx=0, hold_frac=1.0, audio_latent=z)
+        g = Guide(inject_at=0, start_percent=0.0, end_percent=1.0, audio_latent=z)
         kf = build_keyframe(g, resolved_frame_index=0, audio_ticks=178)
         assert "latent" not in kf
         assert kf["audio_latent"].shape[-1] == 178
@@ -227,7 +200,9 @@ class TestBuildKeyframe:
     def test_video_and_audio_guide_has_both_keys(self) -> None:
         latent = torch.zeros(1, 24, 2, 4, 4)
         z = torch.zeros(1, 32, 2, 50)
-        g = Guide(frame_idx=0, hold_frac=1.0, video_latent=latent, audio_latent=z)
+        g = Guide(
+            inject_at=0, start_percent=0.0, end_percent=1.0, video_latent=latent, audio_latent=z
+        )
         kf = build_keyframe(g, resolved_frame_index=0, audio_ticks=178)
         assert kf["latent"] is latent
         assert kf["audio_latent"] is z

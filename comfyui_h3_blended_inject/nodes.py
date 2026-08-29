@@ -4,8 +4,8 @@ Three nodes are defined:
 
 - :class:`H3AddInject`: Appends one inject to an ``INJECT_LIST`` chain.  Chainable.
 - :class:`H3AddGuide`: Appends one native keyframe/guide cond entry to the same chain
-  (monadic clone of comfy's "Add Guide for MiniMax H3", with per-guide timed cond
-  removal via ``hold_frac``).  Chainable.
+  (monadic clone of comfy's "Add Guide for MiniMax H3", with per-guide step-gated cond
+  windows via ``start_percent`` / ``end_percent``).  Chainable.
 - :class:`H3InjectSampler`: KSampler Advanced clone that accepts an ``INJECT_LIST`` and
   applies per-row img2img inject (and native guide cond rows) during sampling.
 
@@ -108,7 +108,7 @@ def _run_sampler(  # pragma: no cover
     samples: Any,
     target_rows: int,
     audio_ticks: int,
-    guide_entries: list[tuple[dict[str, Any], float]] | None = None,
+    guide_entries: list[tuple[dict[str, Any], float, float]] | None = None,
 ) -> tuple[dict[str, Any]]:
     """GPU/ComfyUI per-row img2img sampling pipeline — not CPU-testable.
 
@@ -136,12 +136,11 @@ def _run_sampler(  # pragma: no cover
        (:func:`~comfyui_h3_blended_inject.composite.post_composite_preserve`) for ``m == 0``
        rows and audio-preserve ticks.
 
-    Guides (``guide_entries``: pre-built keyframe dicts + per-guide ``hold_frac``) are
-    appended to the positive conditioning's ``minimax_keyframes`` here (on a COPY — user
-    conds are never mutated), and their per-guide release thresholds are armed on the
-    conditioning wrapper once the sigma schedule exists (per-guide timed cond removal;
-    see :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper` and
-    :mod:`~comfyui_h3_blended_inject.guides`).
+    Guides (``guide_entries``: pre-built keyframe dicts + per-guide ``start_percent`` /
+    ``end_percent``) are appended to the positive conditioning's ``minimax_keyframes`` here
+    (on a COPY — user conds are never mutated), and their step-gated windows are armed on
+    the conditioning wrapper (per-guide start/end step cond; see
+    :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`).
 
     Notes
     -----
@@ -253,9 +252,9 @@ def _run_sampler(  # pragma: no cover
         "pooled_ones": m.model._denoise_mask_values(torch.ones_like(m_packed), latent_shapes),
         "make_pooled": lambda c_vec: m.model._denoise_mask_values(c_vec, latent_shapes),
     }
-    # Per-guide timed cond removal: mutable state shared with the wrapper.  Its "entries"
-    # (keyframe id → sigma threshold) are filled in below once the sigma schedule exists;
-    # until then — and for hold_frac=1.0 guides, forever — the wrapper path is inert.
+    # Per-guide step-gated cond: mutable state shared with the wrapper.  Its "entries" /
+    # "pending_entries" (keyframe id → step index) are filled in below once the sigma
+    # schedule exists; until then the wrapper path is inert.
     guide_release: dict[str, Any] = {}
     m.model_options = {
         **m.model_options,
@@ -355,22 +354,33 @@ def _run_sampler(  # pragma: no cover
     )
     schedule_tail_cfg["sigmas_dense"] = dense_ks.sigmas.to(device)
 
-    # Arm per-guide timed cond removal now the sigma schedule exists.  hold_frac=1.0
-    # guides get no threshold (release_threshold → None) and are never released — the
-    # official Add Guide behavior.  Matching is by keyframe-dict object identity, so
-    # official-node / fl2va keyframes riding the same conditioning are never caught.
+    # Arm per-guide step-gated cond now the step count is known.
+    # start_percent=0 / end_percent=1 guides need no entries (always active — official behavior).
+    # Matching is by keyframe-dict object identity, so official-node / fl2va keyframes riding
+    # the same conditioning are never caught.
     if guide_entries:
-        sigma_list = [float(s) for s in sigmas]
         release_entries = [
-            (id(kf), threshold)
-            for kf, hold_frac in guide_entries
-            if (threshold := guides.release_threshold(hold_frac, sigma_list)) is not None
+            (id(kf), round(end_pct * steps))
+            for kf, start_pct, end_pct in guide_entries
+            if round(end_pct * steps) < steps
+        ]
+        pending_entries = [
+            (id(kf), round(start_pct * steps))
+            for kf, start_pct, end_pct in guide_entries
+            if round(start_pct * steps) > 0
         ]
         if release_entries:
             guide_release["entries"] = release_entries
+        if pending_entries:
+            guide_release["pending_entries"] = pending_entries
+        if release_entries or pending_entries:
             print(
-                "[H3_INJECT] timed cond removal armed: "
-                + ", ".join(f"kf@{t:.4f}" for _, t in release_entries),
+                "[H3_INJECT] step-gated guide cond armed: "
+                + ", ".join(
+                    f"kf@[{round(sp * steps)}..{round(ep * steps)})"
+                    for _, sp, ep in guide_entries
+                    if round(ep * steps) < steps or round(sp * steps) > 0
+                ),
                 flush=True,
             )
 
@@ -554,25 +564,6 @@ class H3AddInject:
                     INJECT_LIST,
                     {"tooltip": "Chain input. Absent = start a new list."},
                 ),
-                "images": (
-                    "IMAGE",
-                    {
-                        "tooltip": (
-                            "Video clip or single image to inject. Assumed 24 fps native; "
-                            "no fps conversion is performed. Resolution must be a multiple "
-                            "of 32 and match the target latent exactly."
-                        ),
-                    },
-                ),
-                "audio": (
-                    "AUDIO",
-                    {
-                        "tooltip": (
-                            "Audio to inject. Resampled to target rate; "
-                            "trimmed or padded to video duration."
-                        )
-                    },
-                ),
                 "vae": (
                     "VAE",
                     {
@@ -593,6 +584,25 @@ class H3AddInject:
                             "latent is stored on the Inject alongside the video latent. "
                             "Requires a matching audio VAE for the H3 model."
                         ),
+                    },
+                ),
+                "images": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "Video clip or single image to inject. Assumed 24 fps native; "
+                            "no fps conversion is performed. Resolution must be a multiple "
+                            "of 32 and match the target latent exactly."
+                        ),
+                    },
+                ),
+                "audio": (
+                    "AUDIO",
+                    {
+                        "tooltip": (
+                            "Audio to inject. Resampled to target rate; "
+                            "trimmed or padded to video duration."
+                        )
                     },
                 ),
             },
@@ -808,16 +818,16 @@ class H3AddGuide:
 
     - **No in-node resize**: the guide resolution must match the target latent exactly;
       a mismatch raises at sample time.  Resize upstream (e.g. kjnodes "Resize Image v2").
-    - **Per-guide ``hold_frac``**: at ``1.0`` (default) the guide behaves exactly like the
-      official node — its cond row is held for the whole run.  Below 1.0, the cond row is
-      REMOVED partway through sampling (timed cond removal), so a co-located fractional
+    - **Per-guide ``start_percent`` / ``end_percent``**: the guide's cond row is active only
+      within the half-open step window ``[start_percent, end_percent)``.  At the defaults
+      (0.0 / 1.0) the guide behaves exactly like the official node.  Setting ``end_percent``
+      below 1.0 releases the cond row partway through sampling so a co-located fractional
       ``H3AddInject`` keyframe can finish its own denoise without the cond-token attractor
       re-pulling it toward the source.  Official-node and fl2va keyframes are never
-      affected — the release filter matches only entries this chain appended, by object
-      identity.
+      affected — the filter matches only entries this chain appended, by object identity.
 
-    ``frame_idx`` keeps the official PIXEL-frame semantics (negative = from the end) —
-    NOT ``H3AddInject.inject_at``'s latent-frame/17-snap semantics.
+    ``inject_at`` uses pixel-frame semantics (negative = from the end) —
+    NOT the latent-frame/17-snap semantics of ``H3AddInject.inject_at``.
     """
 
     @classmethod
@@ -825,7 +835,7 @@ class H3AddGuide:
         """Return the full ComfyUI input schema for H3AddGuide."""
         return {
             "required": {
-                "frame_idx": (
+                "inject_at": (
                     "INT",
                     {
                         "default": 0,
@@ -834,13 +844,28 @@ class H3AddGuide:
                         "tooltip": (
                             "PIXEL-frame index to anchor the image (or the clip's first "
                             "frame) at. Negative values count from the end of the video. "
-                            "NOTE: this is a pixel-frame index like the official Add Guide "
+                            "NOTE: these are pixel-frame indices like the official Add Guide "
                             "node — NOT H3AddInject's inject_at, which is a latent-frame "
                             "index snapped to the 17-frame grid."
                         ),
                     },
                 ),
-                "hold_frac": (
+                "start_percent": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": (
+                            "Step fraction at which this guide's cond row first becomes "
+                            "active. 0.0 = present from step 0 (official Add Guide behavior). "
+                            "Higher values delay the guide's activation. Half-open with "
+                            "end_percent: [start_percent, end_percent)."
+                        ),
+                    },
+                ),
+                "end_percent": (
                     "FLOAT",
                     {
                         "default": 1.0,
@@ -848,13 +873,12 @@ class H3AddGuide:
                         "max": 1.0,
                         "step": 0.01,
                         "tooltip": (
-                            "Fraction of the sampling schedule this guide's cond row is "
-                            "held. 1.0 = held for the entire run (identical to the "
-                            "official Add Guide node). Lower values REMOVE the cond row "
-                            "partway through sampling (timed cond removal) so a "
-                            "co-located fractional H3AddInject keyframe can finish its "
-                            "own denoise without being re-pulled toward the source. "
-                            "0.0 = removed from step 0 (no-reference ablation)."
+                            "Step fraction at which this guide's cond row is removed (first "
+                            "step the guide is NO LONGER present). 1.0 = held for the entire "
+                            "run (official Add Guide behavior). Lower values release the cond "
+                            "row so a co-located fractional H3AddInject keyframe can finish "
+                            "denoising without being re-pulled toward the source. "
+                            "0.0 = absent from step 0 (no-reference ablation)."
                         ),
                     },
                 ),
@@ -863,6 +887,14 @@ class H3AddGuide:
                 "inject_list": (
                     INJECT_LIST,
                     {"tooltip": "Chain input. Absent = start a new list."},
+                ),
+                "vae": (
+                    "VAE",
+                    {"tooltip": "Video VAE; required when an image is connected."},
+                ),
+                "audio_vae": (
+                    "VAE",
+                    {"tooltip": "Audio VAE; required when an audio is connected."},
                 ),
                 "image": (
                     "IMAGE",
@@ -886,14 +918,6 @@ class H3AddGuide:
                         ),
                     },
                 ),
-                "vae": (
-                    "VAE",
-                    {"tooltip": "Video VAE; required when an image is connected."},
-                ),
-                "audio_vae": (
-                    "VAE",
-                    {"tooltip": "Audio VAE; required when an audio is connected."},
-                ),
             },
         }
 
@@ -904,13 +928,14 @@ class H3AddGuide:
 
     def add_guide(
         self,
-        frame_idx: int,
-        hold_frac: float,
+        inject_at: int,
+        start_percent: float,
+        end_percent: float,
         inject_list: InjectList | None = None,
-        image: Any | None = None,
-        audio: Any | None = None,
         vae: Any | None = None,
         audio_vae: Any | None = None,
+        image: Any | None = None,
+        audio: Any | None = None,
     ) -> tuple[InjectList]:
         """Validate inputs, encode content, and append a :class:`Guide` to the chain.
 
@@ -957,8 +982,9 @@ class H3AddGuide:
         )
 
         g = Guide(
-            frame_idx=frame_idx,
-            hold_frac=hold_frac,
+            inject_at=inject_at,
+            start_percent=start_percent,
+            end_percent=end_percent,
             video_latent=video_latent,
             audio_latent=audio_latent,
             resolution=resolution,
@@ -1013,27 +1039,8 @@ class H3InjectSampler:
         return {
             "required": {
                 "model": ("MODEL",),
-                # NOTE (prototype): the KSampler-Advanced chaining surface (add_noise,
-                # start_at_step, end_at_step, return_with_leftover_noise) is HIDDEN, not
-                # supported: per-row compressed schedules make partial runs / leftover
-                # noise per-row-incorrect (fractional rows end at m*sigma_end, but the
-                # sampler's final inverse_noise_scaling divides all rows by (1-sigma_end)).
-                # Internally hardcoded to add_noise=enable / full step range / no leftover.
-                # Revisit post-prototype: see wiki status-and-open-paths.
-                "noise_seed": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "RNG seed for both sampler noise and per-row hold noise.",
-                    },
-                ),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "cfg": (
-                    "FLOAT",
-                    {"default": 7.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01},
-                ),
+                "latent_image": ("LATENT",),
+                "positive": ("CONDITIONING",),
                 "sampler_name": (
                     samplers,
                     {
@@ -1056,8 +1063,28 @@ class H3InjectSampler:
                         ),
                     },
                 ),
-                "positive": ("CONDITIONING",),
-                "latent_image": ("LATENT",),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "cfg": (
+                    "FLOAT",
+                    {"default": 7.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01},
+                ),
+                # NOTE (prototype): the KSampler-Advanced chaining surface (add_noise,
+                # start_at_step, end_at_step, return_with_leftover_noise) is HIDDEN, not
+                # supported: per-row compressed schedules make partial runs / leftover
+                # noise per-row-incorrect (fractional rows end at m*sigma_end, but the
+                # sampler's final inverse_noise_scaling divides all rows by (1-sigma_end)).
+                # Internally hardcoded to add_noise=enable / full step range / no leftover.
+                # Revisit post-prototype: see wiki status-and-open-paths.
+                "noise_seed": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "RNG seed for both sampler noise and per-row hold noise.",
+                    },
+                ),
             },
             "optional": {
                 "inject_list": (
@@ -1210,7 +1237,7 @@ class H3InjectSampler:
         #    frame-index resolution + bounds check, audio crop, keyframe dict build.
         #    The keyframe dicts' OBJECT IDENTITY is the timed-removal tracking key —
         #    built once here, threaded through _run_sampler untouched.
-        guide_entries: list[tuple[dict[str, Any], float]] = []
+        guide_entries: list[tuple[dict[str, Any], float, float]] = []
         if guide_list:
             frame_count = guides.frame_count_for_rows(target_rows)
             for g in guide_list:
@@ -1221,8 +1248,14 @@ class H3InjectSampler:
                         "not resize; resize the guide image upstream (e.g. kjnodes "
                         "'Resize Image v2')."
                     )
-                resolved = guides.resolve_frame_index(g.frame_idx, frame_count, g.guide_frames)
-                guide_entries.append((guides.build_keyframe(g, resolved, audio_ticks), g.hold_frac))
+                resolved = guides.resolve_frame_index(g.inject_at, frame_count, g.guide_frames)
+                guide_entries.append(
+                    (
+                        guides.build_keyframe(g, resolved, audio_ticks),
+                        g.start_percent,
+                        g.end_percent,
+                    )
+                )
 
         # GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference
         # and fractional denoise mask, install the conditioning wrapper, wrap the base
@@ -1258,7 +1291,7 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "H3AddInject": "H3 Add Inject",
     "H3AddGuide": "H3 Add Guide",
-    "H3InjectSampler": "H3 Inject Sampler",
+    "H3InjectSampler": "H3 Blended Sampler",
 }
 
 __all__ = [
