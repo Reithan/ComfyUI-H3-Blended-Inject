@@ -1,5 +1,7 @@
-<!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral VIDEO 2026-08-27; audio /sig_g fix GPU-FALSIFIED 2026-08-27; Finding 1 SOURCE-CONFIRMED; PR3/PR4 design UNVERIFIED) -->
-<!-- verified: 2026-08-27 · PR2 GPU pass task #68 @ede2d8c; audio /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
+<!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral VIDEO 2026-08-27;
+     Finding 1 SOURCE-CONFIRMED; audio euler_a hiss = σ_a-axis renoise bug, FIXED by Fix A
+     GPU-validated 2026-08-28; /sig_g divisor fix GPU-FALSIFIED 2026-08-27; PR3/PR4 design UNVERIFIED) -->
+<!-- verified: 2026-08-28 · PR2 GPU pass task #68 @ede2d8c; Fix A validated free audio (audio-axis-verdict.md); /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
 <!-- source: comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde,
      796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
@@ -32,10 +34,11 @@ euler_ancestral video quality matches euler. The per-row velocity-recovery ident
 `v = (x − denoised)/σ_carrier`, `denoised_r = x − σ_row·v` holds on the real H3 model with
 NO hidden σ-dependence beyond the label channel for the VIDEO stream. Bug B is killed for video.
 
-**OPEN (AUDIO):** euler_a gen showed faint audio noise ("slight microphone feedback"); euler is
-clean. Audio stochastic path is NOT validated. Leading hypothesis: renoise in `_euler_ancestral_rf_step`
-is miscalibrated for the audio slice (see [audio-carry-identity.md](audio-carry-identity.md)).
-Task #76 tracks this defect.
+**AUDIO (was OPEN → FIXED by Fix A, 2026-08-28):** euler_a gen showed faint audio noise ("slight
+microphone feedback"); euler clean. Root cause is now known — ancestral renoise in
+`_euler_ancestral_rf_step` ran on the σ_a axis while packed audio lives on σ_v; **Fix A** moves it
+to σ_v and makes free-audio euler_a clean (GPU-validated; see [bugs.md](bugs.md#bug-c) Bug C and
+[audio-carry-identity.md](audio-carry-identity.md)). Task #76 tracks the fix (pending merge).
 
 *Historical context (why the remap form cracked before PR2):* the remap's per-row r-scaling
 `x_cur = x_prev + r·(x_cur − x_prev)` linearly rescales a displacement that contains the
@@ -45,13 +48,10 @@ renoise term. `sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha
 `σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral VIDEO case. Same root cause as
 [Bug B](bugs.md#bug-b); PR2 closes it for video; audio stochastic and multistep/DPM++ not verified.
 
-→ **AUDIO: OPEN — direction FALSIFIED (GPU 2026-08-27).** GPU spike revealed euler_a audio hiss.
-Earlier diagnosis: recovery divides by `ctx.sigmas[i]` (σ_v) not `ctx.sig_g` (audio-global). **A/B
-GPU test (branch fix-audio-carrier-recovery, commit 2483914) FALSIFIED the /sig_g fix:** free (m=1)
-audio regions went LOUDER, not quieter. `/carrier` is empirically better; the terminal carrier bug
-hypothesis is doubted. Live leads: ancestral-axis mismatch (σ_a-vs-σ_v) and Consequence 2 fractional
-ringing — see [audio-carry-identity.md](audio-carry-identity.md) Consequence 3. Recommendation:
-keep `/carrier`; abandon PR #20. Video unaffected (#68 GPU pass intact). PR3 still held.
+The competing `/sig_g` divisor fix was separately GPU-FALSIFIED (A/B, branch
+fix-audio-carrier-recovery @2483914; free m=1 audio got LOUDER) → `/carrier` (σ_v) is load-bearing,
+corroborating Fix A's axis; abandon PR #20. Full detail:
+[audio-carry-identity.md](audio-carry-identity.md) Consequence 3.
 
 ## Design (UNVERIFIED): per-row step functions replace the black-box base_fn
 
@@ -99,10 +99,8 @@ until PR4's label-refresh plumbing proves out.
   The AUDIO stochastic path has an OBSERVED residual-noise defect (task #76) — NOT clear.
   PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
   history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
-- **Audio (OPEN, direction FALSIFIED 2026-08-27):** /sig_g fix GPU-falsified (free-region audio
-  louder, not quieter); `/carrier` empirically better and likely load-bearing. Live leads:
-  ancestral-axis mismatch + Consequence 2 fractional ringing. See
-  [audio-carry-identity.md](audio-carry-identity.md) Consequence 3. PR3 still held.
+- **Audio (FIXED by Fix A 2026-08-28; /sig_g fix falsified):** free-audio euler_a hiss was the
+  σ_a-axis renoise bug, now fixed on σ_v; `/carrier` load-bearing. See [bugs.md](bugs.md#bug-c) Bug C.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
@@ -159,5 +157,5 @@ the SNR mapping rather than the clean RF alpha identity, so rerun the label→ti
 Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
 renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
 stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
-BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (audio-carry
-renoise miscalibration — same hiss that currently appears under euler_a).
+BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (the audio-carry
+renoise miscalibration — the euler_a hiss now fixed by Fix A on the σ_v axis, pending merge).
