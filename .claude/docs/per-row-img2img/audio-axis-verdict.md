@@ -39,6 +39,12 @@ renoise was injected every step → accumulating tinny/reverb noise. `euler` run
 was clean both ways (main and branch). Fix A puts the renoise integration back on the σ_v axis the
 packed audio really follows. **FIXED by Fix A.**
 
+**Shipped form (2026-08-29):** Fix A is extracted standalone on branch
+`fix-audio-ancestral-sigma-v-axis` (σ_v-axis ancestral integration only, via a new `row_sigma_v(i)`
+helper + `sig_row_v` on `_StepContext`). The σ̃/`sig_row_c` carry-consistent layer (H2) was
+DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the
+mergeable branch is Fix-A-only. 620 passed, ruff clean.
+
 ## The earlier "euler-clean discriminator" is VALID for free audio
 
 Controlled result: our `euler` on free (m=1) audio is CLEAN, matching stock, on BOTH main and the

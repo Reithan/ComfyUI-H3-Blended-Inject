@@ -6,9 +6,9 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-28 (branch `consolidate-wiki-updates`). Rolled up all fix/proto branch wiki
-deltas: Fix A (free-audio ancestral integration → σ_v axis) GPU-VALIDATED (new audio-axis-verdict.md);
-Bug E long-fade video interference DECOUPLED, M-B unique survivor (new long-fade-grid-beat.md + children).
+Last updated: 2026-08-29 (branch `fix-audio-ancestral-sigma-v-axis`). Fix A (free-audio ancestral
+integration → σ_v axis) extracted standalone off main as the Fix-A-only mergeable branch; the σ̃/H2
+carry layer was dropped (justification falsified) — see audio-axis-verdict.md and bugs.md Bug C-remaining.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
