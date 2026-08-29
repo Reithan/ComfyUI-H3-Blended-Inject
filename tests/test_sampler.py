@@ -22,7 +22,9 @@ from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
+    _dpmpp_2m_step,
     _euler_ancestral_rf_step,
+    _res_multistep_step,
     _shift_schedule,
     _StepContext,
     build_conditioning_wrapper,
@@ -1438,6 +1440,129 @@ class TestAudioAncestralAxisSplit:
             f"m=1 with audio must match stock RF-ancestral; max diff="
             f"{float((out - stock_out).abs().max())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: per-row multistep integration must use the σ_v axis (not σ_a)
+# ---------------------------------------------------------------------------
+
+
+class TestMultistepAxisSplit:
+    """Regression for the audio-axis mismatch in the per-row multistep steps.
+
+    The multistep steps (_dpmpp_2m_step, _res_multistep_step) predate the audio σ_v-axis
+    fix (Fix A, audio-axis-verdict.md).  Like the pre-fix ancestral step, they recovered
+    x0 and ran the DPM++/RES integration on ctx.sig_row / ctx.sig_row_next — the σ_a
+    schedule for audio rows.  The packed latent (audio rows too) lives on the σ_v
+    trajectory, so recovery and integration must use ctx.sig_row_v / ctx.sig_row_v_next.
+
+    Each test builds a _StepContext where sig_row (σ_a) and sig_row_v (σ_v) are distinct,
+    then asserts the step-0 output matches the σ_v-axis computation and NOT the σ_a one.
+
+    FAIL-THEN-PASS: before the port these steps read sig_row, so the output matched the
+    σ_a reference and failed the σ_v assertion.
+    """
+
+    def _make_ctx(
+        self,
+        sig_row: torch.Tensor,
+        sig_row_next: torch.Tensor,
+        sig_row_v: torch.Tensor,
+        sig_row_v_next: torch.Tensor,
+        sigmas: torch.Tensor,
+        x_prev: torch.Tensor,
+        model: Any,
+    ) -> _StepContext:
+        """Build a minimal _StepContext for a single step-0 call to a multistep step."""
+        return _StepContext(
+            model=model,
+            x_prev=x_prev,
+            i=0,
+            sigmas=sigmas,
+            sig_row=sig_row,
+            sig_row_next=sig_row_next,
+            sig_row_v=sig_row_v,
+            sig_row_v_next=sig_row_v_next,
+            sig_g=sig_row_v,  # unused by these steps; any value is fine
+            sig_g_next=sig_row_v_next,
+            extra_args=None,
+            callback=None,
+            disable=None,
+            kwargs={},
+            base_fn=lambda *a, **k: x_prev,  # unused by these steps
+            state={},
+        )
+
+    def _axis_refs(
+        self,
+        step: str,
+        sig_row: torch.Tensor,
+        sig_row_next: torch.Tensor,
+        sig_row_v: torch.Tensor,
+        sig_row_v_next: torch.Tensor,
+        x_prev: torch.Tensor,
+        carrier: torch.Tensor,
+        model: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (expected_v, expected_a): step-0 output computed on each axis."""
+        denoised = model(x_prev, carrier)
+        v = (x_prev - denoised) / carrier
+
+        def one(si: torch.Tensor, sip1: torch.Tensor) -> torch.Tensor:
+            denoised_r = x_prev - si * v
+            if step == "dpmpp_2m":  # first-order DDIM
+                h = -sip1.clamp(min=1e-8).log() - -si.clamp(min=1e-8).log()
+                sigma_ratio = (-h).exp()
+                return sigma_ratio * x_prev - (-h).expm1() * denoised_r
+            # res_multistep first-order Euler
+            d = (x_prev - denoised_r) / si.clamp(min=1e-8)
+            return x_prev + d * (sip1 - si)
+
+        return one(sig_row_v, sig_row_v_next), one(sig_row, sig_row_next)
+
+    def _check(self, step: str, step_fn: Any) -> None:
+        carrier_val = 0.7
+        sigmas = torch.tensor([carrier_val, 0.4])
+        sig_row = torch.tensor([0.2])  # σ_a axis — used by pre-port code (WRONG)
+        sig_row_next = torch.tensor([0.1])
+        sig_row_v = torch.tensor([0.6])  # σ_v axis — must be used by integration
+        sig_row_v_next = torch.tensor([0.4])
+        x_prev = torch.tensor([[1.0, 2.0]])
+        model = _ScaleModel(0.8)
+
+        ctx = self._make_ctx(
+            sig_row, sig_row_next, sig_row_v, sig_row_v_next, sigmas, x_prev, model
+        )
+        result = step_fn(ctx)
+
+        expected_v, expected_a = self._axis_refs(
+            step,
+            sig_row,
+            sig_row_next,
+            sig_row_v,
+            sig_row_v_next,
+            x_prev,
+            torch.tensor(carrier_val),
+            model,
+        )
+
+        assert not torch.allclose(expected_v, expected_a, atol=1e-4), (
+            "test setup invalid: σ_v and σ_a axis expected results must be distinct"
+        )
+        assert torch.allclose(result, expected_v, atol=1e-6), (
+            f"{step} must use σ_v axis; result={result}, expected_v={expected_v}"
+        )
+        assert not torch.allclose(result, expected_a, atol=1e-4), (
+            f"{step} must NOT match σ_a axis; result={result}, expected_a={expected_a}"
+        )
+
+    def test_dpmpp_2m_uses_sigma_v_axis(self) -> None:
+        """_dpmpp_2m_step integrates step 0 on sig_row_v, not sig_row."""
+        self._check("dpmpp_2m", _dpmpp_2m_step)
+
+    def test_res_multistep_uses_sigma_v_axis(self) -> None:
+        """_res_multistep_step integrates step 0 on sig_row_v, not sig_row."""
+        self._check("res_multistep", _res_multistep_step)
 
 
 # ---------------------------------------------------------------------------

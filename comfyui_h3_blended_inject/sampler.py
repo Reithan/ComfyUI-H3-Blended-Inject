@@ -437,13 +437,20 @@ def _recover_row_denoised(ctx: _StepContext) -> tuple[torch.Tensor, torch.Tensor
 
     Runs a single model evaluation with the global carrier sigma, fires ``ctx.callback``
     with the stock k-diffusion dict, then recovers ``denoised_r`` by projecting the
-    velocity back onto each row's ``sig_row``.
+    velocity onto each row's σ_v-axis sigma ``sig_row_v``.
+
+    The projection axis is ``sig_row_v`` (NOT the σ_a-shifted ``sig_row``): the packed
+    latent — video AND audio rows — lives on the σ_v carrier trajectory, so x0 recovery
+    must use σ_v.  This mirrors ``_euler_ancestral_rf_step`` after the audio-axis fix
+    (Fix A, ``audio-axis-verdict.md``).  For video rows ``sig_row_v == sig_row``; only
+    audio rows differ.  The σ_a LABEL (``w = sig_row/sig_g``) is applied in the outer
+    loop and is unaffected.
 
     Returns
     -------
     tuple[denoised, denoised_r]
         ``denoised`` — raw model output (global carrier scale).
-        ``denoised_r`` — per-row x0 estimate at ``σ_row``.
+        ``denoised_r`` — per-row x0 estimate at ``σ_row_v``.
     """
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
@@ -460,7 +467,7 @@ def _recover_row_denoised(ctx: _StepContext) -> tuple[torch.Tensor, torch.Tensor
             }
         )
     v = (ctx.x_prev - denoised) / carrier
-    denoised_r = ctx.x_prev - ctx.sig_row * v
+    denoised_r = ctx.x_prev - ctx.sig_row_v * v
     return denoised, denoised_r
 
 
@@ -503,9 +510,12 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
     Implements one step of ``sample_dpmpp_2m`` elementwise over the per-row sigma tensors.
     No noise term (deterministic, ``eta=0`` equivalent).
 
-    Per-row x0 is recovered as ``denoised_r = x_prev − σ_row·(x_prev − denoised)/σ_carrier``
-    (same identity as the RF-ancestral step).  All DPM++ 2M update math then runs on
-    ``σ_row`` / ``σ_row_next`` directly, not on the global carrier schedule.
+    Per-row x0 is recovered as
+    ``denoised_r = x_prev − σ_row_v·(x_prev − denoised)/σ_carrier`` (same σ_v-axis
+    identity as the RF-ancestral step after Fix A).  All DPM++ 2M update math then runs
+    on the σ_v-axis per-row sigmas ``σ_row_v`` / ``σ_row_v_next`` directly, not on the
+    global carrier schedule and not on the σ_a-shifted ``σ_row``.  Audio rows follow the
+    σ_v trajectory the packed latent really lives on; the σ_a LABEL is separate.
 
     Cross-step history (``old_denoised_r``, ``h_prev_row``) lives in ``ctx.state`` so the
     outer loop shares one persistent dict across all iterations.  On the first step
@@ -514,12 +524,13 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
 
     Guarantees:
 
-    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **within atol=1e-5**: for m=1,
-      ``σ_row = σ_carrier`` and ``denoised_r = denoised``, so every t / h / r matches
-      the scalar stock values.  The terminal step deviates by ~1e-8 because this
-      implementation eps-clamps ``t_next`` where stock uses exact ``σ_fn(+∞) = 0``; the
-      equivalence test uses ``atol=1e-5``.
-    - **Terminal rows** (``σ_row_next == 0``) fall back to first-order elementwise via
+    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **within atol=1e-5**: for a m=1
+      VIDEO row ``σ_row_v = σ_carrier`` and ``denoised_r = denoised``, so every t / h / r
+      matches the scalar stock values.  (Audio m=1 rows run on their own σ_v trajectory,
+      which is the correct target — not the global carrier.)  The terminal step deviates
+      by ~1e-8 because this implementation eps-clamps ``t_next`` where stock uses exact
+      ``σ_fn(+∞) = 0``; the equivalence test uses ``atol=1e-5``.
+    - **Terminal rows** (``σ_row_v_next == 0``) fall back to first-order elementwise via
       ``torch.where``, mirroring stock's ``if sigmas[i+1] == 0`` branch.
     - **m=0 rows** produce safe output (h≈0, ``x ≈ x_prev``); the outer
       ``where(never, clean, x)`` restores clean.
@@ -528,8 +539,8 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
     """
     _, denoised_r = _recover_row_denoised(ctx)
 
-    # t = −log σ;  σ_fn(t) = exp(−t) = σ.
-    t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row, ctx.sig_row_next)
+    # t = −log σ;  σ_fn(t) = exp(−t) = σ.  σ_v-axis per-row sigmas (audio on σ_v).
+    t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row_v, ctx.sig_row_v_next)
 
     old_denoised_r = ctx.state.get("old_denoised_r")
     h_prev: torch.Tensor | None = ctx.state.get("h_prev_row")
@@ -544,8 +555,8 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
         denoised_d = _dpmpp_2m_second_order(denoised_r, old_denoised_r, r)
         x_2nd = sigma_ratio * ctx.x_prev - (-h).expm1() * denoised_d
         x_1st = sigma_ratio * ctx.x_prev - (-h).expm1() * denoised_r
-        # Elementwise: terminal rows (σ_row_next == 0) use first-order, mirroring stock.
-        x = torch.where(ctx.sig_row_next == 0.0, x_1st, x_2nd)
+        # Elementwise: terminal rows (σ_row_v_next == 0) use first-order, mirroring stock.
+        x = torch.where(ctx.sig_row_v_next == 0.0, x_1st, x_2nd)
 
     ctx.state["old_denoised_r"] = denoised_r
     ctx.state["h_prev_row"] = h
@@ -556,34 +567,37 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row Restart-Multistep step — deterministic (``eta=0``, no noise).
 
     Implements one step of ``sample_res_multistep`` (which calls ``res_multistep`` with
-    ``eta=0, cfg_pp=False``) elementwise over the per-row sigma tensors.  With ``eta=0``:
-    ``sigma_down = σ_row_next``, ``sigma_up = 0`` — no noise is ever added.
+    ``eta=0, cfg_pp=False``) elementwise over the σ_v-axis per-row sigma tensors.  With
+    ``eta=0``: ``sigma_down = σ_row_v_next``, ``sigma_up = 0`` — no noise is ever added.
 
-    Per-row x0 recovered identically to ``_dpmpp_2m_step``.  The RES 2nd-order update
-    formula (``phi1``, ``phi2``, ``b1``, ``b2``) runs on ``σ_row`` / ``σ_row_next`` with
-    ``torch.nan_to_num`` guards for near-zero denominators, matching stock.
+    Per-row x0 recovered identically to ``_dpmpp_2m_step`` (σ_v axis).  The RES 2nd-order
+    update formula (``phi1``, ``phi2``, ``b1``, ``b2``) runs on ``σ_row_v`` /
+    ``σ_row_v_next`` with ``torch.nan_to_num`` guards for near-zero denominators, matching
+    stock.  Audio rows integrate on the σ_v trajectory (per Fix A); the σ_a label is
+    separate.
 
-    Cross-step history: ``old_denoised_r`` and ``prev_sig_row`` (= σ_row from the
+    Cross-step history: ``old_denoised_r`` and ``prev_sig_row`` (= σ_row_v from the
     previous step, needed to form ``t_prev``).  On the first step ``old_denoised_r`` is
     ``None``; first-order Euler is used, exactly as stock.
 
-    With ``eta=0``, ``old_sigma_down`` in stock always equals the current ``σ_row``
+    With ``eta=0``, ``old_sigma_down`` in stock always equals the current ``σ_row_v``
     (previous step's ``sigma_down = σ_prev_next = σ_cur``), so ``t_old = t`` and
     ``c2 = (t_prev − t) / h`` — all terms resolve from ``prev_sig_row``.
 
     Guarantees:
 
-    - **m=1 rows reproduce stock** ``sample_res_multistep`` **bit-for-bit**: for m=1
-      all per-row quantities collapse to the stock scalar values.
-    - **Terminal rows** (``σ_row_next == 0``) use first-order elementwise.
+    - **m=1 VIDEO rows reproduce stock** ``sample_res_multistep`` **bit-for-bit**: all
+      per-row quantities collapse to the stock scalar values.  (Audio m=1 rows run on
+      their own σ_v trajectory, the correct target.)
+    - **Terminal rows** (``σ_row_v_next == 0``) use first-order elementwise.
     - **m=0 rows** produce safe output; ``where(never, clean, x)`` restores clean.
 
     GPU-only paths (``model.inner_model`` attr) are ``# pragma: no cover``.
     """
     _, denoised_r = _recover_row_denoised(ctx)
 
-    # With eta=0: sigma_down = σ_row_next, sigma_up = 0 (no noise).
-    sigma_down = ctx.sig_row_next
+    # With eta=0: sigma_down = σ_row_v_next, sigma_up = 0 (no noise).  σ_v-axis integration.
+    sigma_down = ctx.sig_row_v_next
     eps = 1e-8
 
     old_denoised_r = ctx.state.get("old_denoised_r")
@@ -591,13 +605,13 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 
     if old_denoised_r is None:
         # Step 0: first-order Euler (stock's `old_denoised is None` branch).
-        d = (ctx.x_prev - denoised_r) / ctx.sig_row.clamp(min=eps)
-        x = ctx.x_prev + d * (sigma_down - ctx.sig_row)
+        d = (ctx.x_prev - denoised_r) / ctx.sig_row_v.clamp(min=eps)
+        x = ctx.x_prev + d * (sigma_down - ctx.sig_row_v)
     else:
         # Steps 1+: 2nd-order RES; fall back to 1st-order for terminal rows.
         # t = −log σ;  σ_fn(t) = exp(−t);  φ1(t) = expm1(t)/t;  φ2(t) = (φ1(t)−1)/t.
-        t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row, sigma_down, eps)
-        # With eta=0: old_sigma_down = prev step's sigma_down = prev sig_row_next = cur sig_row.
+        t_i, _, h, sigma_ratio = _dpmpp_time_coeffs(ctx.sig_row_v, sigma_down, eps)
+        # With eta=0: old_sigma_down = prev sigma_down = prev sig_row_v_next = cur sig_row_v.
         # So t_old = t_i; c2 = (t_prev − t_old) / h = (t_prev − t_i) / h.
         t_prev = -prev_sig_row.clamp(min=eps).log()
         c2 = torch.nan_to_num((t_prev - t_i) / h, nan=0.0)
@@ -610,12 +624,12 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 
         x_2nd = sigma_ratio * ctx.x_prev + h * (b1 * denoised_r + b2 * old_denoised_r)
         # First-order fallback for terminal rows.
-        d = (ctx.x_prev - denoised_r) / ctx.sig_row.clamp(min=eps)
-        x_1st = ctx.x_prev + d * (sigma_down - ctx.sig_row)
+        d = (ctx.x_prev - denoised_r) / ctx.sig_row_v.clamp(min=eps)
+        x_1st = ctx.x_prev + d * (sigma_down - ctx.sig_row_v)
         x = torch.where(sigma_down == 0.0, x_1st, x_2nd)
 
     ctx.state["old_denoised_r"] = denoised_r
-    ctx.state["prev_sig_row"] = ctx.sig_row
+    ctx.state["prev_sig_row"] = ctx.sig_row_v
     return x
 
 
