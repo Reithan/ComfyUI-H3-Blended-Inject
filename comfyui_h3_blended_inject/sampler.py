@@ -254,6 +254,10 @@ class _StepContext:
     sigmas: torch.Tensor  # raw schedule arg — same tensor the original passed to base_fn
     sig_row: torch.Tensor  # per-row sigma at step i (audio rows on shifted schedule)
     sig_row_next: torch.Tensor  # per-row sigma at step i+1
+    sig_row_v: torch.Tensor  # per-row sigma on the σ_v axis for ALL rows (audio rows too);
+    # used by the ancestral integration so audio integrates on the σ_v trajectory,
+    # matching stock sample_euler_ancestral_RF.
+    sig_row_v_next: torch.Tensor  # per-row sigma on the σ_v axis at step i+1
     sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
     sig_g_next: torch.Tensor  # global_sigma(i+1), per-row
     extra_args: dict[str, Any] | None
@@ -329,21 +333,26 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     tensors from the schedule-tail remap.  No r-scaling — the per-row sigma integration is
     handled directly by the ancestral math.
 
-    One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered as
-    ``denoised_r = x_prev − σ_row·(x_prev − denoised)/σ_carrier`` (the conditioning wrapper
-    labels the model with ``t_row = 1 − σ_row`` so it returns the per-row denoised; the
-    velocity ``v = (x − denoised) / σ_carrier`` then maps back to per-row ``x0``).  All
-    ancestral terms (``sigma_down``, ``alpha_ip1/alpha_down``, ``renoise_coeff``, ``ratio``)
-    are computed elementwise over the ``sig_row`` / ``sig_row_next`` tensors.
+    One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered by
+    projecting the velocity onto the σ_v-axis per-row sigma:
+    ``denoised_r = x_prev − σ_row_v·(x_prev − denoised)/σ_carrier``
+    (the conditioning wrapper labels the model with ``t_row = 1 − σ_row`` so it returns the
+    per-row denoised; the velocity ``v = (x − denoised) / σ_carrier`` maps back to per-row
+    ``x0`` via ``sig_row_v``).  All ancestral integration terms (``sigma_down``,
+    ``alpha_ip1/alpha_down``, ``renoise_coeff``, ``ratio``) are computed elementwise over the
+    ``sig_row_v`` / ``sig_row_v_next`` tensors so that AUDIO rows integrate on the σ_v
+    trajectory (matching stock ``sample_euler_ancestral_RF``), while the per-row model LABEL
+    ``w = sig_row/sig_g`` remains on σ_a as required.
 
     Guarantees:
 
     - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
-      ``sig_row == sigmas[i]``, so ``denoised_r == denoised`` and all per-row terms match the
-      scalar stock values — given an identical noise draw the outputs are bit-for-bit equal.
-    - **Terminal step** (``sig_row_next == 0``) falls out without a branch: ``sigma_down=0``,
+      ``sig_row_v == sigmas[i] == carrier``, so ``denoised_r == denoised`` and all per-row
+      terms match the scalar stock values — given an identical noise draw the outputs are
+      bit-for-bit equal.
+    - **Terminal step** (``sig_row_v_next == 0``) falls out without a branch: ``sigma_down=0``,
       ``ratio=0`` → ``x = denoised_r``; ``renoise_coeff=0`` → no noise added.
-    - **m=0 rows** freeze: ``sig_row=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
+    - **m=0 rows** freeze: ``sig_row_v=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
       ``x = denoised_r = x_prev``; the outer ``where(never, clean, x)`` guard restores clean.
 
     The seeded noise sampler is built once on the first call (or taken from
@@ -389,14 +398,16 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
             }
         )
 
-    # Recover per-row x0 from global-carrier velocity.
+    # Recover per-row x0 from global-carrier velocity (project onto σ_v axis for all rows).
     v = (ctx.x_prev - denoised) / carrier
-    denoised_r = ctx.x_prev - ctx.sig_row * v
+    denoised_r = ctx.x_prev - ctx.sig_row_v * v
 
-    # Elementwise ancestral update over per-row sigma tensors.
+    # Elementwise ancestral update over σ_v-axis per-row sigma tensors.
+    # Audio rows integrate on σ_v (matching stock sample_euler_ancestral_RF); the per-row
+    # model LABEL (w = sig_row/sig_g) remains on σ_a and is computed separately in the loop.
     eps = 1e-8
-    si = ctx.sig_row.clamp(min=eps)
-    sip1 = ctx.sig_row_next
+    si = ctx.sig_row_v.clamp(min=eps)
+    sip1 = ctx.sig_row_v_next
     downstep_ratio = 1.0 + (sip1 / si - 1.0) * eta
     sigma_down = sip1 * downstep_ratio
     alpha_ip1 = 1.0 - sip1
@@ -526,6 +537,17 @@ def build_per_row_sampler_function(
             sa = _stream_row_sigma(i, dense_a if has_dense else None, sig_a)
             return torch.where(audio_mask, sa, sv)
 
+        def row_sigma_v(i: int) -> torch.Tensor:
+            """Per-row sigma on the σ_v axis for ALL rows (audio rows included).
+
+            Returns the same value as row_sigma for video rows; for audio rows it returns
+            the σ_v-axis sigma rather than the σ_a-shifted value.  Used by the ancestral
+            integration so that audio rows integrate on the σ_v trajectory, matching
+            stock sample_euler_ancestral_RF.  When audio_mask is None this is identical
+            to row_sigma (no audio present).
+            """
+            return _stream_row_sigma(i, dense_v if has_dense else None, sig_v)
+
         def global_sigma(i: int) -> torch.Tensor:
             """Per-row global sigma at step ``i``, audio rows on the shifted schedule."""
             if audio_mask is None:
@@ -564,6 +586,7 @@ def build_per_row_sampler_function(
 
         x_cur = x
         sig_row = row_sigma(0)
+        sig_row_v = row_sigma_v(0)
         schedule_tail["total_steps"] = steps_n
         for i in range(steps_n):
             schedule_tail["current_step"] = i
@@ -581,6 +604,7 @@ def build_per_row_sampler_function(
                 x_cur = w * x_cur + (1.0 - w) * clean
             x_prev = x_cur
             sig_row_next = row_sigma(i + 1)
+            sig_row_v_next = row_sigma_v(i + 1)
             ctx = _StepContext(
                 model=model,
                 x_prev=x_prev,
@@ -588,6 +612,8 @@ def build_per_row_sampler_function(
                 sigmas=sigmas,  # raw schedule arg — matches what the original passed to base_fn
                 sig_row=sig_row,
                 sig_row_next=sig_row_next,
+                sig_row_v=sig_row_v,
+                sig_row_v_next=sig_row_v_next,
                 sig_g=sig_g,
                 sig_g_next=sig_g_next,
                 extra_args=extra_args,
@@ -600,6 +626,7 @@ def build_per_row_sampler_function(
             # Per-row step scaling: each row integrates its OWN Δσ_row, not the global Δσ.
             x_cur = step(ctx)
             sig_row = sig_row_next
+            sig_row_v = sig_row_v_next
         return torch.where(never, clean, x_cur)  # belt-and-braces d == 0 exact preserve
 
     return sampler_function
