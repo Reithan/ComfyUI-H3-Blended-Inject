@@ -1,5 +1,8 @@
-<!-- provenance: bug (A: fixed; B: open/deferred) -->
-<!-- verified: 2026-08-23 · repo @72b61c6 -->
+<!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
+     GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
+     D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, DECOUPLED
+     2026-08-28 — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor, M-A/M-C/M-D/M-E refuted) -->
+<!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by fade-length GPU data (same date, late); Bug E decoupling matrix on 0/0/39/90 · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
 Read this when debugging fractional-region artifacts (audio garble, grey/reverse noise). The code
@@ -57,6 +60,8 @@ affine `alpha = 1−sigma` terms (see
 [k-diffusion-samplers](native-h3-mechanism/k-diffusion-samplers.md)) that are NOT scale-invariant,
 so per-row compression can't be reproduced by scaling the injected noise. The old
 `make_per_row_noise_sampler` shim only scales noise magnitude; insufficient.
+Separately, our sampler.py ran audio's ancestral integration (denoised_r, si/sigma_down/ratio/
+renoise_coeff) on σ_a instead of σ_v — a real bug for FREE audio, now FIXED (see Bug C).
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
@@ -72,6 +77,77 @@ second sampler-type-selected mechanism (special-casing smell). Decisions (memory
 `prototype-goal-fade-mask-parity`): stochastic-sampler gate DEFERRED; stochastic shim
 (`make_per_row_noise_sampler`, `scale_stochastic_noise`) may be left DEAD or deleted; the user
 doesn't care. Supported path = deterministic (euler / res_multistep / dpmpp_2m).
+
+## Bug C
+
+**Free-audio euler_ancestral distortion — an our-node axis bug, FIXED by Fix A (GPU-validated
+2026-08-28). Retracts the earlier "sampler-independent noise floor" framing.**
+
+A prior wiki commit (94b1597) called this a persistent, sampler-INDEPENDENT noise floor present
+even under deterministic euler on free (m=1) audio, and marked the axis verdict FALSIFIED. That run
+used FRACTIONAL injects, conflating two phenomena. **Retracted.** Controlled GPU A/B (user,
+2026-08-28: same prompt, NO fractional injects, minimal graph) shows:
+
+- STOCK KSampler (our node OUT): euler CLEAN, euler_ancestral CLEAN.
+- OUR node, `main`, free audio (m=1): euler CLEAN, euler_ancestral TINNY/REVERB/NOISY.
+- OUR node, Fix A branch, free audio: euler CLEAN, euler_ancestral **CLEAN**.
+
+So free-audio `euler` is CLEAN (no floor); the distortion was an OUR-NODE `euler_ancestral` bug.
+
+**Root cause:** on main, audio rows computed the ancestral RENOISE terms on the σ_a schedule
+(`sig_row`) while the packed audio lives on the σ_v trajectory → mis-scaled renoise injected every
+step → accumulating tinny/reverb noise. euler has no renoise, so it was clean both ways. **FIXED
+by Fix A** (move denoised_r + si/sigma_down/ratio/renoise_coeff to the σ_v axis); m=1 audio now
+bit-exact vs stock ancestral, video byte-identical. σ_a stays load-bearing for the LABEL
+(model-contract proof still valid). Full verdict: [audio-axis-verdict.md](audio-axis-verdict.md).
+
+## Bug C-remaining — H2 REJECTED (fade-length confound); see Bug E for the primary open bug
+
+**What H2 was:** euler+fade=CLEAN vs euler_ancestral+fade=NOISY was read as a sampler discriminator
+pointing to the ancestral-renoise mis-scale (σ̃ ≠ sig_row_v for fractional audio) as root cause.
+
+**Why H2 is REJECTED:** new controlled data (user, 2026-08-28 late) shows the original test pair
+used different fade lengths (~30f clean vs ~60f noisy). Fade length, not sampler, was the
+independent variable. euler+LONG fade also artifacts. The discriminator is spurious; H2 is not
+the root cause.
+
+**σ̃ implementation status:** video-byte-identical and m=1 bit-exact (harmless), but UNVALIDATED
+as a fix for the audible artifact. Do not present it as the fix.
+
+**The primary open bug is Bug E below.** Consequence-2 ρ audibility status: AMBIGUOUS (see
+[audio-carry-identity.md](audio-carry-identity.md)).
+
+## Bug D
+
+**`H3InjectSampler` required `inject_list` → "Missing Connection" on zero injects (FIXED, pending merge).**
+
+**Symptom:** the node declared `inject_list` as a required input, so wiring zero injects — or
+bypassing all of them — raised a ComfyUI "Missing Connection" error, blocking a plain
+passthrough/no-inject run.
+
+**Fix** (branch `fix-optional-inject-list`): make `inject_list` optional so zero injects ==
+passthrough (no-op inject). **Status: FIXED, pending merge.**
+
+## Bug E — OPEN: Long-fade video-latent interference (moiré/streamers), sampler-independent
+
+**Symptom** (user, GPU 2026-08-28): moiré / streamers / electric patterns when a substantial
+frozen held block coexists with a long fade ramp; sampler-independent; audio tracks via joint
+attention; present on main before Fix A or σ̃.
+
+**DECOUPLED 2026-08-28 — M-B is the unique surviving model.** A GPU single-variable perturbation
+matrix on `0/0/39/90` plus the earlier L=55 shift series isolate the three-way confound. Define
+held = ekf−skf, ramp = efo−ekf. **ERROR ⟺ held ≥ ~28 AND ramp ≥ 51**, both terms independently
+necessary: ramp-necessity from `0/0/39/85` (CLEAN) vs `0/0/39/90` (ERROR) at fixed held;
+held-necessity from `0/0/25/80` (CLEAN) vs `0/0/30/85` (ERROR) at fixed ramp=55. The competing
+single-factor models are all REFUTED — pure-ramp band (M-A), held-alone (M-E), midpoint-position
+(M-D), and trailing-free-heals (M-C). The c=39→40 flip is just ramp crossing 51→50 (a continuous
+frame-length threshold, not grid-quantized). S2 cell-alignment was GPU-FALSIFIED earlier the same day.
+
+**REFINED** ([long-fade-grid-beat/two-stage-heal.md](long-fade-grid-beat/two-stage-heal.md)): M-B's
+single rule decomposes into FORMATION (ramp ≥ 51, monotone, no upper edge through 68) ∧ NOT-HEALED
+(held ≥ ~28, a soft healing boundary; held≈29 → MIXED); numeric predictions unchanged. Full data
+table, decoupling matrix, and the mechanism (KV/observer curvature seed + seam-attention SNR-trough,
+theory) live in [long-fade-grid-beat.md](long-fade-grid-beat.md).
 
 [^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
 [^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).

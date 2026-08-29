@@ -1,5 +1,5 @@
-<!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral 2026-08-27; Finding 1 SOURCE-CONFIRMED; PR3/PR4 design UNVERIFIED) -->
-<!-- verified: 2026-08-27 · PR2 GPU pass task #68 @ede2d8c -->
+<!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral VIDEO 2026-08-27; audio /sig_g fix GPU-FALSIFIED 2026-08-27; Finding 1 SOURCE-CONFIRMED; PR3/PR4 design UNVERIFIED) -->
+<!-- verified: 2026-08-27 · PR2 GPU pass task #68 @ede2d8c; audio /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
 <!-- source: comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde,
      796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
@@ -22,30 +22,36 @@ trajectories, and this was true for all GPU validation runs of the shipped mecha
 "supported: dpmpp_2m/res_multistep" currently means "runs as first-order," an accuracy
 regression vs the retired three-lever path where `base_fn` ran the full schedule once.
 
-## Finding 2 (GPU-CONFIRMED 2026-08-27): Bug B killed for euler_ancestral
+## Finding 2 (GPU-CONFIRMED 2026-08-27): Bug B killed for euler_ancestral VIDEO; audio hiss OPEN
 
-**CONFIRMED:** PR2 (`add-per-row-rf-ancestral-step`, shipped ede2d8c) GPU-validated in task #68.
-Config: 0.2MP, two injects at fractional min_denoise d=0.20 and d=0.15, fade-in at start, 20
-steps; both `euler` (deterministic baseline) and `euler_ancestral` (new RF-ancestral path) tested.
-Result: no grey static / no corruption on fractional or preserved rows, no ghosting;
-euler_ancestral quality matches euler. The per-row velocity-recovery identity
+**CONFIRMED (VIDEO):** PR2 (`add-per-row-rf-ancestral-step`, shipped ede2d8c) GPU-validated in
+task #68. Config: 0.2MP, two injects at fractional min_denoise d=0.20 and d=0.15, fade-in at
+start, 20 steps; both `euler` (deterministic baseline) and `euler_ancestral` tested.
+VIDEO result: no grey static / no corruption on fractional or preserved rows, no ghosting;
+euler_ancestral video quality matches euler. The per-row velocity-recovery identity
 `v = (x − denoised)/σ_carrier`, `denoised_r = x − σ_row·v` holds on the real H3 model with
-NO hidden σ-dependence beyond the label channel. Bug B is killed for euler_ancestral.
+NO hidden σ-dependence beyond the label channel for the VIDEO stream. Bug B is killed for video.
+
+**OPEN (AUDIO):** euler_a gen showed faint audio noise ("slight microphone feedback"); euler is
+clean. Audio stochastic path is NOT validated. Leading hypothesis: renoise in `_euler_ancestral_rf_step`
+is miscalibrated for the audio slice (see [audio-carry-identity.md](audio-carry-identity.md)).
+Task #76 tracks this defect.
 
 *Historical context (why the remap form cracked before PR2):* the remap's per-row r-scaling
 `x_cur = x_prev + r·(x_cur − x_prev)` linearly rescales a displacement that contains the
 renoise term. `sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha terms:
 `alpha_ip1/alpha_down = (1−σ_{i+1})/(1−σ_down)` as the x-multiplier, and
 `renoise_coeff = (σ_{i+1}² − σ_down²·α_{i+1}²/α_down²)^½` — neither scales linearly under
-`σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral case. Same root cause as
-[Bug B](bugs.md#bug-b); PR2 closes it for euler_ancestral; multistep / DPM++ not yet verified.
+`σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral VIDEO case. Same root cause as
+[Bug B](bugs.md#bug-b); PR2 closes it for video; audio stochastic and multistep/DPM++ not verified.
 
-→ **AUDIO: OPEN (root cause CONFIRMED 2026-08-27, task #76).** GPU spike also revealed euler_a
-audio hiss. Root cause: implementation divides by `ctx.sigmas[i]` (σ_v) instead of `ctx.sig_g`
-(per-modality global: σ_v video, σ_a audio). Effective lerp weight `w/S ≈ w/4`: audio under-denoises
-~4×; at m=1 ~75% terminal noise survives → the hiss. Fix: `v = (x−denoised)/ctx.sig_g`. Video
-is a provable no-op (sig_g == sigmas[i] for video; #68 GPU pass cannot regress). Bug also present
-in PR3's recovery reuse; PR3 held. GPU audio confirm pending (task #76).
+→ **AUDIO: OPEN — direction FALSIFIED (GPU 2026-08-27).** GPU spike revealed euler_a audio hiss.
+Earlier diagnosis: recovery divides by `ctx.sigmas[i]` (σ_v) not `ctx.sig_g` (audio-global). **A/B
+GPU test (branch fix-audio-carrier-recovery, commit 2483914) FALSIFIED the /sig_g fix:** free (m=1)
+audio regions went LOUDER, not quieter. `/carrier` is empirically better; the terminal carrier bug
+hypothesis is doubted. Live leads: ancestral-axis mismatch (σ_a-vs-σ_v) and Consequence 2 fractional
+ringing — see [audio-carry-identity.md](audio-carry-identity.md) Consequence 3. Recommendation:
+keep `/carrier`; abandon PR #20. Video unaffected (#68 GPU pass intact). PR3 still held.
 
 ## Design (UNVERIFIED): per-row step functions replace the black-box base_fn
 
@@ -88,14 +94,15 @@ until PR4's label-refresh plumbing proves out.
 
 ## Risks and verification notes
 
-- **Leak risk (GPU-CONFIRMED clear for euler_ancestral, task #68):** the spike ran and passed; no
-  hidden σ-dependence detected beyond the label channel for the single-eval RF-ancestral path.
+- **Leak risk (GPU-CONFIRMED clear for the euler_ancestral VIDEO stream, task #68):** no hidden
+  σ-dependence detected beyond the label channel for the single-eval RF-ancestral VIDEO path.
+  The AUDIO stochastic path has an OBSERVED residual-noise defect (task #76) — NOT clear.
   PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
   history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
-- **Audio (CONFIRMED OPEN, task #76):** root cause identified: recovery divides by `ctx.sigmas[i]`
-  (σ_v) not `ctx.sig_g` (per-modality global). Fix: one-line sigma swap; regression test =
-  audio-slice denoised_r == denoised at m=1 terminal. See
-  [audio-carry-identity.md](audio-carry-identity.md) (Consequence 3). Bug in PR2 + PR3; PR3 held.
+- **Audio (OPEN, direction FALSIFIED 2026-08-27):** /sig_g fix GPU-falsified (free-region audio
+  louder, not quieter); `/carrier` empirically better and likely load-bearing. Live leads:
+  ancestral-axis mismatch + Consequence 2 fractional ringing. See
+  [audio-carry-identity.md](audio-carry-identity.md) Consequence 3. PR3 still held.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
