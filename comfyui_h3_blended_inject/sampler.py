@@ -151,11 +151,12 @@ def build_conditioning_wrapper(
       :func:`~comfyui_h3_blended_inject.observer_split.install_observer_split`), the per-call
       observer labels (``t_obs = 1 − m·σ``) consumed by the DiT block patches are refreshed via
       ``observer_call_update`` — imported lazily so this module needs no ComfyUI at load time.
-    - **Per-guide timed cond removal.**  When ``guide_release["entries"]`` is armed, once the
-      per-step sigma drops below a guide's release threshold that guide's keyframe cond row is
-      stripped from a COPY of ``minimax_payload`` (matched by object identity, so foreign
-      keyframes are never caught), letting a co-located fractional inject finish denoising
-      without the cond-token attractor re-pulling it toward the source.
+    - **Per-guide step-gated cond.**  When ``guide_release["entries"]`` and/or
+      ``guide_release["pending_entries"]`` are armed, each guide's keyframe cond row is
+      stripped from a COPY of ``minimax_payload`` whenever the step falls outside that
+      guide's ``[start_step, end_step)`` window.  Current step is read from
+      ``schedule_tail["current_step"]`` (set by the sampler loop each iteration).  Matching
+      is by object identity, so foreign keyframes are never caught.
 
     Matches ComfyUI's ``model_function_wrapper`` contract:
     ``(apply_model, args_dict) -> prediction``.
@@ -167,14 +168,16 @@ def build_conditioning_wrapper(
         sampler loop), ``"pooled_ones"`` (native-label fallback), ``"observer"`` (optional
         observer state).
     guide_release:
-        Mutable state dict for per-guide timed cond removal, shared with ``_run_sampler``:
+        Mutable state dict for per-guide step-gated cond, shared with ``_run_sampler``:
 
-        - ``"entries"``: list of ``(keyframe_id, threshold)`` pairs — ``id()`` of a keyframe
-          dict appended by our sampler and the sigma below which it releases.
-        - ``"cache"``: filled here; released payload copies keyed by
-          ``(id(payload), frozenset(released_ids))`` so cond/uncond streams never cross.
+        - ``"entries"``: list of ``(keyframe_id, end_step)`` pairs — guide is excluded when
+          ``current_step >= end_step``.
+        - ``"pending_entries"``: list of ``(keyframe_id, start_step)`` pairs — guide is
+          excluded when ``current_step < start_step``.
+        - ``"cache"``: filled here; filtered payload copies keyed by
+          ``(id(payload), frozenset(excluded_ids))`` so cond/uncond streams never cross.
 
-        ``None`` or an empty/missing ``"entries"`` list → inert.
+        ``None`` or empty/missing entry lists → inert.
 
     Returns
     -------
@@ -195,21 +198,32 @@ def build_conditioning_wrapper(
             observer_call_update(obs, float(args_dict["timestep"].flatten()[0]))
         for key, value in active_pooled.items():
             c[key] = value.to(device=inp.device, dtype=inp.dtype)
-        # --- Per-guide timed cond removal (release keyframe cond rows past threshold) ---
-        if guide_release is not None and guide_release.get("entries"):
-            sig_now = float(args_dict["timestep"].flatten()[0])
-            released_ids = frozenset(
-                kf_id for kf_id, threshold in guide_release["entries"] if sig_now < threshold
-            )
-            payload = c.get("minimax_payload")
-            if released_ids and isinstance(payload, dict) and payload.get("keyframes"):
-                cache = guide_release.setdefault("cache", {})
-                cache_key = (id(payload), released_ids)
-                filtered = cache.get(cache_key)
-                if filtered is None:
-                    filtered = filter_released_keyframes(payload, released_ids)
-                    cache[cache_key] = filtered
-                c["minimax_payload"] = filtered
+        # --- Per-guide step-gated cond (start/end step windows) ---
+        # "entries" = (kf_id, end_step): guide excluded when current_step >= end_step.
+        # "pending_entries" = (kf_id, start_step): guide excluded when current_step < start_step.
+        if guide_release is not None:
+            has_release = bool(guide_release.get("entries"))
+            has_pending = bool(guide_release.get("pending_entries"))
+            if has_release or has_pending:
+                cur = schedule_tail.get("current_step", 0)
+                released_ids = frozenset(
+                    kf_id for kf_id, end_step in guide_release.get("entries", []) if cur >= end_step
+                )
+                pending_ids = frozenset(
+                    kf_id
+                    for kf_id, start_step in guide_release.get("pending_entries", [])
+                    if cur < start_step
+                )
+                excluded_ids = released_ids | pending_ids
+                payload = c.get("minimax_payload")
+                if excluded_ids and isinstance(payload, dict) and payload.get("keyframes"):
+                    cache = guide_release.setdefault("cache", {})
+                    cache_key = (id(payload), excluded_ids)
+                    filtered = cache.get(cache_key)
+                    if filtered is None:
+                        filtered = filter_released_keyframes(payload, excluded_ids)
+                        cache[cache_key] = filtered
+                    c["minimax_payload"] = filtered
         return apply_model(inp, args_dict["timestep"], **c)
 
     return wrapper
@@ -550,7 +564,9 @@ def build_per_row_sampler_function(
 
         x_cur = x
         sig_row = row_sigma(0)
+        schedule_tail["total_steps"] = steps_n
         for i in range(steps_n):
+            schedule_tail["current_step"] = i
             sig_g = global_sigma(i).clamp(min=1e-8)
             sig_g_next = global_sigma(i + 1)
             # Truthful label: model computes t_row = 1 − w·σ_g = 1 − σ_row (per modality).

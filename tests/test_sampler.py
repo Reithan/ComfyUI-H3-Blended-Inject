@@ -325,7 +325,7 @@ class TestBuildConditioningWrapper:
 
 
 class TestConditioningWrapperGuideRelease:
-    """The wrapper strips released guide keyframes from minimax_payload below threshold."""
+    """The wrapper gates guide keyframes in minimax_payload by step index windows."""
 
     def _payload(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         """Returns (payload, kf_official, kf_ours)."""
@@ -340,10 +340,10 @@ class TestConditioningWrapperGuideRelease:
         }
         return payload, kf_official, kf_ours
 
-    def _args(self, payload: dict[str, Any], sigma: float) -> dict[str, Any]:
+    def _args(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "input": torch.randn(1, 4, 3),
-            "timestep": torch.tensor([sigma]),
+            "timestep": torch.tensor([0.5]),
             "c": {"transformer_options": {}, "minimax_payload": payload},
             "cond_or_uncond": [0],
         }
@@ -352,31 +352,33 @@ class TestConditioningWrapperGuideRelease:
         payload, _, _ = self._payload()
         wrapper = build_conditioning_wrapper(_sched())
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.1))
+        wrapper(am, self._args(payload))
         assert am.kwargs["minimax_payload"] is payload
 
     def test_empty_entries_passes_payload_through(self) -> None:
         payload, _, _ = self._payload()
         wrapper = build_conditioning_wrapper(_sched(), guide_release={})
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.1))
+        wrapper(am, self._args(payload))
         assert am.kwargs["minimax_payload"] is payload
 
-    def test_sigma_above_threshold_holds_payload(self) -> None:
+    def test_step_before_end_holds_payload(self) -> None:
+        """current_step < end_step → guide is still active."""
         payload, _, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_ours), 0.45)]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_ours), 10)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=5), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.5))
+        wrapper(am, self._args(payload))
         assert am.kwargs["minimax_payload"] is payload
         assert "layout" in payload
 
-    def test_sigma_below_threshold_releases_guide(self) -> None:
+    def test_step_at_end_releases_guide(self) -> None:
+        """current_step >= end_step → guide is released."""
         payload, kf_official, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_ours), 0.45)]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_ours), 10)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=10), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.2))
+        wrapper(am, self._args(payload))
         filtered = am.kwargs["minimax_payload"]
         assert filtered is not payload
         assert filtered["keyframes"] == [kf_official]
@@ -388,45 +390,91 @@ class TestConditioningWrapperGuideRelease:
 
     def test_repeat_call_reuses_cached_filtered_payload(self) -> None:
         payload, _, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_ours), 0.45)]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_ours), 10)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=10), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.2))
+        wrapper(am, self._args(payload))
         first = am.kwargs["minimax_payload"]
-        wrapper(am, self._args(payload, sigma=0.1))
+        wrapper(am, self._args(payload))
         assert am.kwargs["minimax_payload"] is first
 
     def test_distinct_payload_dicts_get_distinct_cache_entries(self) -> None:
         """cond and uncond streams carry different payload dicts; they must not cross."""
         payload_a, _, kf_ours = self._payload()
         payload_b = dict(payload_a)
-        guide_release = {"entries": [(id(kf_ours), 0.45)]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_ours), 10)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=10), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload_a, sigma=0.2))
+        wrapper(am, self._args(payload_a))
         filtered_a = am.kwargs["minimax_payload"]
-        wrapper(am, self._args(payload_b, sigma=0.2))
+        wrapper(am, self._args(payload_b))
         filtered_b = am.kwargs["minimax_payload"]
         assert filtered_a is not filtered_b
         assert filtered_a["keyframes"] == filtered_b["keyframes"]
 
-    def test_inf_threshold_releases_at_any_sigma(self) -> None:
+    def test_end_step_zero_releases_at_any_step(self) -> None:
+        """end_step=0: current_step >= 0 always → guide always excluded."""
         payload, kf_official, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_ours), float("inf"))]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_ours), 0)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=0), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.999))
+        wrapper(am, self._args(payload))
         assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
 
     def test_all_guides_released_removes_keyframes_key(self) -> None:
         payload, kf_official, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_official), 0.45), (id(kf_ours), 0.45)]}
-        wrapper = build_conditioning_wrapper(_sched(), guide_release=guide_release)
+        guide_release = {"entries": [(id(kf_official), 10), (id(kf_ours), 10)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=10), guide_release=guide_release)
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.2))
+        wrapper(am, self._args(payload))
         filtered = am.kwargs["minimax_payload"]
         assert "keyframes" not in filtered
         assert filtered["cond_video_latents"] == ["REF"]
+
+    def test_pending_entry_suppresses_guide_before_start_step(self) -> None:
+        """current_step < start_step → guide is pending (excluded)."""
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {"pending_entries": [(id(kf_ours), 5)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=3), guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload))
+        assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
+
+    def test_pending_entry_activates_guide_at_start_step(self) -> None:
+        """current_step >= start_step → guide is no longer pending (included)."""
+        payload, _, kf_ours = self._payload()
+        guide_release = {"pending_entries": [(id(kf_ours), 5)]}
+        wrapper = build_conditioning_wrapper(_sched(current_step=5), guide_release=guide_release)
+        am = _RecordingApplyModel()
+        wrapper(am, self._args(payload))
+        assert am.kwargs["minimax_payload"] is payload  # unfiltered
+
+    def test_step_window_excludes_both_pending_and_released(self) -> None:
+        """Guide outside [start_step, end_step) is excluded regardless of which boundary."""
+        payload, kf_official, kf_ours = self._payload()
+        guide_release = {
+            "entries": [(id(kf_ours), 15)],
+            "pending_entries": [(id(kf_ours), 5)],
+        }
+        # Before window: pending
+        wrapper_pre = build_conditioning_wrapper(
+            _sched(current_step=3), guide_release=dict(guide_release)
+        )
+        am = _RecordingApplyModel()
+        wrapper_pre(am, self._args(payload))
+        assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
+        # Inside window: active
+        win_release = {"entries": [(id(kf_ours), 15)], "pending_entries": [(id(kf_ours), 5)]}
+        wrapper_in = build_conditioning_wrapper(_sched(current_step=10), guide_release=win_release)
+        wrapper_in(am, self._args(payload))
+        assert am.kwargs["minimax_payload"] is payload
+        # After window: released
+        wrapper_post = build_conditioning_wrapper(
+            _sched(current_step=15),
+            guide_release={"entries": [(id(kf_ours), 15)], "pending_entries": [(id(kf_ours), 5)]},
+        )
+        wrapper_post(am, self._args(payload))
+        assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
 
     def test_release_without_payload_is_a_noop(self) -> None:
         """A released guide with no minimax_payload in c (e.g. uncond=None stream) is safe."""
@@ -444,13 +492,15 @@ class TestConditioningWrapperGuideRelease:
         assert "minimax_payload" not in am.kwargs
 
     def test_composes_with_pooled_labels(self) -> None:
-        """Release path coexists with pooled-label injection (no denoised correction)."""
+        """Step-gate path coexists with pooled-label injection (no denoised correction)."""
         payload, kf_official, kf_ours = self._payload()
-        guide_release = {"entries": [(id(kf_ours), 0.45)]}
+        guide_release = {"entries": [(id(kf_ours), 10)]}
         pooled = {"denoise_mask": torch.zeros(1, 1, 3)}
-        wrapper = build_conditioning_wrapper(_sched(pooled), guide_release=guide_release)
+        wrapper = build_conditioning_wrapper(
+            _sched(pooled, current_step=10), guide_release=guide_release
+        )
         am = _RecordingApplyModel()
-        wrapper(am, self._args(payload, sigma=0.2))
+        wrapper(am, self._args(payload))
         assert "denoise_mask" in am.kwargs
         assert am.kwargs["minimax_payload"]["keyframes"] == [kf_official]
 
