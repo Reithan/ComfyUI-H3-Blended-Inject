@@ -40,57 +40,24 @@ microphone feedback"); euler clean. Root cause is now known — ancestral renois
 to σ_v and makes free-audio euler_a clean (GPU-validated; see [bugs.md](bugs.md#bug-c) Bug C and
 [audio-carry-identity.md](audio-carry-identity.md)). Task #76 tracks the fix (pending merge).
 
-*Historical context (why the remap form cracked before PR2):* the remap's per-row r-scaling
-`x_cur = x_prev + r·(x_cur − x_prev)` linearly rescales a displacement that contains the
-renoise term. `sample_euler_ancestral_RF` (sampling.py:240-266) has affine alpha terms:
-`alpha_ip1/alpha_down = (1−σ_{i+1})/(1−σ_down)` as the x-multiplier, and
-`renoise_coeff = (σ_{i+1}² − σ_down²·α_{i+1}²/α_down²)^½` — neither scales linearly under
-`σ → σ_row`. PR2 resolves this for the single-eval RF-ancestral VIDEO case. Same root cause as
-[Bug B](bugs.md#bug-b); PR2 closes it for video; audio stochastic and multistep/DPM++ not verified.
-
-The competing `/sig_g` divisor fix was separately GPU-FALSIFIED (A/B, branch
-fix-audio-carrier-recovery @2483914; free m=1 audio got LOUDER) → `/carrier` (σ_v) is load-bearing,
-corroborating Fix A's axis; abandon PR #20. Full detail:
+*Historical context (why the remap form cracked before PR2):* the per-row r-scaling
+`x_cur = x_prev + r·(x_cur − x_prev)` linearly rescales a displacement containing the renoise term,
+but `sample_euler_ancestral_RF`'s affine alpha terms and `renoise_coeff` (sampling.py:240-266) do
+NOT scale linearly under `σ → σ_row`. Same root cause as [Bug B](bugs.md#bug-b); PR2 closes it for
+VIDEO (single-eval RF-ancestral); audio stochastic and multistep/DPM++ not verified. The competing
+`/sig_g` divisor fix was GPU-FALSIFIED (fix-audio-carrier-recovery @2483914; free m=1 audio got
+LOUDER) → `/carrier` (σ_v) load-bearing, corroborating Fix A; abandon PR #20. Detail:
 [audio-carry-identity.md](audio-carry-identity.md) Consequence 3.
 
-## Design (UNVERIFIED): per-row step functions replace the black-box base_fn
+## Design (UNVERIFIED): per-row step functions replace the black-box base_fn → [native-step-design.md](sampler-class-support/native-step-design.md)
 
-The remap loop already owns exact per-row sigma tensors (`sig_row`, `sig_row_next` from the
-dense steps²+1 grid; audio rows pre-shifted via `_shift_schedule`). Both sampler classes become
-supportable by replacing the per-interval `base_fn` call with in-house step functions written
-elementwise over those tensors; the r-scaling then applies only to a generic-fallback path.
-
-This **simplifies** [stochastic-recovery-theory.md](stochastic-recovery-theory.md): no
-"corrected denoised" identity needed — the truthful `w` labels already make the model return
-per-row velocity `v_r`. Recover it as `v = (x − denoised)/σ_g` (comfy wrapper divides by global
-σ) and form `denoised_r = x − σ_row·v`.
-
-### Per-row RF-ancestral (kills Bug B)
-
-One model eval per interval. Then elementwise with tensor σ_i = sig_row, σ_ip1 = sig_row_next:
-
-- `downstep_ratio = 1 + (σ_ip1/σ_i − 1)·eta`; `σ_down = σ_ip1·downstep_ratio`
-- Euler sub-step with `denoised_r`; renoise with per-row alpha terms and coeff.
-- m=0 rows: clamp σ_i to ε ⇒ ratio→0, σ_down→0, coeff→0 ⇒ row frozen; no NaN reaches the model.
-- Replicate `s_noise·noise_scale` (model_sampling attr) and
-  `default_noise_sampler(x, seed=extra_args["seed"])`.
-
-### Per-row multistep (restores 2nd order for dpmpp_2m / res_multistep, including free rows)
-
-Same formulas with tensor sigmas (`t = −log σ`, phi functions broadcast elementwise). Carry
-per-row `old_denoised` / `old_sigma_down` across our loop iterations. Clamp σ ≥ ε before log
-for m=0 rows (final `where(never, clean, ·)` still guards the output).
-
-### Dispatch
-
-Whitelist by sampler name → native per-row step. Unknown deterministic → current wrap+r-scale
-fallback (first-order-correct). Unknown stochastic → keep `sampler_is_stochastic` warning.
-
-### Deferred: within-interval multi-eval samplers
-
-Heun, dpm_2, dpmpp_2s_ancestral additionally need pooled-label refresh before each inner model
-eval (`w_mid = σ_row_mid/σ_mid`). `dpmpp_sde` graduated to PR4 below; the rest stay deferred
-until PR4's label-refresh plumbing proves out.
+Replace the per-interval `base_fn` call with in-house step functions written elementwise over the
+loop's exact per-row sigma tensors (`sig_row`, `sig_row_next`); r-scaling then applies only to a
+generic-fallback path. This simplifies [stochastic-recovery-theory.md](stochastic-recovery-theory.md):
+the truthful `w` labels already make the model return per-row velocity, recovered as
+`v = (x − denoised)/σ_g`, `denoised_r = x − σ_row·v`. Full design — per-row RF-ancestral formulas,
+per-row multistep, dispatch/whitelist, and deferred multi-eval samplers — in the child doc
+[sampler-class-support/native-step-design.md](sampler-class-support/native-step-design.md).
 
 ## Risks and verification notes
 
@@ -99,63 +66,27 @@ until PR4's label-refresh plumbing proves out.
   The AUDIO stochastic path has an OBSERVED residual-noise defect (task #76) — NOT clear.
   PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
   history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
-- **Audio (FIXED by Fix A 2026-08-28; /sig_g fix falsified):** free-audio euler_a hiss was the
-  σ_a-axis renoise bug, now fixed on σ_v; `/carrier` load-bearing. See [bugs.md](bugs.md#bug-c) Bug C.
+- **Audio:** free-audio euler_a hiss = σ_a-axis renoise bug, FIXED on σ_v by Fix A (see Finding 2 /
+  [bugs.md](bugs.md#bug-c) Bug C). **PR3/PR4 inherit the same axis dependency — see PR3 note below.**
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
-## Delivery plan (4 PRs, tasks #66–#73)
+## Delivery plan (4 PRs, tasks #66–#73) → [delivery-plan.md](sampler-class-support/delivery-plan.md)
 
 Ordering rationale: stochastic first — it is the user-visible failure and validates the leak risk
-before investing in multistep work.
+before investing in multistep work. The full per-PR specs live in the child doc
+[sampler-class-support/delivery-plan.md](sampler-class-support/delivery-plan.md); headlines:
 
-**PR1 `refactor-per-row-step-dispatch` (task #66)** — behavior-identical refactor only.
-Restructures `build_per_row_sampler_function` to a per-row step-function protocol + dispatch by
-sampler name. Native per-row euler step is numerically equivalent to the current wrap+r-scale for
-euler; all other samplers keep the wrap+r-scale fallback unchanged. CPU equivalence tests:
-m=0 / fractional / m=1, audio-shifted rows. No GPU gate — zero behavior change.
-
-**PR2 `add-per-row-rf-ancestral-step` (task #67) — SHIPPED (ede2d8c) + GPU-VALIDATED (task #68).**
-Elementwise `sample_euler_ancestral_RF` formulas over tensor σ_row; σ clamped ≥ε so m=0 rows
-freeze; seeded `default_noise_sampler`; `s_noise·noise_scale` replicated. Whitelisted
-euler_ancestral stops the stochastic warning; non-whitelisted stochastic still warns.
-CPU tests vs scalar reference; analytical audio-carry-identity check for shifted-σ audio rows.
-GPU spike (task #68) passed: 0.2MP, d=0.20/0.15 injects, fade-in, 20 steps, both euler +
-euler_ancestral — no corruption, no ghosting; leak-risk test clear.
-
-**PR3 `add-per-row-multistep-steps` (task #69)** — per-row dpmpp_2m + res_multistep.
-Deterministic (eta=0) form; per-row `old_denoised` history carried across the outer loop — fixes
-Finding 1's first-order degradation. Key test: all-m=1 rows over a full schedule must reproduce
-the stock sampler bit-for-bit on a toy model. Gated on USER GPU quality check (task #70) at the
-d=0.2/0.15 sweet-spot config.
-Introduces shared DPM++ spine helpers (reused by PR4 SDE family): `_recover_row_denoised(ctx)`
-(velocity-recovery + model-eval block), `_dpmpp_time_coeffs(σ_a, σ_b)` (t = −log σ, h, sigma_ratio),
-`_dpmpp_2m_second_order(denoised_r, old_denoised_r, r)` ((1+1/2r)·d − (1/2r)·d_old multistep combiner).
-
-**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`. Sequenced
-AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
-(sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO model evals/step (denoised @σ_i, then
-denoised_2 @midpoint σ_s_1, r=1/2 default), NO history, noise injected after EACH sub-step (781,
-791); `sample_dpmpp_2m_sde` (822-873) = ONE eval/step, carries `old_denoised` AND `h_last`, SDE
-noise `σ_{i+1}·(−2hη).expm1().neg().sqrt()·s_noise` (869), solver_type midpoint (default) / heun
-(877). Both: BrownianTreeNoiseSampler, `s_noise·noise_scale`, `offset_first_sigma_for_snr`.
-Corrections vs the draft plan: no `_RF` variants, but RF is IMPLICIT — `sigma_to_half_log_snr`
-(152) branches on CONST → λ = −logit(σ), so α = 1−σ lives INSIDE the helpers; per-row steps run
-the logit form elementwise with σ_row clamped to [ε, 1−ε] (the first-σ offset at 168 fixes only
-the global scalar). `get_ancestral_step` operates in exp(−λ) = σ/α space (776, 785), python
-`min()` (73) → per-row reimpl needs `torch.minimum`. Label refresh is pooled-only: the observer self-refreshes
-per model call from the CALL's σ (`t_obs = 1 − m·σ`, observer_split.py:38-59), but the pooled `w`
-stash publishes once per outer step (sampler.py:558) → `_StepContext` gains a `publish_labels(w)`
-closure so the step sets `w_mid = σ_row_mid/σ_s_1` before eval 2 (elementwise midpoint:
-`λ_row_s1 = λ_row + r·h_row`, `σ_row_mid = sigma_fn(λ_row_s1)`). BrownianTreeNoiseSampler is
-scalar-interval-only (`sort` uses `a < b`, 116) → query at global carrier σ; output is
-unit-variance (149), so all per-row scaling stays in the elementwise coefficients (noise
-correlation structure follows the global schedule — accepted approximation).
-**Merge gated on NEW USER GPU spike (task #73):** leak surface LARGER than PR2's — these lean on
-the SNR mapping rather than the clean RF alpha identity, so rerun the label→timestep leak test
-(39f fade, min_denoise 0.2–0.3) with both samplers before merge.
-Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
-renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
-stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
-BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (the audio-carry
-renoise miscalibration — the euler_a hiss now fixed by Fix A on the σ_v axis, pending merge).
+- **PR1 `refactor-per-row-step-dispatch` (#66)** — behavior-identical refactor to a per-row
+  step-function protocol + dispatch by sampler name. No GPU gate.
+- **PR2 `add-per-row-rf-ancestral-step` (#67) — SHIPPED (ede2d8c) + GPU-VALIDATED (#68).**
+  Elementwise `sample_euler_ancestral_RF` over tensor σ_row; whitelisted euler_ancestral.
+- **PR3 `add-per-row-multistep-steps` (#69)** — per-row dpmpp_2m + res_multistep, deterministic
+  (eta=0), per-row `old_denoised` history (fixes Finding 1). Introduces the shared DPM++ spine
+  helpers reused by PR4. ⚠ **σ_v-axis coherence dependency on Fix A (decision 2026-08-29):** the
+  spine's `_recover_row_denoised` must project audio onto `sig_row_v`, not the σ_a-shifted
+  `sig_row`; the "m=1 reproduces stock bit-for-bit" guarantee holds for VIDEO rows only. Full
+  detail (3 consequences, spine seeding PR4) in the child doc's PR3 note.
+- **PR4 `add-per-row-dpmpp-sde-steps` (#72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` +
+  `dpmpp_3m_sde`, sequenced after PR3 (2M SDE = PR2 renoise ∩ PR3 history). SDE spine spec,
+  source-line map, label-refresh plumbing, and the task-#76 block are in the child doc.

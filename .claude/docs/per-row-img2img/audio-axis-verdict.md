@@ -45,6 +45,11 @@ helper + `sig_row_v` on `_StepContext`). The σ̃/`sig_row_c` carry-consistent l
 DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the
 mergeable branch is Fix-A-only. 620 passed, ruff clean.
 
+**Scope: the σ_v axis applies to ALL per-row integration, not just `_euler_ancestral_rf_step`.** The
+per-row multistep steps (PR3 `add-per-row-multistep-steps`) and the future DPM++ SDE spine (PR4)
+carry the same dependency — their x0 recovery and integration must run on σ_v for audio too. See
+[sampler-class-support.md](sampler-class-support.md) PR3 σ_v-axis coherence note.
+
 ## The earlier "euler-clean discriminator" is VALID for free audio
 
 Controlled result: our `euler` on free (m=1) audio is CLEAN, matching stock, on BOTH main and the
