@@ -953,6 +953,12 @@ class H3AddGuide:
         ValueError
             If neither image nor audio is provided, or content is missing its VAE.
         """
+        if start_percent >= end_percent:
+            raise ValueError(
+                f"start_percent ({start_percent}) must be less than end_percent "
+                f"({end_percent}); the guide window [start_percent, end_percent) would "
+                f"be empty or inverted."
+            )
         if image is None and audio is None:
             raise ValueError("H3AddGuide needs an image or an audio to anchor")
         if image is not None and vae is None:
@@ -1255,6 +1261,15 @@ class H3InjectSampler:
                         g.start_percent,
                         g.end_percent,
                     )
+                )
+
+        # 7. Validate that no guide's step window collapses to zero width after rounding.
+        for _kf, start_pct, end_pct in guide_entries:
+            if round(start_pct * steps) >= round(end_pct * steps):
+                raise ValueError(
+                    f"Guide start_percent={start_pct} and end_percent={end_pct} collapse "
+                    f"to the same step index ({round(start_pct * steps)}) at steps={steps}. "
+                    f"Increase the gap between start_percent and end_percent, or use more steps."
                 )
 
         # GPU/ComfyUI-dependent per-row img2img pipeline: build the clean reference

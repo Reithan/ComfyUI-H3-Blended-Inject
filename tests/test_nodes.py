@@ -1745,6 +1745,14 @@ class TestH3AddGuideBehavior:
         with pytest.raises(ValueError, match="audio_vae"):
             H3AddGuide().add_guide(inject_at=0, start_percent=0.0, end_percent=1.0, audio=object())
 
+    def test_inverted_percent_window_raises(self):
+        with pytest.raises(ValueError, match="start_percent.*end_percent"):
+            H3AddGuide().add_guide(inject_at=0, start_percent=0.8, end_percent=0.2)
+
+    def test_equal_percent_window_raises(self):
+        with pytest.raises(ValueError, match="start_percent.*end_percent"):
+            H3AddGuide().add_guide(inject_at=0, start_percent=0.5, end_percent=0.5)
+
     def test_single_image_guide_fields(self):
         vae = RecordingVAE()
         (result,) = H3AddGuide().add_guide(
@@ -1964,3 +1972,9 @@ class TestH3InjectSamplerGuideBehavior:
     def test_foreign_entry_in_chain_raises_type_error(self):
         with pytest.raises(TypeError, match="Inject or Guide"):
             self._sample([object()])
+
+    def test_step_collapsed_window_raises(self, monkeypatch):
+        # steps=20; round(0.09*20)=2 and round(0.11*20)=2 → zero-width window
+        guide = self._video_guide(start_percent=0.09, end_percent=0.11)
+        with pytest.raises(ValueError, match="collapse"):
+            self._sample([guide], monkeypatch)
