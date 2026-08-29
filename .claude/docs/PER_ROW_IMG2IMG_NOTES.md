@@ -6,12 +6,14 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-27 (branch `wiki-dpmpp-spine`). audio-carry-identity.md: Consequence 2 first GPU observation (fractional-audio ringing); isolation pending fix-audio-carrier-recovery retest.
+Last updated: 2026-08-28 (branch `consolidate-wiki-updates`). Rolled up all fix/proto branch wiki
+deltas: Fix A (free-audio ancestral integration → σ_v axis) GPU-VALIDATED (new audio-axis-verdict.md);
+Bug E long-fade video interference DECOUPLED, M-B unique survivor (new long-fade-grid-beat.md + children).
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (e.g. hold-and-release
 language, "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust
 the wiki + tests over in-code prose until the post-prototype docs pass. Do not anchor on task-list
-numbers anywhere in the wiki; cite commits/PRs instead.
+numbers in the wiki; cite commits/PRs instead.
 
 ## The goal
 
@@ -24,16 +26,15 @@ recreate Motion Context 1:1 (would reset the repo instead).
 temporally-faded masks on stochastic samplers, as long as `min_denoise = 0.0`. At
 `0 < min_denoise < 1` on the anchor keyframe it fails two ways: (a) it **ghosts**, and (b) the
 knob is **semantically broken** (the per-step re-composite drags the frame back to the original,
-so even 0.15–0.2 yields near-original frames + ghost instead of "mild regeneration"). Fixing both
-is the PRIMARY reason for this repo. Also-better axes: (1) **injection flexibility**: MC is
-built for f0 clip-continuation; Blended does arbitrary inject lengths/points (mid-timeline
-keyframes, mid-context guiding) via principled frame-space snapping; (2) **QoL**: cleaner, fewer
-nodes vs MC's node-sprawl. MC upstream accepts no PRs and has heavy churn. See
+so even 0.15–0.2 yields near-original frames + ghost). Fixing both is the PRIMARY reason for this
+repo. Also-better axes: (1) **injection flexibility** — MC is built for f0 clip-continuation;
+Blended does arbitrary inject lengths/points via principled frame-space snapping; (2) **QoL** —
+fewer nodes vs MC's node-sprawl (MC upstream accepts no PRs, heavy churn). See
 [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md).
 
 **Prototype north star:** ONE knob mapping visually to img2img denoise `d` (via `hold`+`m`),
-resolution-invariant (IDEAL) or via `lever = f(d, res)` (ACCEPTABLE); must NOT re-tune per
-resolution. Full statement: [latent-hold-release/resolution-invariance-goal.md](per-row-img2img/latent-hold-release/resolution-invariance-goal.md).
+resolution-invariant (IDEAL) or via `lever = f(d, res)` (ACCEPTABLE); no per-resolution re-tune.
+Full statement: [latent-hold-release/resolution-invariance-goal.md](per-row-img2img/latent-hold-release/resolution-invariance-goal.md).
 
 ## The core finding (why this isn't trivial)
 
@@ -60,21 +61,20 @@ single engine via a per-row ancestral step. See
   remap + observer-label K/V split is the SOLE, always-on per-row img2img mechanism — no toggles.
   Mode is `rescheduled`: per-row schedule-tail remap (dense `steps²+1` σ-grid, exact stretched-tail
   sigma) with per-row `r`-scaling onto each row's own compressed σ-tail, init-only clean composite
-  at step 0, truthful `w` labels, observer KV split always on (full K+V splice). **Audio port
-  completed:** audio rows run the remap on the sigma-shifted audio schedule via `time_shift_sigma`
-  (only σ VALUES differ by modality; `k_d`/`span` shared). Canonical detail:
+  at step 0, truthful `w` labels, observer KV split always on. **Audio port completed:** audio rows
+  run the remap on the sigma-shifted audio schedule via `time_shift_sigma` (only σ VALUES differ by
+  modality; `k_d`/`span` shared). Canonical detail:
   [label-ratio-and-observer-split](per-row-img2img/schedule-tail-late-delta/label-ratio-and-observer-split.md).
 - **RETIRED:** the stock three-lever path (init-lerp + fractional denoise_mask conditioning +
   denoised correction) and the deferred stochastic-sampler shim (Bug B) were DELETED; the remap's
   per-row `r`-scaling replaces the denoised correction. [our-architecture.md](per-row-img2img/our-architecture.md)
   now describes the retired stock path only.
-- **Deterministic-only** still holds: deterministic samplers correct; stochastic warns (RF renoise
-  not scale-invariant, gate still deferred). (Multistep runs first-order under remap — see [sampler-class-support.md](per-row-img2img/sampler-class-support.md).)
+- **Deterministic-only** still holds: deterministic correct; stochastic warns (RF renoise not
+  scale-invariant, gate deferred; multistep runs first-order under remap — see [sampler-class-support.md](per-row-img2img/sampler-class-support.md)).
 - **GPU-VERIFIED (2026-08-23, full user checklist @06c6bda):** fractional audio clean after the
-  ×S fix (incl. non-default shift), keyframe `min_denoise` 0.2–0.3 good, keep-mode audio good,
-  preview working. HEADLINE: at `min_denoise>0` from a keyframe, **MC pops over a ghost frame;
-  Blended is smooth**. Repo raison d'être confirmed on GPU. Chaining widgets hidden @72b61c6
-  (unsupported, revisit post-prototype). See
+  ×S fix, keyframe `min_denoise` 0.2–0.3 good, keep-mode audio good, preview working. HEADLINE: at
+  `min_denoise>0` from a keyframe, **MC pops over a ghost frame; Blended is smooth** — repo raison
+  d'être confirmed. Chaining widgets hidden @72b61c6 (unsupported, revisit post-prototype). See
   [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md).
 
 ## Detail docs: drill down only as needed
@@ -86,23 +86,30 @@ single engine via a per-row ancestral step. See
   debugging why comfy/H3 behaves a certain way.*
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
-- [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed) and Bug B (stochastic). *Read
-  when debugging fractional-region artifacts.*
-- [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **THEORY (source-derived
-  math):** why the ×S audio fix is exact globally but leaks per-row for m<1; candidate wrapper
-  compensation. *Read when fractional AUDIO artifacts appear.*
+- [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed), B (stochastic, open), C (free-audio
+  ancestral axis, FIXED by Fix A), D (optional inject_list, fixed), E (long-fade video interference,
+  open). *Read when debugging fractional-region artifacts.*
+- [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
+  DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
+  FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*
+- [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived
+  math):** why the ×S audio fix is exact globally but leaks per-row for m<1 (C2 audibility
+  AMBIGUOUS); candidate wrapper compensation. *Read when fractional AUDIO artifacts appear.*
+- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED free audio
+  (ancestral integration → σ_v axis); H2 FALSIFIED (fade-length confound); σ_a-LABEL proof valid;
+  primary long-fade VIDEO bug open.** *Read for euler_a audio behavior.*
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*
-- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 source-confirmed finding:** multistep samplers degrade to first order under
-  the remap loop; per-row step-function design to support stochastic + restore 2nd order. *Read when revisiting sampler-class support.*
+- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 confirmed:**
+  multistep degrades to first-order under remap; step-function design for stochastic + 2nd-order.
+  *Read when revisiting sampler support.*
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
 - [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md): MC's non-masked "H3
-  Custom Keyframes" injects `minimax_keyframes` cond rows (native context tokens, no
-  denoise/preserve); verdict: different tool, not a substitute; interop is free through our
-  sampler. *Read when considering a conditioning-target inject variant/toggle.*
+  Custom Keyframes" (`minimax_keyframes` cond rows); verdict: different tool, not substitute;
+  interop free. *Read when considering a conditioning-target inject variant/toggle.*
 - [highres-singleframe-underdenoise.md](per-row-img2img/highres-singleframe-underdenoise.md):
   **THEORY (UNVERIFIED):** single-frame stills at fractional `min_denoise` come out
   source-identical @1MP but clean @0.2MP; leading cause: fixed sigma-shift giving
@@ -117,18 +124,17 @@ single engine via a per-row ancestral step. See
   MODEL:** the two questions (neighbor-view vs anchor-resolution) + four knobs (A latent-content /
   B mask / C cond-aug / D composite); maps the "neighbors see clean, keyframe denoises full-time"
   ideal onto hybrid/route-2 (route-1 = worst fit). *Read to reason about cond+latent composition.*
-- [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md): **DESIGN
-  (build-first):** timed cond-removal on knob C; mechanism source-verified (payload COPY + layout
-  drop); gating, surface (`cond_hold_frac`). *Read when building/tuning the timed-removal prototype.*
+- [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md): **DESIGN:**
+  timed cond-removal on knob C; source-verified (payload COPY + layout drop); surface
+  (`cond_hold_frac`). *Read when building/tuning the timed-removal prototype.*
 - [lanpaint-langevin-corrector.md](per-row-img2img/lanpaint-langevin-corrector.md): **REFERENCE
   (external code read):** LanPaint's Langevin inpainting corrector; verdict: new **route 4
   (per-σ inner-loop equilibration)** and two transplants; attention-logit boost (route-3) REJECTED
   2026-08-27. KILL RISK: if neighbor conditioning is t_row-label-gated not content-gated, both
   collapse to single-pass. *Read when considering a corrector/equilibration mechanism.*
 - [latent-hold-release/](per-row-img2img/latent-hold-release/index.md): **STATUS (SUPERSEDED,
-  route-1):** route-1 latent hold-and-release (branch `proto-latent-hold-release`); subfolder:
-  index + `mechanism-and-early-findings` + `attraction-and-envelope` + `hold-mechanism-and-confounds`
-  + full HOLD-series debug log. *Read only when working the superseded latent hold-and-release prototype.*
+  route-1):** hold-and-release prototype (branch `proto-latent-hold-release`); see subfolder index
+  for child docs. *Read only when working the superseded prototype.*
 - [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md): confirmed-working state +
   open paths. *Read when planning.*
 - [per-row-img2img/experiments-run.md](per-row-img2img/experiments-run.md): run-results index (40
@@ -140,19 +146,10 @@ single engine via a per-row ancestral step. See
   stabilization/cleanup work.*
 - [schedule-tail-late-delta](per-row-img2img/schedule-tail-late-delta.md): **SHIPPED (observer-label
   K/V split = production mechanism); H1 sole primary; H2/route-3/renoise-release/label-lie/ramp-join
-  FALSIFIED or DEAD; OFFLABEL-1 GPU 2026-08-28.** Fork resolved: observer-label K/V split (H4)
-  shipped; route-2 and accept-trade-off dropped. *Read for schedule-tail blend-fight.*
+  FALSIFIED or DEAD; OFFLABEL-1 GPU 2026-08-28.** *Read for schedule-tail blend-fight.*
 
-## comfy-ref access (meta)
+## comfy-ref access & verification stamps (meta)
 
-`/home/reithan/projects/comfy-ref` is a SPARSE checkout (files we reference, ON DISK). When a
-needed file is missing, ADD it (user-confirmed policy 2026-08-24):
-`cd /home/reithan/projects/comfy-ref && git sparse-checkout add /path/to/file` (leading slash
-for a single file). Checked out now:
-`comfy/{sample,samplers,utils,nested_tensor,model_base,model_sampling,latent_formats}.py`,
-`comfy/k_diffusion/sampling.py`, `comfy/ldm/minimax/`,
-`comfy_extras/{nodes_differential_diffusion,nodes_minimax_h3}.py`.
-
-**Verification stamps:** line 2 of every wiki doc — `<!-- verified: <date> · <source> @<sha> -->`.
-Refresh date + SHA whenever you re-verify. Stale SHA ⇒ treat line numbers as hints; navigate by
-symbol name instead.
+How to reach comfy source (sparse checkout) and interpret each doc's line-2 verified stamp are
+split into [comfy-ref-access.md](per-row-img2img/comfy-ref-access.md). *Read when you need a comfy
+file that isn't checked out, or when refreshing a verification stamp.*
