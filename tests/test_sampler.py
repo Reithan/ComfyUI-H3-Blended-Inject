@@ -22,7 +22,9 @@ from hypothesis import strategies as st
 
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
+    _euler_ancestral_rf_step,
     _shift_schedule,
+    _StepContext,
     build_conditioning_wrapper,
     build_per_row_sampler_function,
     quantize_denoise,
@@ -1290,3 +1292,149 @@ class TestRFAncestralDispatch:
         assert sampler_is_stochastic(fn) is True
         assert fn.__name__ not in _NATIVE_ROW_STEPS
         assert sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS
+
+
+# ---------------------------------------------------------------------------
+# Regression: audio ancestral integration must use the σ_v axis (not σ_a)
+# ---------------------------------------------------------------------------
+
+
+class TestAudioAncestralAxisSplit:
+    """Regression for the audio-axis mismatch in _euler_ancestral_rf_step.
+
+    Before the fix, denoised_r and the ancestral si/sip1 terms used ctx.sig_row /
+    ctx.sig_row_next, which for audio rows carry the σ_a-shifted schedule values.
+    The packed audio tensor lives on the σ_v trajectory; the ancestral integration
+    must use ctx.sig_row_v / ctx.sig_row_v_next so that audio rows integrate on σ_v,
+    matching stock sample_euler_ancestral_RF.
+
+    The test constructs a _StepContext where sig_row (σ_a) and sig_row_v (σ_v) are
+    numerically distinct, then asserts the result matches the σ_v-axis computation.
+
+    FAIL-THEN-PASS: before the fix, constructing _StepContext with sig_row_v /
+    sig_row_v_next fields raises TypeError (fields do not exist) — a clear FAIL.
+    After the fix, the fields exist and the integration uses them — PASS.
+    """
+
+    def _make_ctx(
+        self,
+        sig_row: torch.Tensor,
+        sig_row_next: torch.Tensor,
+        sig_row_v: torch.Tensor,
+        sig_row_v_next: torch.Tensor,
+        sigmas: torch.Tensor,
+        x_prev: torch.Tensor,
+        model: Any,
+        noise_sampler: Any,
+        eta: float = 0.0,
+    ) -> _StepContext:
+        """Build a minimal _StepContext for a single-step call to _euler_ancestral_rf_step."""
+        return _StepContext(
+            model=model,
+            x_prev=x_prev,
+            i=0,
+            sigmas=sigmas,
+            sig_row=sig_row,
+            sig_row_next=sig_row_next,
+            sig_row_v=sig_row_v,
+            sig_row_v_next=sig_row_v_next,
+            sig_g=sig_row_v,  # unused by _euler_ancestral_rf_step; any value is fine
+            sig_g_next=sig_row_v_next,
+            extra_args=None,
+            callback=None,
+            disable=None,
+            kwargs={"noise_sampler": noise_sampler, "eta": eta},
+            base_fn=lambda *a, **k: x_prev,  # unused by _euler_ancestral_rf_step
+            state={},
+        )
+
+    def test_audio_ancestral_uses_sigma_v_axis(self) -> None:
+        """_euler_ancestral_rf_step integrates on sig_row_v, not sig_row.
+
+        Sets sig_row (σ_a = 0.2) and sig_row_v (σ_v = 0.6) to distinct values so
+        the two axes produce numerically different outputs.  Asserts the result matches
+        the σ_v-axis computation (correct) and NOT the σ_a-axis computation (pre-fix).
+        """
+        carrier_val = 0.7
+        sigmas = torch.tensor([carrier_val, 0.4])
+
+        sig_row = torch.tensor([0.2])  # σ_a axis — used by pre-fix code (WRONG)
+        sig_row_next = torch.tensor([0.1])
+        sig_row_v = torch.tensor([0.6])  # σ_v axis — must be used by ancestral integration
+        sig_row_v_next = torch.tensor([0.4])
+
+        x_prev = torch.tensor([[1.0, 2.0]])
+        model = _ScaleModel(0.8)  # denoised = 0.8 * x_prev
+        ns = _FixedNoiseSampler(torch.zeros_like(x_prev))
+
+        ctx = self._make_ctx(
+            sig_row, sig_row_next, sig_row_v, sig_row_v_next, sigmas, x_prev, model, ns, eta=0.0
+        )
+        result = _euler_ancestral_rf_step(ctx)
+
+        # Manually compute σ_v-axis expected result (eta=0, no noise).
+        carrier = torch.tensor(carrier_val)
+        denoised = model(x_prev, carrier)
+        v = (x_prev - denoised) / carrier
+
+        denoised_r_v = x_prev - sig_row_v * v
+        si_v = sig_row_v.clamp(min=1e-8)
+        sip1_v = sig_row_v_next
+        ratio_v = sip1_v / si_v  # eta=0 → sigma_down=sip1 → ratio=sip1/si
+        expected_v = ratio_v * x_prev + (1.0 - ratio_v) * denoised_r_v
+
+        # Manually compute σ_a-axis wrong result (pre-fix behavior).
+        denoised_r_a = x_prev - sig_row * v
+        si_a = sig_row.clamp(min=1e-8)
+        sip1_a = sig_row_next
+        ratio_a = sip1_a / si_a
+        expected_a = ratio_a * x_prev + (1.0 - ratio_a) * denoised_r_a
+
+        # Sanity: the two axis results must be numerically distinct (test setup is valid).
+        assert not torch.allclose(expected_v, expected_a, atol=1e-4), (
+            "test setup invalid: σ_v and σ_a axis expected results must be numerically distinct"
+        )
+
+        # Post-fix: result must match σ_v axis.
+        assert torch.allclose(result, expected_v, atol=1e-6), (
+            f"audio ancestral must use σ_v axis; result={result}, expected_v={expected_v}"
+        )
+        # Post-fix: result must NOT match σ_a axis.
+        assert not torch.allclose(result, expected_a, atol=1e-4), (
+            f"audio ancestral must NOT match σ_a axis result; "
+            f"result={result}, expected_a={expected_a}"
+        )
+
+    def test_m1_audio_matches_stock(self) -> None:
+        """With audio enabled and all m=1, the output still matches stock RF-ancestral.
+
+        At m=1 every row, sig_row_v(i) == sig_v[i] == sigmas[i] == carrier, so the
+        sig_row_v-axis guarantee reproduces stock bit-for-bit, even for audio rows.
+        """
+        model = _ScaleModel(0.9)
+        # 4 packed rows: 0,1 video / 2,3 audio — all at m=1.
+        m = torch.ones(1, 4)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        sigmas = _decreasing(4)  # steps_n=3
+        fixed_noise = torch.randn(1, 4)
+
+        # Stock scalar reference (no audio, uses raw sigmas uniformly).
+        stock_out = _local_sample_euler_ancestral_rf(
+            model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed_noise)
+        )
+
+        # Native per-row with audio enabled (video_element_count=2).
+        fn = build_per_row_sampler_function(
+            _local_sample_euler_ancestral_rf,
+            m,
+            clean,
+            _sched(),
+            video_element_count=2,
+        )
+        out = fn(model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed_noise))
+
+        assert torch.allclose(out, stock_out, atol=1e-6), (
+            f"m=1 with audio must match stock RF-ancestral; max diff="
+            f"{float((out - stock_out).abs().max())}"
+        )
