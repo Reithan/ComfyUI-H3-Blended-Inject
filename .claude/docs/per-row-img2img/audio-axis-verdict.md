@@ -1,4 +1,6 @@
-<!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28; primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid) -->
+<!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28;
+     short-fade whistle RESOLVED = C2 ρ ancestral-amplified, GPU 0/0/49/73 2026-08-29 — canonical in audio-carry-identity.md;
+     primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by late fade-length GPU data (same date);
      euler-discriminator collapsed (tests differed in fade length, not sampler); σ_a-label proof from comfy-ref @b78cec87 -->
 # Audio ancestral axis mismatch — Fix A VALIDATED for free audio; H2 FALSIFIED; primary long-fade video bug open
@@ -39,6 +41,12 @@ renoise was injected every step → accumulating tinny/reverb noise. `euler` run
 was clean both ways (main and branch). Fix A puts the renoise integration back on the σ_v axis the
 packed audio really follows. **FIXED by Fix A.**
 
+**Shipped form (2026-08-29):** Fix A is extracted standalone on branch
+`fix-audio-ancestral-sigma-v-axis` (σ_v-axis ancestral integration only, via a new `row_sigma_v(i)`
+helper + `sig_row_v` on `_StepContext`). The σ̃/`sig_row_c` carry-consistent layer (H2) was
+DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the
+mergeable branch is Fix-A-only. 620 passed, ruff clean.
+
 ## The earlier "euler-clean discriminator" is VALID for free audio
 
 Controlled result: our `euler` on free (m=1) audio is CLEAN, matching stock, on BOTH main and the
@@ -70,9 +78,13 @@ that isolated it conflated short-fade with euler vs long-fade with euler_ancestr
 implementation is video-byte-identical and m=1 bit-exact (harmless), but its justifying
 discriminator is falsified. Do NOT present it as a validated fix for the audible artifact.
 
-**Minor open thread (AMBIGUOUS):** on the σ̃ branch, short euler_ancestral+fade was heard as
-"clean-ish, maybe a whistle" — possibly the Consequence-2 ρ residual, possibly prompt variation.
-Status: AMBIGUOUS, not validated. Separate minor thread; do not conflate with the primary bug.
+**Short-fade ancestral whistle — RESOLVED (GPU 2026-08-29).** On the σ̃ branch, short
+euler_ancestral+fade was heard as "clean-ish, maybe a whistle." A controlled discriminator (config
+`0/0/49/73`, fade-out ramp=24 < Bug E's 51: `euler` CLEAN, `euler_ancestral` soft buzz for ~2.5s on
+the fade-OUT ramp) resolves it: this is the **Consequence-2 ρ error, real and ancestral-amplified**
+— audible on euler_ancestral fade ramps, silent on deterministic euler. This SUPERSEDES the earlier
+"possibly prompt variation" framing. Canonical mechanism + fix paths:
+[audio-carry-identity.md](audio-carry-identity.md). Separate from the primary video-primary bug.
 
 **Primary open bug (see [bugs.md](bugs.md) Bug E and [long-fade-grid-beat.md](long-fade-grid-beat.md)):**
 long-fade VIDEO-latent interference (moiré/streamers/electric), sampler-independent, present on

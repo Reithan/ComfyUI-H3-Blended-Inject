@@ -53,7 +53,7 @@ Two code facts (`sampler.py`) that separate the hold from the tail quality:
   that no longer exists → boundary conflict / abrupt fit. This one PREDICTS fit gets WORSE the more
   r40 redraws — the opposite of what raising m is meant to achieve.
 - **(D) resolution** — if r40 stays under-denoised even at high m, this is the known single-frame
-  high-res under-denoise ([highres-underdenoise-model](../highres-underdenoise-model/index.md)),
+  high-res under-denoise ([highres-underdenoise-model](../highres-underdenoise-model.md)),
   orthogonal to the hold.
 
 ## Discriminating tests (settings vs mechanism — the user's open question)
