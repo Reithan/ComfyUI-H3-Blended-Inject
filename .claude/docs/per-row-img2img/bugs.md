@@ -112,10 +112,13 @@ independent variable. euler+LONG fade also artifacts. The discriminator is spuri
 the root cause.
 
 **σ̃ implementation status:** video-byte-identical and m=1 bit-exact (harmless), but UNVALIDATED
-as a fix for the audible artifact. Do not present it as the fix.
+as a fix for the audible artifact. Do not present it as the fix. The mergeable branch
+`fix-audio-ancestral-sigma-v-axis` is Fix-A-only — σ̃/`sig_row_c` is dropped, not shipped.
 
-**The primary open bug is Bug E below.** Consequence-2 ρ audibility status: AMBIGUOUS (see
-[audio-carry-identity.md](audio-carry-identity.md)).
+**The primary open bug is Bug E below.** Consequence-2 ρ status: **REAL and ancestral-amplified**
+— audible on `euler_ancestral` fade ramps, silent on deterministic `euler` (GPU discriminator
+`0/0/49/73`, 2026-08-29). Canonical mechanism + fix paths:
+[audio-carry-identity.md](audio-carry-identity.md).
 
 ## Bug D
 

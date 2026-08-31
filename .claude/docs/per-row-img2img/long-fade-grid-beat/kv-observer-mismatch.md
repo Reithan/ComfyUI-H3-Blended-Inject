@@ -124,6 +124,13 @@ Frame it as: the split does not CAUSE the artifact so much as it TRADES the keyf
 The linear-vs-curved gap CANNOT be zeroed by any single label choice — pick linear and neighbors
 read a lie; pick curved and self-evolution ghosts. The residue is what remains.
 
+## 2026-08-31 overturn — residue generalizes beyond Bug E's gate. theory (UNVERIFIED).
+
+A GPU overturn (see [../c2-rho-fix-paths/residual-accounting.md](../c2-rho-fix-paths/residual-accounting.md))
+generalizes this residue BEYOND Bug E's ramp≥51 gate: deterministic fade noise is apparently present
+at ramp=24 (config 0/0/49/73), EXPOSED at 5 steps and NATURALIZED into diegetic sound at 20 steps.
+The confirmed Δ math below is unchanged; this only widens WHERE the residue is claimed to act.
+
 ## OOD-of-the-fade-SHAPE — DISFAVORED (pending the discriminator test below)
 
 An earlier note recorded a per-frame m-gradient OOD as an OPEN co-cause. New reasoning DISFAVORS it:
