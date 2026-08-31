@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-31 (branch `proto-c2-rho-denoised-r-comp`). Reconciled the fade noise into a
+Last updated: 2026-08-31 (branch `wiki-per-row-img2img-c2-findings`). Reconciled the fade noise into a
 TWO-LAYER STACK — accepted decoupling Δ residue (both modalities, floor) + C2 carry-compression
 (audio-only, correctable) + ancestral ρ-drift (amplifier); PRIMARY candidate = decoupling-residue vs
 raw `_euler_step` r-lerp arithmetic (not yet distinguished). See
