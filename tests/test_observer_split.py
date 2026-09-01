@@ -1,8 +1,8 @@
 """Tests for comfyui_h3_blended_inject.observer_split — CPU-testable per-call helpers.
 
 The pure helpers ``observer_call_update``, ``_fractional_rows``, and ``_call_plan`` are exercised
-here.  The comfy-coupled functions (install_observer_split, _attention_with_cached_kv,
-_make_block_patch) are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
+here.  The comfy-coupled functions (install_observer_split, _dual_attention, _make_block_patch)
+are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
 """
 
 from __future__ import annotations
@@ -10,16 +10,21 @@ from __future__ import annotations
 import torch
 
 from comfyui_h3_blended_inject.observer_split import (
+    _band_mod_index,
+    _blend_hidden,
     _call_plan,
+    _embed_ratio,
     _fractional_rows,
+    _observer_timestep,
     observer_call_update,
 )
 
 
 class TestObserverCallUpdate:
-    """The clean-K/V mechanism carries no per-call labels — the capture forward publishes the
-    m labels through ``pooled_current`` — so this helper only bumps the per-forward token that
-    invalidates the cached splice-position plan between the two forwards of a step.
+    """The clean-K/V mechanism carries no per-call labels — the single forward publishes the
+    truthful σ_row labels through ``pooled_current`` (the one-time embed-capture publishes m) — so
+    this helper only bumps the per-forward token that invalidates the cached splice-position plan
+    between forwards.
     """
 
     def test_sets_call_and_token(self) -> None:
@@ -143,3 +148,98 @@ class TestFractionalRows:
     def test_exact_zero_and_one_excluded(self) -> None:
         rows = torch.tensor([0.0, 1.0])
         assert _fractional_rows(rows) is None
+
+
+class TestObserverTimestep:
+    """``t_obs = clamp(1 − m·σ, max=pin)`` — the second (side-stream) time-embed level."""
+
+    def test_basic_formula(self) -> None:
+        m = torch.tensor([0.5, 0.25])
+        sigma = torch.tensor([0.4, 0.8])
+        # 1 - [0.2, 0.2] = [0.8, 0.8]; pin high enough not to bite.
+        out = _observer_timestep(m, sigma, pin=0.999)
+        assert torch.allclose(out, torch.tensor([0.8, 0.8]))
+
+    def test_pin_ceiling_clamps_near_clean_rows(self) -> None:
+        # m→0 drives t_obs→1; pin caps it at the cond-timestep ceiling.
+        m = torch.tensor([1e-4])
+        sigma = torch.tensor([0.5])
+        out = _observer_timestep(m, sigma, pin=0.999)
+        assert torch.allclose(out, torch.tensor([0.999]))
+
+    def test_audio_pin_one(self) -> None:
+        m = torch.tensor([0.0])
+        sigma = torch.tensor([3.0])
+        out = _observer_timestep(m, sigma, pin=1.0)
+        assert torch.allclose(out, torch.tensor([1.0]))
+
+
+class TestEmbedRatio:
+    """``ratio = clamp(σ_obs/σ_row, 0, 1)`` — the block-0 embed-blend weight."""
+
+    def test_basic_quotient(self) -> None:
+        sig_obs = torch.tensor([0.2, 0.5])
+        sig_row = torch.tensor([0.4, 1.0])
+        assert torch.allclose(_embed_ratio(sig_obs, sig_row), torch.tensor([0.5, 0.5]))
+
+    def test_clamps_above_one(self) -> None:
+        # Schedule rounding can push σ_obs just past σ_row; ratio saturates at 1.
+        out = _embed_ratio(torch.tensor([1.01]), torch.tensor([1.0]))
+        assert torch.allclose(out, torch.tensor([1.0]))
+
+    def test_zero_sig_row_guarded(self) -> None:
+        # σ_row→0 (final step) must not divide-by-zero; result clamps into [0,1].
+        out = _embed_ratio(torch.tensor([0.0]), torch.tensor([0.0]))
+        assert torch.all((out >= 0.0) & (out <= 1.0))
+
+
+class TestBlendHidden:
+    """``ratio·h_main + (1−ratio)·h_clean`` row-wise over the fractional band."""
+
+    def test_lerp_broadcasts_over_feature_dim(self) -> None:
+        h_main = torch.tensor([[2.0, 4.0], [10.0, 10.0]])
+        h_clean = torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+        ratio = torch.tensor([0.5, 0.1])
+        out = _blend_hidden(h_main, h_clean, ratio)
+        assert torch.allclose(out, torch.tensor([[1.0, 2.0], [1.0, 1.0]]))
+
+    def test_ratio_one_is_pure_main(self) -> None:
+        h_main = torch.randn(3, 5)
+        h_clean = torch.randn(3, 5)
+        out = _blend_hidden(h_main, h_clean, torch.ones(3))
+        assert torch.allclose(out, h_main)
+
+    def test_ratio_zero_is_pure_clean(self) -> None:
+        h_main = torch.randn(3, 5)
+        h_clean = torch.randn(3, 5)
+        out = _blend_hidden(h_main, h_clean, torch.zeros(3))
+        assert torch.allclose(out, h_clean)
+
+
+class TestBandModIndex:
+    """``searchsorted(levels, obs)·3 + tag`` — mirrors the model's rows_to_mod_index."""
+
+    def test_video_tag_indices(self) -> None:
+        levels = torch.tensor([0.2, 0.5, 0.8])
+        row_obs = torch.tensor([0.2, 0.8, 0.5])  # → level idx 0, 2, 1
+        out = _band_mod_index(levels, row_obs, tag=0)
+        assert out.tolist() == [0, 6, 3]  # idx·3 + 0
+
+    def test_audio_tag_offset(self) -> None:
+        levels = torch.tensor([0.2, 0.5, 0.8])
+        row_obs = torch.tensor([0.2, 0.5])  # → level idx 0, 1
+        out = _band_mod_index(levels, row_obs, tag=2)
+        assert out.tolist() == [2, 5]  # idx·3 + 2
+
+    def test_shared_table_video_and_audio_disjoint_rows(self) -> None:
+        # One shared level table spanning both modalities; tag disambiguates the slice.
+        levels = torch.tensor([0.3, 0.7])
+        vid = _band_mod_index(levels, torch.tensor([0.3, 0.7]), tag=0)
+        aud = _band_mod_index(levels, torch.tensor([0.3, 0.7]), tag=2)
+        assert vid.tolist() == [0, 3]
+        assert aud.tolist() == [2, 5]
+        assert set(vid.tolist()).isdisjoint(aud.tolist())
+
+    def test_returns_long_dtype(self) -> None:
+        out = _band_mod_index(torch.tensor([0.5]), torch.tensor([0.5]), tag=0)
+        assert out.dtype == torch.long
