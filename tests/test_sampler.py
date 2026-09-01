@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
     _shift_schedule,
+    _stream_row_sigma,
     build_conditioning_wrapper,
     build_per_row_sampler_function,
     quantize_denoise,
@@ -221,6 +222,61 @@ class TestShiftSchedule:
         out = _shift_schedule(sig, from_shift, to_shift)
         assert abs(float(out[0])) < 1e-9
         assert abs(float(out[-1]) - 1.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# _stream_row_sigma
+# ---------------------------------------------------------------------------
+
+
+class TestStreamRowSigma:
+    """The extracted per-row sigma helper drives both the loop and the observer init.
+
+    The whole point of extracting it is that the observer split can pass its OWN token-ordered
+    fractional ``m`` and get the identical ``σ_row`` the sampler loop computes for those rows,
+    with no packed/token layout assumptions.  These lock the dense-exact and coarse-lerp branches
+    and the endpoint behavior at m∈{0,1}.
+    """
+
+    def test_dense_grid_exact_integer_index(self) -> None:
+        # steps=2 → dense grid length steps²+1 = 5; row sigma reads grid[k_d·(steps−i)+i·steps].
+        steps = 2
+        dense = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2], dtype=torch.float64)
+        m = torch.tensor([1.0, 0.5, 0.0], dtype=torch.float64)  # k_d = 0, 1, 2
+        # i=0 → idx = k_d·2 = [0, 2, 4]
+        out0 = _stream_row_sigma(m, 0, steps, dense, dense, dense.numel())
+        assert torch.allclose(out0, torch.tensor([1.0, 0.6, 0.2], dtype=torch.float64))
+        # i=1 → idx = k_d·1 + 1·2 = [2, 3, 4]
+        out1 = _stream_row_sigma(m, 1, steps, dense, dense, dense.numel())
+        assert torch.allclose(out1, torch.tensor([0.6, 0.4, 0.2], dtype=torch.float64))
+
+    def test_dense_index_clamped_to_grid_end(self) -> None:
+        steps = 2
+        dense = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2], dtype=torch.float64)
+        m = torch.tensor([0.0], dtype=torch.float64)  # k_d = 2
+        # i=2 → idx = 2·0 + 2·2 = 4 (last); larger i would clamp, never exceeds grid end.
+        out = _stream_row_sigma(m, 2, steps, dense, dense, dense.numel())
+        assert torch.allclose(out, torch.tensor([0.2], dtype=torch.float64))
+
+    def test_coarse_lerp_when_no_dense_grid(self) -> None:
+        steps = 4
+        coarse = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0], dtype=torch.float64)
+        m = torch.tensor([0.5], dtype=torch.float64)  # k_d = round(4·0.5) = 2, span = 0.5
+        # i=1 → idx = 2 + 1·0.5 = 2.5 → lerp(coarse[2], coarse[3], .5) = 0.375
+        out = _stream_row_sigma(m, 1, steps, None, coarse, coarse.numel())
+        assert torch.allclose(out, torch.tensor([0.375], dtype=torch.float64))
+
+    def test_matches_loop_row_sigma_for_fractional_subset(self) -> None:
+        """Observer contract: feeding a token-ordered subset of m yields the same σ_row values
+        the full-vector call produces at those same rows (dense branch)."""
+        steps = 3
+        dense = _decreasing(steps * steps + 1).to(torch.float64)
+        full_m = torch.tensor([1.0, 0.4, 0.0, 0.7], dtype=torch.float64)
+        subset_idx = torch.tensor([1, 3])  # the fractional rows
+        for i in range(steps):
+            full = _stream_row_sigma(full_m, i, steps, dense, dense, dense.numel())
+            sub = _stream_row_sigma(full_m[subset_idx], i, steps, dense, dense, dense.numel())
+            assert torch.allclose(sub, full[subset_idx])
 
 
 # ---------------------------------------------------------------------------

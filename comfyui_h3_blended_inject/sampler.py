@@ -246,6 +246,38 @@ def _shift_schedule(sig: torch.Tensor, from_shift: float, to_shift: float) -> to
     return to_shift * base / (1.0 + (to_shift - 1.0) * base)
 
 
+def _stream_row_sigma(
+    m: torch.Tensor,
+    i: int,
+    steps_n: int,
+    dense_grid: torch.Tensor | None,
+    coarse: torch.Tensor,
+    n_sig: int,
+) -> torch.Tensor:
+    """Per-row target sigma for ONE modality's schedule at global step ``i``.
+
+    Pure function of the per-row denoise fractions ``m`` and that modality's schedule grids.
+    Release step ``k_d = round(steps·(1−m))`` compresses each row onto the last ``span`` of the
+    schedule; with the dense ``steps²+1`` grid present the row sigma is read at an EXACT integer
+    grid index ``k_d·(steps − i) + i·steps`` (no interpolation error), otherwise the coarse grid
+    is lerped at ``k_d + i·span``.
+
+    Extracted so the sampler loop's ``row_sigma`` AND the observer split's single-forward
+    block-0 side-hidden init compute the identical ``σ_row`` from the same ``m`` — the observer
+    passes its own token-ordered fractional ``m`` so there is no packed/token layout mismatch.
+    """
+    k_d = torch.round(steps_n * (1.0 - m)).clamp(0, steps_n)
+    if dense_grid is not None:
+        idx = (k_d * (steps_n - i) + i * steps_n).round().long()
+        return dense_grid[idx.clamp(0, steps_n * steps_n)]
+    span = (steps_n - k_d) / steps_n
+    idx = (k_d + i * span).clamp(0.0, float(steps_n))
+    lo = idx.floor().long().clamp(0, n_sig - 1)
+    hi = (lo + 1).clamp(0, n_sig - 1)
+    fr = (idx - lo.to(idx.dtype)).clamp(0.0, 1.0)
+    return coarse[lo] * (1.0 - fr) + coarse[hi] * fr
+
+
 @dataclass
 class _StepContext:
     """Per-step context passed to each row step function.
@@ -563,7 +595,6 @@ def build_per_row_sampler_function(
         # k_d / span depend only on m → identical for video and audio rows.
         k_d = torch.round(steps_n * (1.0 - m_dev)).clamp(0, steps_n)
         never = k_d >= steps_n  # d == 0 → exact preserve
-        span = (steps_n - k_d) / steps_n
 
         # Audio-modality mask over packed elements: same boundary scale_packed_audio uses.
         audio_mask = None
@@ -581,26 +612,12 @@ def build_per_row_sampler_function(
             dense_v = dense.to(device=x.device, dtype=x.dtype)
             dense_a = _shift_schedule(dense_v, shift_v, shift_a) if audio_mask is not None else None
 
-        def _stream_row_sigma(i: int, dense_grid: torch.Tensor | None, coarse: torch.Tensor):
-            """Per-row sigma for ONE modality's schedule at global step ``i``."""
-            if has_dense:
-                # Exact stretched-tail sigma: schedule position (k_d·steps + i·(steps−k_d))/steps²
-                # is grid point k_d·(steps−i) + i·steps of the SAME scheduler run at steps² steps.
-                idx = (k_d * (steps_n - i) + i * steps_n).round().long()
-                return dense_grid[idx.clamp(0, steps_n * steps_n)]
-            # Fallback (dense grid absent): lerp the coarse grid at k_d + i·span.
-            idx = (k_d + i * span).clamp(0.0, float(steps_n))
-            lo = idx.floor().long().clamp(0, n_sig - 1)
-            hi = (lo + 1).clamp(0, n_sig - 1)
-            fr = (idx - lo.to(idx.dtype)).clamp(0.0, 1.0)
-            return coarse[lo] * (1.0 - fr) + coarse[hi] * fr
-
         def row_sigma(i: int) -> torch.Tensor:
             """Per-row target sigma, audio rows on the shifted schedule."""
-            sv = _stream_row_sigma(i, dense_v if has_dense else None, sig_v)
+            sv = _stream_row_sigma(m_dev, i, steps_n, dense_v if has_dense else None, sig_v, n_sig)
             if audio_mask is None:
                 return sv
-            sa = _stream_row_sigma(i, dense_a if has_dense else None, sig_a)
+            sa = _stream_row_sigma(m_dev, i, steps_n, dense_a if has_dense else None, sig_a, n_sig)
             return torch.where(audio_mask, sa, sv)
 
         def global_sigma(i: int) -> torch.Tensor:
