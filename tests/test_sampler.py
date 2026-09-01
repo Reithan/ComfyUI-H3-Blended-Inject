@@ -24,6 +24,7 @@ from comfyui_h3_blended_inject.observer_split import _embed_ratio
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
     _audio_observer_ratio,
+    _c2_audio_ancestral_update,
     _euler_ancestral_rf_step,
     _shift_schedule,
     _StepContext,
@@ -1740,3 +1741,132 @@ class TestAudioObserverContentRatio:
         assert torch.allclose(back, m * sig_a[1], atol=1e-6)
         # And the inverse is a genuine axis change (not identity) for shift_v != shift_a.
         assert not torch.allclose(target, m * sig_a[1], atol=1e-4)
+
+
+class TestC2AudioAncestralUpdate:
+    """`_c2_audio_ancestral_update`: exact σ_c-axis RF-ancestral step for fractional audio.
+
+    Regression guard for the durable C2 carry-correction port (mid-fade audio hiss under
+    euler_ancestral).  Constants: S = 4 (shift 12/3).
+    """
+
+    S = 4.0
+
+    @staticmethod
+    def _stock_rf_step(y, denoised, sigma, sigma_next, eta, noise):
+        """Scalar stock sample_euler_ancestral_RF update (one step)."""
+        downstep_ratio = 1.0 + (sigma_next / sigma - 1.0) * eta
+        sigma_down = sigma_next * downstep_ratio
+        alpha_ip1 = 1.0 - sigma_next
+        alpha_down = 1.0 - sigma_down
+        renoise = torch.sqrt(
+            torch.clamp(sigma_next**2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2, min=0.0)
+        )
+        x = (sigma_down / sigma) * y + (1.0 - sigma_down / sigma) * denoised
+        return (alpha_ip1 / alpha_down) * x + noise * renoise
+
+    def test_m1_reduces_to_stock_rf_ancestral(self) -> None:
+        """At m=1 (s == σ_a) the σ_c-axis form is algebraically stock RF-ancestral."""
+        torch.manual_seed(0)
+        y, noise = torch.randn(1, 4), torch.randn(1, 4)
+        sigma, sigma_next = torch.tensor(0.7), torch.tensor(0.4)
+        g = _shift_schedule(sigma, 12.0, 3.0)
+        g_next = _shift_schedule(sigma_next, 12.0, 3.0)
+        denoised = 0.3 * y
+        v = (y - denoised) / sigma
+        s, s_next = g.expand(1, 4), g_next.expand(1, 4)
+        out = _c2_audio_ancestral_update(
+            y, v, s, s_next, s, s_next, sigma, sigma_next, self.S, 1.0, noise
+        )
+        ref = self._stock_rf_step(y, denoised, sigma, sigma_next, 1.0, noise)
+        assert torch.allclose(out, ref, atol=1e-5), f"max diff {(out - ref).abs().max()}"
+
+    def test_terminal_step_returns_clean_estimate(self) -> None:
+        """σ_a'=0 → x = Ĉ exactly: no retained noise, no fresh noise, no division by zero."""
+        y, noise = torch.randn(1, 4), torch.randn(1, 4)
+        sigma, sigma_next = torch.tensor(0.3), torch.tensor(0.0)
+        g = _shift_schedule(sigma, 12.0, 3.0).expand(1, 4)
+        s = 0.5 * g  # fractional
+        zero = torch.zeros(1, 4)
+        v = torch.randn(1, 4)
+        out = _c2_audio_ancestral_update(
+            y, v, s, zero, g, zero, sigma, sigma_next, self.S, 1.0, noise
+        )
+        sig_c = s * sigma / g
+        c_hat = (1.0 - (self.S - 1.0) * (s - g)) * y - sig_c * v
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out, c_hat, atol=1e-6)
+
+    def test_next_state_clean_coefficient_is_truthful_a_next(self) -> None:
+        """Exact inputs → next clean coefficient is a', not v4's drifted a·(1−σ_c')/(1−σ_c).
+
+        Construct y = a·C + σ_c·ε and a velocity consistent with Ĉ = C, run with eta=0 (no fresh
+        noise), and check x == a'·C + σ_c'·ε.  v4's frozen-ρ form plants a·(1−σ_c')/(1−σ_c)·C
+        instead, which differs whenever ρ_true drifts between steps (fail-then-pass).
+        """
+        torch.manual_seed(1)
+        C, epsn = torch.randn(1, 4), torch.randn(1, 4)
+        sigma, sigma_next = torch.tensor(0.8), torch.tensor(0.5)
+        g = _shift_schedule(sigma, 12.0, 3.0).expand(1, 4)
+        g_next = _shift_schedule(sigma_next, 12.0, 3.0).expand(1, 4)
+        s, s_next = 0.6 * g, 0.6 * g_next
+        sig_c, sig_c_next = s * sigma / g, s_next * sigma_next / g_next
+        a = (1.0 - s) / (1.0 + (self.S - 1.0) * g)
+        a_next = (1.0 - s_next) / (1.0 + (self.S - 1.0) * g_next)
+        y = a * C + sig_c * epsn
+        # Velocity chosen so that Ĉ = (1 − (S−1)(s−g))·y − σ_c·v == C exactly.
+        v = ((1.0 - (self.S - 1.0) * (s - g)) * y - C) / sig_c
+        out = _c2_audio_ancestral_update(
+            y, v, s, s_next, g, g_next, sigma, sigma_next, self.S, 0.0, None
+        )
+        expected = a_next * C + sig_c_next * epsn
+        assert torch.allclose(out, expected, atol=1e-5), f"max diff {(out - expected).abs().max()}"
+        v4_planted = a * (1.0 - sig_c_next) / (1.0 - sig_c) * C + sig_c_next * epsn
+        assert not torch.allclose(out, v4_planted, atol=1e-4), (
+            "must NOT reproduce v4's step-i-frozen clean coefficient (ρ-drift)"
+        )
+
+    def test_eta_zero_is_deterministic_and_noise_ignored(self) -> None:
+        """eta=0 → sd = σ_c', r_ret = σ_c', c_fresh = 0: output independent of the noise draw."""
+        y, v = torch.randn(1, 4), torch.randn(1, 4)
+        sigma, sigma_next = torch.tensor(0.6), torch.tensor(0.3)
+        g = _shift_schedule(sigma, 12.0, 3.0).expand(1, 4)
+        g_next = _shift_schedule(sigma_next, 12.0, 3.0).expand(1, 4)
+        s, s_next = 0.4 * g, 0.4 * g_next
+        a = _c2_audio_ancestral_update(
+            y, v, s, s_next, g, g_next, sigma, sigma_next, self.S, 0.0, torch.randn(1, 4)
+        )
+        b = _c2_audio_ancestral_update(
+            y, v, s, s_next, g, g_next, sigma, sigma_next, self.S, 0.0, None
+        )
+        assert torch.allclose(a, b, atol=1e-6)
+
+    def test_sampler_gates_c2_to_fractional_audio_only(self) -> None:
+        """Through the sampler: C2 path reaches fractional audio rows only; video byte-identical."""
+        model = _ScaleModel(0.9)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        sigmas = _decreasing(4)
+        fixed = torch.randn(1, 4)
+        m = torch.tensor([[1.0, 0.5, 0.5, 0.5]])  # video: m=1 + fractional; audio fractional
+        fn = build_per_row_sampler_function(
+            _local_sample_euler_ancestral_rf, m, clean, _sched(), video_element_count=2
+        )
+        out = fn(model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed))
+        # Disable the C2 path via audio_scale == 1 (shift_v == shift_a) is not the same schedule;
+        # instead compare against the same builder with the correction monkey-gated off.
+        import comfyui_h3_blended_inject.sampler as smod
+
+        orig = smod._c2_audio_ancestral_update
+        smod._c2_audio_ancestral_update = lambda y, v, *a, **k: torch.full_like(y, float("nan"))
+        try:
+            fn2 = build_per_row_sampler_function(
+                _local_sample_euler_ancestral_rf, m, clean, _sched(), video_element_count=2
+            )
+            out2 = fn2(model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed))
+        finally:
+            smod._c2_audio_ancestral_update = orig
+        # Video columns never touched by the C2 gate (NaN sentinel would leak otherwise).
+        assert torch.allclose(out[0, :2], out2[0, :2], atol=1e-7), "video must be byte-identical"
+        # Fractional audio columns DID go through the C2 path (sentinel present in out2).
+        assert torch.isnan(out2[0, 2:]).all() and torch.isfinite(out[0, 2:]).all()
