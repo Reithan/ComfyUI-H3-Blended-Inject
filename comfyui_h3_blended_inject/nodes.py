@@ -263,15 +263,16 @@ def _run_sampler(  # pragma: no cover
         ),
     }
 
-    # Observer-label K/V split: every DiT block presents fractional inject rows' K+V under the
-    # official label m (observed ratio pinned at m:1) while Q/residual/MLP keep the truthful
-    # remapped label. Populates schedule_tail_cfg["observer"]; inert (returns False) when there
-    # are no fractional rows. See observer_split.py.
+    # Clean-K/V observer split: every DiT block sources fractional inject rows' K+V from genuinely
+    # cleaner content (the row's x0 estimate re-noised to the observed level m·σ_g, captured in a
+    # first forward) while Q/residual/MLP keep the truthful remapped label in the splice forward.
+    # Populates schedule_tail_cfg["observer"]; inert (returns False) when there are no fractional
+    # rows. See observer_split.py and observed-level-plant/clean-kv-split.md.
     from comfyui_h3_blended_inject.observer_split import install_observer_split
 
     installed = install_observer_split(m, schedule_tail_cfg, m_packed, latent_shapes)
     print(
-        "[H3_INJECT] observer-label split: "
+        "[H3_INJECT] observer split: "
         + ("block patches installed" if installed else "no fractional rows — inert"),
         flush=True,
     )
@@ -1295,7 +1296,6 @@ class H3InjectSampler:
 
 # ---------------------------------------------------------------------------
 # ComfyUI node registration
-# ---------------------------------------------------------------------------
 
 NODE_CLASS_MAPPINGS: dict[str, type] = {
     "H3AddInject": H3AddInject,

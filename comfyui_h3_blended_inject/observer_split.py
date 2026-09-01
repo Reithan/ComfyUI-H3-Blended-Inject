@@ -1,26 +1,36 @@
-"""Observer-label K/V split for fractional inject rows.
+"""Clean-K/V observer content splice for fractional inject rows.
 
 The H3 DiT applies each row's mask label exactly once per block — an adaLN
 scale/shift of ``norm1(x)`` (``_mod_scale_shift``) — and that single modulated
-tensor feeds the fused qkv projection.  A row's K/V (what other rows READ of
-it) and its Q / residual path (what the row COMPUTES for itself) therefore
-inherit the label at a single seam and are separable inside the block.
+tensor feeds the fused qkv projection.  A row's K/V (what other rows READ of it,
+AND what the row reads of ITSELF in self-attention) and its Q / residual path
+(what the row COMPUTES for its own velocity) inherit the label at a single seam
+and are separable there.
 
-This module patches every DiT block (``patches_replace["dit"][("double_block",
-i)]``) so that fractional inject rows present their K and V under the official
-label ``t_obs = 1 − m·σ`` (a constant observed ratio m:1 across the whole run)
-while Q, gates, and the MLP path keep the truthful remapped label
-``t_row = 1 − σ_row``.  The row's own velocity prediction never sees the
-observer label — only what neighbouring rows read of it changes — which is
-what makes this split safe.
+This module patches every DiT block so a fractional inject row's K and V are
+sourced from GENUINELY CLEANER CONTENT — the row's x0 estimate re-noised to the
+observed level ``m·σ_g`` — while Q, gates, and the MLP path keep the truthful
+remapped label ``t_row = 1 − σ_row``.  It runs as two forwards per euler step:
 
-The splice is performed at the qkv seam because K/V and Q are separable there:
-K and V are what other rows attend to, so relabeling them changes the row's
-presented denoise state without perturbing its own Q addressing or residual.
+- ``mode == "capture"``: forward the clean observer content (labels published as
+  ``m`` through ``pooled_current`` like any other row); snapshot each block's
+  fractional-band raw ``qkv_proj`` K/V (pre-RMSNorm/rope) into ``kv_cache[idx]``.
+- ``mode == "splice"``: the truthful ``σ_row`` self forward; overwrite the band's
+  K/V with the captured clean K/V before the fused RMSNorm+rope pass.  Q is never
+  touched — the row's own velocity stays truthful (no ghost), and because
+  self-attention reads the row's own K/V, the row also perceives itself as the
+  clean anchor at ``m``.
 
-GPU-only: everything below the per-call helpers requires a live ComfyUI + H3
-model and is exercised only on GPU runs.  ``comfy`` imports stay lazy so the
-per-call helpers remain importable and testable on CPU.
+This SUPERSEDES the old label-only relabel (which re-modulated the still-noisy
+hidden and leaked residual fade-noise) and the second-stream sampler path (which
+disabled the split and lost self-reception).  See
+``c2-rho-fix-paths/observed-level-plant/second-stream.md``.
+
+The pure helpers — ``observer_call_update``, ``_fractional_rows``, ``_call_plan``
+— are importable and unit-tested on CPU.  The comfy-coupled functions
+(``install_observer_split``, ``_attention_with_cached_kv``, ``_make_block_patch``)
+require a live ComfyUI + H3 model and are exercised only on GPU runs; their
+``comfy`` imports stay lazy so this module imports cleanly on CPU.
 """
 
 from __future__ import annotations
@@ -29,35 +39,19 @@ from typing import Any
 
 import torch
 
-# Cond-timestep pins, mirrored from comfy/ldm/minimax/model.py:32-33 so the
-# CPU-testable per-call helper needs no comfy import.
-VISUAL_COND_TIMESTEP = 0.999
-AUDIO_COND_TIMESTEP = 1.0
 
+def observer_call_update(obs: dict[str, Any]) -> None:
+    """Bump the per-forward token so each forward rebuilds its splice plan.
 
-def observer_call_update(obs: dict[str, Any], sigma_v: float) -> None:
-    """Refresh per-model-call observer labels; called by the conditioning wrapper.
-
-    Computes ``t_obs = clamp(1 − m·σ, max=t_pin)`` per fractional row for the
-    video stream (raw ``σ_v``) and audio stream (shifted ``σ_a``), mirroring the
-    model's own label formula (model.py:596/605).  Stored into ``obs["call"]``
-    for the block patches, with a fresh ``token`` so per-forward plan caches
-    invalidate.
+    Called once per model forward by the conditioning wrapper.  The clean-K/V
+    mechanism carries no per-call observer LABELS (the capture forward publishes
+    the ``m`` labels through ``pooled_current`` like any other row), so this only
+    needs to invalidate the cached position plan between the capture and splice
+    forwards of a step.
     """
-    from comfyui_h3_blended_inject.sampler import time_shift_sigma
-
-    call: dict[str, Any] = {"token": obs.get("_token", 0) + 1}
-    obs["_token"] = call["token"]
-    video = obs.get("video")
-    if video is not None:
-        t_pin_v = max(1.0 - sigma_v, VISUAL_COND_TIMESTEP)
-        call["t_obs_v"] = (1.0 - video["m"] * sigma_v).clamp(max=t_pin_v)
-    audio = obs.get("audio")
-    if audio is not None:
-        sigma_a = time_shift_sigma(sigma_v, obs.get("shift_v", 12.0), obs.get("shift_a", 3.0))
-        t_pin_a = max(1.0 - sigma_a, AUDIO_COND_TIMESTEP)
-        call["t_obs_a"] = (1.0 - audio["m"] * sigma_a).clamp(max=t_pin_a)
-    obs["call"] = call
+    token = obs.get("_token", 0) + 1
+    obs["_token"] = token
+    obs["call"] = {"token": token}
 
 
 def _fractional_rows(rows: torch.Tensor) -> dict[str, Any] | None:
@@ -117,90 +111,63 @@ def install_observer_split(  # pragma: no cover - requires live ComfyUI model (G
     if state.get("video") is None and state.get("audio") is None:
         return False
 
+    state["kv_cache"] = {}
+    state["mode"] = None
     schedule_tail_cfg["observer"] = state
     for i, block in enumerate(dm.blocks):
-        m.set_model_patch_replace(_make_block_patch(dm, block, state), "dit", "double_block", i)
+        m.set_model_patch_replace(_make_block_patch(dm, block, state, i), "dit", "double_block", i)
     return True
 
 
-def _call_plan(  # pragma: no cover - GPU
-    dm: Any, state: dict[str, Any], call: dict[str, Any], segs: list[Any], t_emb: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
-    """Per-forward splice plan: (global token positions, adaLN mod rows, t_emb_obs).
+def _call_plan(state: dict[str, Any], call: dict[str, Any], segs: list[Any]) -> torch.Tensor | None:
+    """Per-forward splice plan: global token positions of the fractional rows.
 
     Locates the per-row video/audio segments in ``mod_segments`` (the only
     entries with TENSOR mod rows; modality = mod_index % 3 — video tag 0, audio
-    tag 2, model.py:615), maps our fractional-row indices to global token
-    positions, and embeds the unique observer t values.  Cached in ``call`` —
-    all blocks of one forward share segments and labels.
+    tag 2, model.py:615) and maps our fractional-row indices to global token
+    positions.  Cached in ``call`` — all blocks of one forward share segments;
+    the per-forward token bump invalidates the cache between the two forwards.
     """
     plan = call.get("plan", "unset")
     if plan != "unset":
         return plan
 
-    import comfy.model_management
-
     pos_parts: list[torch.Tensor] = []
-    t_parts: list[torch.Tensor] = []
-    tag_parts: list[torch.Tensor] = []
     for a, b, row in segs:
         if not torch.is_tensor(row):
             continue
         tag = int(row[0].item() % 3)
-        for key, t_key, want_tag in (("video", "t_obs_v", 0), ("audio", "t_obs_a", 2)):
+        for key, want_tag in (("video", 0), ("audio", 2)):
             stream = state.get(key)
-            if stream is None or tag != want_tag or t_key not in call:
+            if stream is None or tag != want_tag:
                 continue
             if (b - a) != stream["n"]:
                 continue  # layout mismatch — skip rather than mis-splice
-            dev = row.device
-            pos_parts.append(stream["pos"].to(dev) + a)
-            t_parts.append(call[t_key].to(dev, torch.float32))
-            tag_parts.append(
-                torch.full((stream["pos"].numel(),), want_tag, dtype=torch.long, device=dev)
-            )
+            pos_parts.append(stream["pos"].to(row.device) + a)
     if not pos_parts:
         call["plan"] = None
         return None
 
     pos = torch.cat(pos_parts)
-    t_obs = torch.cat(t_parts)
-    tags = torch.cat(tag_parts)
-    levels = t_obs.unique()
-    # AdalnProj lays outputs out as [n_t * modalities, hidden] with mod row
-    # t_idx*3 + tag (model.py:219-228) — same indexing as the truthful table.
-    obs_rows = torch.searchsorted(levels, t_obs) * 3 + tags
-
-    device = t_emb.device
-    t_vals = levels.to(device=device, dtype=torch.float32)
-    if getattr(dm, "use_adaln_curves", False):
-        # Interpolated time-embedding curve, replicated from model.py:684-689.
-        table = comfy.model_management.cast_to(dm.adaln_t_table, device=device)
-        grid = t_vals.clamp(0.0, 1.0) * (table.shape[0] - 1)
-        i0 = grid.floor().long().clamp(max=table.shape[0] - 2)
-        t_emb_obs = torch.lerp(table[i0], table[i0 + 1], (grid - i0).unsqueeze(1))
-    else:
-        t_emb_obs = dm.time_embedder(t_vals).to(t_emb.dtype)
-
-    plan = (pos.to(device), obs_rows.to(device), t_emb_obs)
-    call["plan"] = plan
-    return plan
+    call["plan"] = pos
+    return pos
 
 
-def _attention_with_observer_kv(  # pragma: no cover - GPU
+def _attention_with_cached_kv(  # pragma: no cover - GPU
     attn: Any,
     x: torch.Tensor,
-    x_obs: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
     pos: torch.Tensor,
     rope_freqs: Any,
     transformer_options: dict[str, Any],
 ) -> torch.Tensor:
-    """``Attention.forward`` (model.py:169-196) with observer K+V spliced in.
+    """``Attention.forward`` (model.py:169-196) with cached K+V spliced in.
 
-    The observer projections are written into the qkv buffer BEFORE the fused
-    RMSNorm+rope pass, so spliced keys and values receive identical norm/rope
-    treatment at their true token positions.  Q is never touched — the row's
-    own addressing stays truthful.
+    The cached (clean-content) K/V rows are written into the qkv buffer BEFORE
+    the fused RMSNorm+rope pass, so spliced keys and values receive identical
+    norm/rope treatment at their true token positions.  Q is never touched —
+    the row's own addressing stays truthful.
     """
     import comfy.model_management
     import comfy.quant_ops
@@ -209,9 +176,8 @@ def _attention_with_observer_kv(  # pragma: no cover - GPU
     s = x.shape[0]
     inner = attn.heads * attn.head_dim
     q, k, v = attn.qkv_proj(x).split(inner, dim=-1)
-    obs_kv = attn.qkv_proj(x_obs).split(inner, dim=-1)
-    k[pos] = obs_kv[1].to(k.dtype)
-    v[pos] = obs_kv[2].to(v.dtype)
+    k[pos] = k_cache.to(k.dtype)
+    v[pos] = v_cache.to(v.dtype)
     v = v.view(s, attn.heads, attn.head_dim)
     if rope_freqs is not None:
         q = q.view(1, s, attn.heads, attn.head_dim)
@@ -242,17 +208,24 @@ def _attention_with_observer_kv(  # pragma: no cover - GPU
     return attn.out_proj(out.squeeze(0))
 
 
-def _make_block_patch(dm: Any, block: Any, state: dict[str, Any]) -> Any:  # pragma: no cover - GPU
-    """Replace-patch for one DiT block: truthful everything except inject-row K/V.
+def _make_block_patch(  # pragma: no cover - GPU
+    dm: Any, block: Any, state: dict[str, Any], idx: int
+) -> Any:
+    """Replace-patch for one DiT block, two-forward clean-K/V splice.
 
-    Replicates ``DiTBlock.forward`` (model.py:286-291) with the attn input for
-    inject-token K/V modulated under the observer label.  Falls through to the
-    original block whenever no per-call observer state is armed.
+    ``capture`` mode (clean-content forward): snapshot this block's fractional-row
+    K/V (raw PRE-rope ``qkv_proj`` output) into ``state["kv_cache"][idx]``, then
+    run the original block untouched.  ``splice`` mode (truthful σ_row forward):
+    replay ``DiTBlock.forward`` (model.py:286-291) with the fractional rows' K/V
+    overwritten by the cached clean K/V — so neighbours (and the row itself) read
+    the frame at its clean denoise level while its Q/gate/MLP stay truthful.
+    Falls through to the original block when no observer state is armed.
     """
 
     def patch(args: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
         call = state.get("call")
-        if not call:
+        mode = state.get("mode")
+        if not call or mode is None:
             return extra["original_block"](args)
 
         from comfy.ldm.minimax.model import _mod_gate, _mod_scale_shift
@@ -260,22 +233,29 @@ def _make_block_patch(dm: Any, block: Any, state: dict[str, Any]) -> Any:  # pra
         h = args["img"]
         t_emb = args["t_emb"]
         segs = args["mod_segments"]
-        plan = _call_plan(dm, state, call, segs, t_emb)
-        if plan is None:
+        pos = _call_plan(state, call, segs)
+        if pos is None:
             return extra["original_block"](args)
-        pos, obs_rows, t_emb_obs = plan
+
+        if mode == "capture":
+            shift_msa, scale_msa = block.adaln_proj(t_emb)[:2]
+            h_mod = _mod_scale_shift(block.norm1(h), shift_msa, scale_msa, segs)
+            inner = block.attn.heads * block.attn.head_dim
+            _, k, v = block.attn.qkv_proj(h_mod[pos]).split(inner, dim=-1)
+            state["kv_cache"][idx] = (k.detach().clone(), v.detach().clone())
+            return extra["original_block"](args)
+
+        cached = state["kv_cache"].get(idx)
+        if cached is None:
+            return extra["original_block"](args)
 
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
-        o_shift, o_scale = block.adaln_proj(t_emb_obs)[:2]
-        hn = block.norm1(h)
-        # Observer view sliced BEFORE the truthful in-place modulation.
-        h_obs = hn[pos].clone()
-        h_obs.mul_(1.0 + o_scale[obs_rows].to(h_obs.dtype)).add_(o_shift[obs_rows].to(h_obs.dtype))
-        h_mod = _mod_scale_shift(hn, shift_msa, scale_msa, segs)
-        attn_out = _attention_with_observer_kv(
+        h_mod = _mod_scale_shift(block.norm1(h), shift_msa, scale_msa, segs)
+        attn_out = _attention_with_cached_kv(
             block.attn,
             h_mod,
-            h_obs,
+            cached[0],
+            cached[1],
             pos,
             args["rope_freqs"],
             args["transformer_options"],
