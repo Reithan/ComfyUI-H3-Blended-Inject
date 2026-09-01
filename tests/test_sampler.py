@@ -20,8 +20,10 @@ import torch
 from hypothesis import given
 from hypothesis import strategies as st
 
+from comfyui_h3_blended_inject.observer_split import _embed_ratio
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
+    _audio_observer_ratio,
     _euler_ancestral_rf_step,
     _shift_schedule,
     _StepContext,
@@ -1675,3 +1677,66 @@ class TestAncestralPlantAxis:
             f"m=1 rows must be untouched by the fractional-audio plant; max diff="
             f"{float((out[0, :2] - stock[0, :2]).abs().max())}"
         )
+
+
+class TestAudioObserverContentRatio:
+    """`_audio_observer_ratio`: audio band K/V content ratio on the σ_v axis.
+
+    Regression guard for the mid-fade audio-hiss fix — the observer band's spliced content
+    must be measured on the σ_v integration axis (shift-inverse of the native σ_a label),
+    reducing to the old σ_a-axis ratio at m=0/m=1 and diverging only mid-m.
+    """
+
+    @staticmethod
+    def _sigmas():
+        sig_v = _decreasing(4)  # steps_n == 3
+        sig_a = _shift_schedule(sig_v, 12.0, 3.0)
+        return sig_v, sig_a, int(sig_v.shape[-1]), 3
+
+    def _old_sigma_a_ratio(self, m, i, sig_a, steps_n, n_sig):
+        """The pre-fix σ_a-axis ratio the observer used to splice with."""
+        band = _stream_row_sigma(m, i, steps_n, None, sig_a, n_sig)
+        return _embed_ratio(m * sig_a[i], band)
+
+    def test_m1_reduces_to_unity(self) -> None:
+        """m=1 (full denoise) → ratio 1.0 on both axes (row sigma == global sigma)."""
+        sig_v, sig_a, n_sig, steps_n = self._sigmas()
+        m = torch.ones(1, 4)
+        r = _audio_observer_ratio(m, sig_a[0], 0, steps_n, None, sig_v, n_sig, 3.0, 12.0)
+        assert torch.allclose(r, torch.ones_like(r), atol=1e-6)
+
+    def test_m0_freezes_to_zero(self) -> None:
+        """m=0 (frozen/clean) → ratio 0.0; both axes agree at the freeze end."""
+        sig_v, sig_a, n_sig, steps_n = self._sigmas()
+        m = torch.zeros(1, 4)
+        r = _audio_observer_ratio(m, sig_a[1], 1, steps_n, None, sig_v, n_sig, 3.0, 12.0)
+        assert torch.allclose(r, torch.zeros_like(r), atol=1e-6)
+
+    def test_midm_diverges_from_sigma_a_axis(self) -> None:
+        """Mid-m: σ_v-axis ratio differs from the old σ_a-axis ratio (the actual fix).
+
+        Uses i=2, m=0.25 so both ratios land strictly inside (0, 1) — the divergence is a
+        genuine axis change, not a clamp artifact.
+        """
+        sig_v, sig_a, n_sig, steps_n = self._sigmas()
+        m = torch.full((1, 4), 0.25)
+        new = _audio_observer_ratio(m, sig_a[2], 2, steps_n, None, sig_v, n_sig, 3.0, 12.0)
+        old = self._old_sigma_a_ratio(m, 2, sig_a, steps_n, n_sig)
+        assert (new < 1.0).all() and (old < 1.0).all() and (new > 0.0).all(), (
+            "both ratios must be unclamped for a meaningful comparison; "
+            f"new={new.flatten().tolist()} old={old.flatten().tolist()}"
+        )
+        assert not torch.allclose(new, old, atol=1e-4), (
+            "content ratio must move off the σ_a axis at mid-m; "
+            f"new={new.flatten().tolist()} old={old.flatten().tolist()}"
+        )
+
+    def test_content_target_is_shift_inverse(self) -> None:
+        """The content target is shift⁻¹(m·σ_a): round-tripping it forward recovers m·σ_a."""
+        sig_v, sig_a, n_sig, steps_n = self._sigmas()
+        m = torch.full((1, 4), 0.5)
+        target = _shift_schedule(m * sig_a[1], 3.0, 12.0)  # σ_a -> σ_v (inverse)
+        back = _shift_schedule(target, 12.0, 3.0)  # σ_v -> σ_a (forward)
+        assert torch.allclose(back, m * sig_a[1], atol=1e-6)
+        # And the inverse is a genuine axis change (not identity) for shift_v != shift_a.
+        assert not torch.allclose(target, m * sig_a[1], atol=1e-4)
