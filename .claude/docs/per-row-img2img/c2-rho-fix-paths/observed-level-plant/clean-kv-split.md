@@ -5,6 +5,13 @@
 Parent: [../observed-level-plant.md](../observed-level-plant.md).
 Supersedes: [second-stream.md](second-stream.md) (Option I second-stream, OVERTURNED 2026-08-31).
 
+**Code status (branch `single-forward-clean-kv-splice`):** AS OF this branch the two-forward
+clean-K/V code was REMOVED from `sampler.py` / `observer_split.py`, and the single-forward path
+([option-ii-single-forward.md](option-ii-single-forward.md)) is the SOLE runtime mechanism. The
+two-forward remains the conceptual/mathematical reference — the single forward reproduces it
+bit-for-bit — and is recoverable from git history. The removed snippets are preserved verbatim in
+[clean-kv-split/removed-two-forward-code.md](clean-kv-split/removed-two-forward-code.md).
+
 **Durable (branch `clean-kv-observer-splice`):** this clean-K/V euler splice is now the DURABLE
 (non-proto) implementation. Two experiments from `proto-observed-level-inject-noise` did NOT ship and
 remain PROTO-ONLY: (a) the observed-level ANCESTRAL renoise change to `_euler_ancestral_rf_step`

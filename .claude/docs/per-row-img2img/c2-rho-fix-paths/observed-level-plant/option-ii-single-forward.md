@@ -1,7 +1,7 @@
 <!-- provenance: theory (UNVERIFIED design — exactness proven analytically from comfy source; no GPU run yet) -->
 <!-- verified: analytical only (2026-09-01) — patch-embed linearity + Q/KV separability confirmed
-     from comfy/ldm/minimax/model.py; now IMPLEMENTED (branch single-forward-clean-kv-splice, opt-in
-     H3_SINGLE_FORWARD) but GPU path UNVERIFIED — awaits USER GPU exactness run -->
+     from comfy/ldm/minimax/model.py; now the SOLE path (branch single-forward-clean-kv-splice, no
+     env toggle) but GPU path UNVERIFIED — awaits USER GPU exactness run vs a git-historical two-forward build -->
 # Option II — exact single-forward fractional side-stream (performance)
 
 Parent: [../observed-level-plant.md](../observed-level-plant.md).
@@ -96,12 +96,16 @@ observer's OWN token-ordered `m` (`stream["m"]`), eliminating the packed↔token
 
 ## Status
 
-IMPLEMENTED (durable) on branch `single-forward-clean-kv-splice` in observer_split.py + sampler.py.
-Opt-in via env var `H3_SINGLE_FORWARD` (truthy unless in {"","0","false","False","no"}, and only
-when an observer split is present); DEFAULT OFF — the two-forward clean-K/V mechanism stays default.
+Single-forward is now the SOLE path on branch `single-forward-clean-kv-splice`
+(observer_split.py + sampler.py). There is NO env toggle and NO two-forward fallback left in code:
+the two-forward clean-K/V implementation was DELETED (its code is preserved in
+[clean-kv-split/removed-two-forward-code.md](clean-kv-split/removed-two-forward-code.md)). The
+single forward is always-on whenever an observer split is installed AND fractional rows exist.
 Cost realized: ~1 forward/step + O(band)/block + 1 one-time embed-capture ≈ (1+N) vs 2N forwards
 (the block-0 `h_clean` band hidden is snapshot once by an `embed_capture` forward on the static
 `clean` inject, amortized over N steps).
 
 Provenance stays theory/UNVERIFIED: no GPU confirmation yet. Next step is the USER GPU exactness
-run comparing single-forward vs two-forward output bit-for-bit.
+run comparing single-forward vs two-forward output bit-for-bit. With the two-forward code removed,
+that bit-exact diff must now be run against a git-historical build (a checkout of the pre-removal
+commit), not a runtime toggle.
