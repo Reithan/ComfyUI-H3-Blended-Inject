@@ -7,15 +7,18 @@ are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from comfyui_h3_blended_inject.observer_split import (
+    SPLICE_AUDIO_ENV,
     _band_mod_index,
     _blend_hidden,
     _call_plan,
     _embed_ratio,
     _fractional_rows,
     _observer_timestep,
+    _splice_audio_enabled,
     observer_call_update,
 )
 
@@ -191,6 +194,23 @@ class TestEmbedRatio:
         # σ_row→0 (final step) must not divide-by-zero; result clamps into [0,1].
         out = _embed_ratio(torch.tensor([0.0]), torch.tensor([0.0]))
         assert torch.all((out >= 0.0) & (out <= 1.0))
+
+
+class TestSpliceAudioEnv:
+    """``H3BI_SPLICE_AUDIO`` opt-out: only the literal ``"0"`` disables the audio-band splice."""
+
+    def test_default_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(SPLICE_AUDIO_ENV, raising=False)
+        assert _splice_audio_enabled() is True
+
+    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(SPLICE_AUDIO_ENV, "0")
+        assert _splice_audio_enabled() is False
+
+    def test_other_values_keep_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for val in ("1", "", "false", "off"):
+            monkeypatch.setenv(SPLICE_AUDIO_ENV, val)
+            assert _splice_audio_enabled() is True, val
 
 
 class TestBlendHidden:

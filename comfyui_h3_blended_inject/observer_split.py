@@ -45,9 +45,22 @@ require a live ComfyUI + H3 model and are exercised only on GPU runs; their
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
+
+#: Env toggle for the AUDIO-band K/V splice (A/B discriminator, claude-opus-4-8).  The splice
+#: was built for the VIDEO keyframe ghost; the audio band was spliced for symmetry.  Set
+#: ``H3BI_SPLICE_AUDIO=0`` to leave audio K/V on the main stream (band sits at its truthful
+#: σ_c level) — if the residual mid-fade audio crackle under euler_ancestral disappears, the
+#: audio splice is the remaining re-excited residual; if unchanged, it is the estimation floor.
+SPLICE_AUDIO_ENV = "H3BI_SPLICE_AUDIO"
+
+
+def _splice_audio_enabled() -> bool:
+    """True unless ``H3BI_SPLICE_AUDIO=0`` is set (read at install time)."""
+    return os.environ.get(SPLICE_AUDIO_ENV, "1") != "0"
 
 
 def observer_call_update(obs: dict[str, Any]) -> None:
@@ -175,7 +188,7 @@ def install_observer_split(  # pragma: no cover - requires live ComfyUI model (G
         if rows is not None:
             state["video"] = _fractional_rows(rows)
     am = pooled_obs.get("audio_denoise_mask")
-    if am is not None:
+    if am is not None and _splice_audio_enabled():
         state["audio"] = _fractional_rows(am[0, 0].to(torch.float32).reshape(-1))
 
     if state.get("video") is None and state.get("audio") is None:
