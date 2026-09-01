@@ -1,8 +1,8 @@
 <!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28;
      short-fade whistle RESOLVED = C2 ρ ancestral-amplified, GPU 0/0/49/73 2026-08-29 — canonical in audio-carry-identity.md;
      primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid;
-     PR #31 σ_v RE-EXTRACT fix SHIPPED but did NOT resolve GPU audio noise; FALSIFIED as the audio-noise cause
-     2026-09-01 — euler CLEAN, euler_ancestral NOISY ⇒ cause is stochastic ancestral renoise (Bug B), NOT axis) -->
+     PR #31 σ_v RE-EXTRACT UNMERGED (being closed) — designed + unit-tested on branches #26/#31; NOT shipped to main;
+     σ_v axis is NECESSARY BUT INSUFFICIENT ALONE — superseded by the combined fix on branch fix-euler-ancestral-per-row-renoise) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by late fade-length GPU data (same date);
      euler-discriminator collapsed (tests differed in fade length, not sampler); σ_a-label proof from comfy-ref @b78cec87 -->
 # Audio ancestral axis mismatch — Fix A VALIDATED for free audio; H2 FALSIFIED; primary long-fade video bug open
@@ -10,7 +10,12 @@
 Consequence 3 of the [audio carry identity](audio-carry-identity.md).
 Read when debugging `_euler_ancestral_rf_step`, Fix A, or fractional-region audio ([bugs.md](bugs.md)).
 
-## PR #31 σ_v RE-EXTRACT — SHIPPED but FALSIFIED as the audio-noise cause (GPU 2026-09-01) — read first
+## PR #31 σ_v RE-EXTRACT — UNMERGED; NECESSARY BUT INSUFFICIENT ALONE (GPU 2026-09-01) — read first
+
+⚠ **Merge-state correction (2026-09-01):** PR #31 was NEVER shipped to `main` and is being closed.
+The σ_v-axis re-extraction was **designed + unit-tested on unmerged branches (#26, #31)** only;
+`main` carries no σ_v-axis change. It is **superseded by the combined fix** on branch
+`fix-euler-ancestral-per-row-renoise` — see [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md).
 
 PR #31 (`reextract-audio-ancestral-sigma-v-axis`) re-extracts the ancestral integration onto the
 σ_v axis in `_euler_ancestral_rf_step` via new `sig_row_v`/`sig_row_v_next` (per-row x0 from the
@@ -18,23 +23,23 @@ global-carrier velocity projected onto σ_v). Real, unit-verified change — σ_
 schedules genuinely differ (max diff ~0.32) — but a **no-op for every VIDEO row**
 (`sig_row_v == sig_row`); it perturbs ONLY audio rows.
 
-GPU (user, 2026-09-01; single-frame fractional injects; baseline = current `main`): the audible
-audio noise **PERSISTS** under `euler_ancestral`. The σ_v-axis-mismatch hypothesis is INSUFFICIENT
-as the audio-artifact cause.
+GPU (user, 2026-09-01; single-frame fractional injects): on the σ_v branch alone the audible audio
+noise **PERSISTS** under `euler_ancestral`. So the σ_v axis is **NECESSARY BUT INSUFFICIENT ALONE** —
+NOT the wrong cause. The earlier "chased the wrong cause / FALSIFIED as the audio cause" framing is
+**corrected**: PR #31 failed on FRACTIONAL audio only because the clean-K/V splice bypass (Bug F)
+still fed the ancestral step a contaminated denoised. Both halves are required together.
 
 **Decisive discriminator (same branch/prompt, only sampler changed):** `euler` produces NEITHER the
-audio noise NOR the video ghost; `euler_ancestral` produces BOTH. Both symptoms collapse onto ONE
-sampler-specific root cause, revising the audio conclusion:
+audio noise NOR the video ghost; `euler_ancestral` produces BOTH. The two symptoms share the
+`euler_ancestral` renoise path but need distinct fixes, combined in one change:
 
-- The audio noise is **NOT** an σ_a/σ_v axis mismatch. It is `euler_ancestral`'s per-step STOCHASTIC
-  renoise (`eta>0`) breaking the per-row scale-invariance fractional denoise relies on — the
-  documented "noise shim insufficient / stochastic unsupported" finding ([bugs.md](bugs.md) Bug B).
-  Deterministic `euler` injects nothing → clean.
-- PR #31 chased the WRONG cause. Status: **shipped-but-did-not-resolve; FALSIFIED as the audio cause
-  (axis); real cause is stochastic ancestral renoise (Bug B).** The re-extraction stays a proven
-  no-op on video (no regression) — but do NOT present it as the audio fix.
-- The co-occurring VIDEO ghost is a separate wiring gap (clean-K/V not routed under
-  euler_ancestral) — see [bugs.md](bugs.md) Bug F.
+- Audio noise = σ_v-axis integration (Bug C, half 2) fed a CLEAN denoised (Bug F clean-K/V wiring,
+  half 1). Neither half alone clears it — that is why the σ_v-only PR #31 branch still had noise.
+  The stochastic-renoise reading ([bugs.md](bugs.md) Bug B) alone was too narrow; the axis IS
+  load-bearing once the denoised is clean.
+- Video ghost = the same clean-K/V wiring gap (clean-K/V not routed under euler_ancestral) —
+  see [bugs.md](bugs.md) Bug F.
+- Deterministic `euler` already routes through the clean-K/V splice and runs no renoise → clean.
 
 Fix A below is unaffected (it fixed the m=1 free-audio renoise mis-scale, GPU-validated
 2026-08-28); this note concerns the fractional-inject audio artifact only.
@@ -72,11 +77,12 @@ renoise was injected every step → accumulating tinny/reverb noise. `euler` run
 was clean both ways (main and branch). Fix A puts the renoise integration back on the σ_v axis the
 packed audio really follows. **FIXED by Fix A.**
 
-**Shipped form (2026-08-29):** Fix A is extracted standalone on branch
+**Branch form (2026-08-29; UNMERGED):** Fix A is extracted standalone on branch
 `fix-audio-ancestral-sigma-v-axis` (σ_v-axis ancestral integration only, via a new `row_sigma_v(i)`
 helper + `sig_row_v` on `_StepContext`). The σ̃/`sig_row_c` carry-consistent layer (H2) was
-DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the
-mergeable branch is Fix-A-only. 620 passed, ruff clean.
+DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the branch is
+Fix-A-only. 620 passed, ruff clean. NOT on `main`; folded into the combined fix
+([euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md)).
 
 **Scope: the σ_v axis applies to ALL per-row integration, not just `_euler_ancestral_rf_step`.** The
 per-row multistep steps (PR3 `add-per-row-multistep-steps`) and the future DPM++ SDE spine (PR4)
