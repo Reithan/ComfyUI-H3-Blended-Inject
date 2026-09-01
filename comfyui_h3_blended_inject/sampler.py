@@ -316,6 +316,14 @@ class _StepContext:
 #: Type alias for a per-row step function.
 StepFn = Callable[[_StepContext], torch.Tensor]
 
+#: Per-step-fn init-plant axis.  ``"row"`` (default): composite the i=0 clean plant on the
+#: per-row σ_a ratio ``sig_row/sig_g`` (euler's GPU-validated behavior).  ``"v"``: composite on
+#: the σ_v INTEGRATION axis ``sig_row_v/sig_v[0]`` so a fractional AUDIO row's planted content
+#: sits at the σ_v level its label (σ_a = shift(σ_v)) and ancestral integration both assert — the
+#: label↔content contract that keeps the model's per-step velocity estimate unbiased.  Set to
+#: ``"v"`` on the ancestral step (below); video rows are byte-identical either way.
+DEFAULT_PLANT_AXIS = "row"
+
 
 def _fallback_step(ctx: _StepContext) -> torch.Tensor:
     """Reproduce the original loop body: delegate to ``base_fn`` then apply r-scale.
@@ -524,6 +532,10 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     return x
 
 
+#: The ancestral step plants fractional-row content on its σ_v integration axis (see
+#: :data:`DEFAULT_PLANT_AXIS`); euler keeps the default σ_a-ratio plant.
+_euler_ancestral_rf_step.PLANT_AXIS = "v"  # type: ignore[attr-defined]
+
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
 _NATIVE_ROW_STEPS: dict[str, StepFn] = {
@@ -666,6 +678,9 @@ def build_per_row_sampler_function(
 
         # Resolve the per-row step function once before the loop (keyed by base sampler name).
         step = _NATIVE_ROW_STEPS.get(getattr(base_fn, "__name__", ""), _fallback_step)
+        # Init-plant axis for this step (see DEFAULT_PLANT_AXIS): the ancestral step plants on
+        # σ_v so fractional audio content is coherent with its σ_a label; euler stays on σ_a.
+        plant_axis = getattr(step, "PLANT_AXIS", DEFAULT_PLANT_AXIS)
 
         # Shared mutable state for native steps that need persistence across iterations
         # (e.g. the seeded noise sampler in _euler_ancestral_rf_step, old_denoised for PR3).
@@ -768,8 +783,19 @@ def build_per_row_sampler_function(
             # self-attention level σ_row (w = sig_row/σ_g).  The single-forward side stream sources
             # the observed-level content for neighbours from block-0 embed capture, so x_prev
             # carries the σ_row content the main forward integrates.
+            #
+            # Plant axis: on the σ_v-plant step (ancestral) the composite uses the σ_v-axis ratio
+            # sig_row_v/sig_v[0] so a fractional AUDIO row lands at the σ_v level its label (σ_a)
+            # and ancestral integration assert — otherwise the σ_a ratio drops audio content in at
+            # ~σ_v/4, biasing the model's velocity estimate every step (audible fade hiss).  Video
+            # rows have sig_row_v == sig_row so this is byte-identical to the σ_a ratio; m=1 → 1,
+            # m=0 → 0 either way, so stock bit-identity and exact-preserve are untouched.
             if i == 0:
-                x_cur = w * x_cur + (1.0 - w) * clean
+                if plant_axis == "v":
+                    w_plant = (sig_row_v / sig_v[0].clamp(min=1e-8)).clamp(max=1.0)
+                else:
+                    w_plant = w
+                x_cur = w_plant * x_cur + (1.0 - w_plant) * clean
             x_prev = x_cur
             sig_row_next = row_sigma(i + 1)
             sig_row_v_next = row_sigma_v(i + 1)
