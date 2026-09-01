@@ -46,6 +46,7 @@ imports stay lazy so this module loads without a ComfyUI environment.
 from __future__ import annotations
 
 import inspect
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,6 +54,12 @@ from typing import Any
 import torch
 
 from comfyui_h3_blended_inject.guides import filter_released_keyframes
+from comfyui_h3_blended_inject.observer_split import (
+    _band_mod_index,
+    _embed_ratio,
+    _observer_time_embed,
+    _observer_timestep,
+)
 
 
 def scale_packed_audio(
@@ -392,6 +399,37 @@ def _clean_kv_denoised(  # pragma: no cover - requires live H3 model (GPU)
     return denoised
 
 
+def _single_forward_denoised(  # pragma: no cover - requires live H3 model (GPU)
+    ctx: _StepContext,
+    sigma: torch.Tensor,
+    s_in: torch.Tensor,
+    extra_args: dict[str, Any],
+) -> torch.Tensor:
+    """Exact single-forward equivalent of :func:`_clean_kv_denoised` (Option II).
+
+    Primes the band-only side stream for this step (per-row embed ``ratio``, observer modulation
+    ``t_emb_m`` + mod indices — computed from the observer's OWN token-ordered ``m`` so there is no
+    packed/token layout mismatch), publishes the truthful ``σ_row`` labels for the main stream, and
+    runs ONE forward in ``single`` mode.  The block patches carry ``h_m`` block-to-block and read
+    one combined K/V with two queries, reproducing the two-forward ``denoised`` bit-for-bit at ~half
+    the model cost.  See ``option-ii-single-forward.md``.
+    """
+    st = ctx.state
+    obs = st["observer"]
+    schedule_tail = st["schedule_tail"]
+    make_pooled = st["make_pooled"]
+
+    st["prime_side_stream"](ctx.i)  # per-step token-ordered ratio / t_emb_m / mod indices
+    if make_pooled is not None:
+        w = (ctx.sig_row / ctx.sig_g).clamp(max=1.0)
+        schedule_tail["pooled_current"] = make_pooled(w.to(device=st["pdev"], dtype=st["pdtype"]))
+    obs["h_m"] = None
+    obs["mode"] = "single"
+    denoised = ctx.model(ctx.x_prev, sigma * s_in, **extra_args)
+    obs["mode"] = None
+    return denoised
+
+
 def _euler_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row euler step: inline comfy's deterministic euler then apply r-scale.
 
@@ -410,7 +448,10 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     obs = st.get("observer")
     frac = st.get("frac_mask")
     if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
-        denoised = _clean_kv_denoised(ctx, sigma_i, s_in, extra_args)
+        if st.get("single_forward"):
+            denoised = _single_forward_denoised(ctx, sigma_i, s_in, extra_args)
+        else:
+            denoised = _clean_kv_denoised(ctx, sigma_i, s_in, extra_args)
     else:
         denoised = ctx.model(ctx.x_prev, sigma_i * s_in, **extra_args)
     d = (ctx.x_prev - denoised) / sigma_i
@@ -669,6 +710,81 @@ def build_per_row_sampler_function(
         step_state["schedule_tail"] = schedule_tail
         step_state["pdev"] = m_packed.device
         step_state["pdtype"] = m_packed.dtype
+
+        # Option II (opt-in via H3_SINGLE_FORWARD): reproduce the two-forward clean-K/V denoise in
+        # ~1 forward via an exact band-only side stream.  GPU-only; falls back to the two-forward
+        # path when unset.  See wiki option-ii-single-forward.md.
+        single_env = os.environ.get("H3_SINGLE_FORWARD", "0")
+        single_forward = step_state["observer"] is not None and single_env not in (
+            "",
+            "0",
+            "false",
+            "False",
+            "no",
+        )
+        step_state["single_forward"] = single_forward
+
+        def prime_side_stream(i: int) -> None:  # pragma: no cover - GPU
+            """Per-step token-ordered side-stream setup: embed ``ratio``, ``t_emb_m``, mod indices.
+
+            Computed from the observer's OWN token-ordered ``m`` (``stream["m"]``) via the shared
+            :func:`_stream_row_sigma` so ``σ_row`` matches the sampler loop exactly with no
+            packed/token layout assumption.  Video runs on the raw schedule, audio on the shifted
+            one; both index a single shared ``t_emb_m`` table (tag disambiguates the modality).
+            """
+            obs = step_state["observer"]
+            if obs is None:
+                return
+            dm = obs.get("dm")
+            modalities = [
+                (
+                    "video",
+                    0,
+                    sig_v[i],
+                    dense_v if has_dense else None,
+                    sig_v,
+                    max(1.0 - float(sig_v[i]), 0.999),
+                ),
+            ]
+            if audio_mask is not None and sig_a is not None:
+                modalities.append(
+                    ("audio", 2, sig_a[i], dense_a if has_dense else None, sig_a, 1.0)
+                )
+            active: list[dict[str, Any]] = []
+            obs_parts: list[torch.Tensor] = []
+            for key, tag, glob_i, dgrid, cgrid, pin in modalities:
+                stream = obs.get(key)
+                if stream is None:
+                    continue
+                mrow = stream["m"].to(device=x.device, dtype=x.dtype)
+                sig_row_band = _stream_row_sigma(mrow, i, steps_n, dgrid, cgrid, n_sig)
+                stream["ratio"] = _embed_ratio(mrow * glob_i, sig_row_band)
+                obslev = _observer_timestep(mrow, glob_i, pin)
+                stream["_obs"] = obslev
+                stream["_tag"] = tag
+                active.append(stream)
+                obs_parts.append(obslev)
+            if not active:
+                return
+            levels = torch.cat(obs_parts).unique()
+            obs["t_emb_m"] = _observer_time_embed(dm, levels, x.dtype, x.device)
+            for stream in active:
+                stream["mod_index"] = _band_mod_index(levels, stream["_obs"], stream["_tag"])
+
+        step_state["prime_side_stream"] = prime_side_stream
+
+        # One-time embed capture: snapshot the clean inject's block-0 band hidden (h_clean).  One
+        # extra forward on the STATIC clean latent, amortized over all steps.
+        if single_forward:  # pragma: no cover - GPU
+            obs0 = step_state["observer"]
+            s_in0 = x.new_ones([x.shape[0]])
+            if make_pooled is not None:
+                schedule_tail["pooled_current"] = make_pooled(
+                    m_dev.clamp(max=1.0).to(device=m_packed.device, dtype=m_packed.dtype)
+                )
+            obs0["mode"] = "embed_capture"
+            model(clean, sigmas[0] * s_in0, **(extra_args or {}))
+            obs0["mode"] = None
 
         x_cur = x
         sig_row = row_sigma(0)
