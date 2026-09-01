@@ -339,6 +339,10 @@ class _StepContext:
     kwargs: dict[str, Any]
     base_fn: Callable[..., Any]
     state: dict[str, Any] = field(default_factory=dict)
+    # C2 carry correction (ancestral, fractional audio rows only): packed-element audio mask
+    # (broadcastable to x) and the audio carry scale S = shift_v/shift_a.  None / 1.0 disables.
+    audio_mask: torch.Tensor | None = None
+    audio_scale: float = 1.0
 
 
 #: Type alias for a per-row step function.
@@ -472,6 +476,12 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     ``x0`` is band-only and ghost-free (Bug F); the ancestral renoise still runs afterward.
     When no observer/fractional rows are present the plain ``ctx.model`` forward is used.
 
+    Fractional AUDIO rows (``audio_mask`` set, ``audio_scale != 1``) are then overridden by the
+    exact σ_c-axis update in :func:`_c2_audio_ancestral_update` (C2 carry correction) — the
+    σ_v projection above over-shoots a fractional audio row's true packed noise level and leaks
+    the current noise realization into ``x0``, which the ancestral renoise re-excites every step
+    (the mid-fade audio hiss).
+
     Guarantees:
 
     - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
@@ -554,9 +564,79 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     )
     ratio = sigma_down / si
     x = ratio * ctx.x_prev + (1.0 - ratio) * denoised_r
-    if eta > 0:
-        noise = noise_sampler(carrier, ctx.sigmas[ctx.i + 1])
+    noise = noise_sampler(carrier, ctx.sigmas[ctx.i + 1]) if eta > 0 else None
+    if noise is not None:
         x = (alpha_ip1 / alpha_down) * x + noise * s_noise * renoise_coeff
+
+    # C2 carry correction (claude-opus-4-8): fractional AUDIO rows get the exact σ_c-axis
+    # RF-ancestral update (see _c2_audio_ancestral_update).  Gated by torch.where so m=1 rows
+    # stay bit-exact stock and video is byte-identical; no-op when audio is absent or S == 1.
+    if ctx.audio_mask is not None and ctx.audio_scale != 1.0:
+        frac_audio = ctx.audio_mask & (ctx.sig_row > 0.0) & (ctx.sig_row < ctx.sig_g)
+        if bool(frac_audio.any()):
+            x_c2 = _c2_audio_ancestral_update(
+                ctx.x_prev,
+                v,
+                ctx.sig_row,
+                ctx.sig_row_next,
+                ctx.sig_g,
+                ctx.sig_g_next,
+                carrier,
+                ctx.sigmas[ctx.i + 1],
+                ctx.audio_scale,
+                eta,
+                None if noise is None else noise * s_noise,
+            )
+            x = torch.where(frac_audio, x_c2, x)
+    return x
+
+
+def _c2_audio_ancestral_update(
+    y: torch.Tensor,
+    v: torch.Tensor,
+    s: torch.Tensor,
+    s_next: torch.Tensor,
+    g: torch.Tensor,
+    g_next: torch.Tensor,
+    sigma: torch.Tensor,
+    sigma_next: torch.Tensor,
+    S: float,
+    eta: float,
+    noise: torch.Tensor | None,
+) -> torch.Tensor:
+    """Exact RF-ancestral update for a fractional audio row on its true packed axis (C2 port).
+
+    H3's forward multiplies packed audio by the GLOBAL carry ``k = σ_a/σ_v`` and un-transforms
+    with global ``σ_a`` (comfy-ref minimax/model.py:530-551).  With ``S = shift_v/shift_a`` and
+    the exact identity ``S·k ≡ 1 + (S−1)·σ_a``, a fractional audio row labeled at ``s = σ_row_a``
+    truthfully sits at packed noise level ``σ_c = s·σ_v/σ_a`` with packed clean coefficient
+    ``a = (1−s)/(1+(S−1)σ_a)``, and the packed clean estimate for ANY network output is
+    ``Ĉ = (1 − (S−1)(s−σ_a))·y − σ_c·v`` (proto v4 identity, commit 12ea3b6, GPU-confirmed).
+    The state decomposes as ``y = a·Ĉ + σ_c·ε̂``; the next state re-plants at the TRUTHFUL next
+    coefficient ``a'`` (the ladder's "v7" ρ-drift fix — v4 froze ``a`` at step ``i``), retains
+    ``r_ret·ε̂`` and adds fresh noise ``sqrt(σ_c'² − r_ret²)`` — stock RF-ancestral's exact form
+    on the σ_c axis, same ``eta`` semantics (stochasticity preserved).
+
+    Reduces algebraically to stock ``sample_euler_ancestral_RF`` at m=1 (``s=σ_a``); the caller
+    gates by ``frac_audio`` so m=1 is bit-exact by exclusion.  Terminal (``σ_a'=0``): ``σ_c'=0``,
+    ``a'=1``, ``r_ret=0``, no fresh noise → ``x = Ĉ`` (stock's ``x = denoised``); no division by
+    ``σ_a'`` or ``σ_v'`` anywhere.
+    """
+    eps = 1e-8
+    sig_c = (s * sigma / g.clamp(min=eps)).clamp(min=eps)
+    sig_c_next = torch.where(
+        g_next > 0.0, s_next * sigma_next / g_next.clamp(min=eps), torch.zeros_like(s_next)
+    )
+    a = (1.0 - s) / (1.0 + (S - 1.0) * g)
+    a_next = (1.0 - s_next) / (1.0 + (S - 1.0) * g_next)
+    c_hat = (1.0 - (S - 1.0) * (s - g)) * y - sig_c * v
+    eps_hat = (y - a * c_hat) / sig_c
+    sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
+    r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
+    x = a_next * c_hat + r_ret * eps_hat
+    if noise is not None and eta > 0:
+        c_fresh = torch.sqrt(torch.clamp(sig_c_next**2 - r_ret**2, min=0.0))
+        x = x + noise * c_fresh
     return x
 
 
@@ -860,6 +940,8 @@ def build_per_row_sampler_function(
                 kwargs=kwargs,
                 base_fn=base_fn,
                 state=step_state,  # shared across iterations; native steps persist state here
+                audio_mask=audio_mask,
+                audio_scale=(shift_v / shift_a) if (audio_mask is not None and shift_a) else 1.0,
             )
             # Per-row step scaling: each row integrates its OWN Δσ_row, not the global Δσ.
             x_cur = step(ctx)
