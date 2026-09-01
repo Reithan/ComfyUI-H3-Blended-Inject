@@ -431,6 +431,11 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     trajectory (matching stock ``sample_euler_ancestral_RF``), while the per-row model LABEL
     ``w = sig_row/sig_g`` remains on σ_a as required.
 
+    Fractional rows route the forward through the clean-K/V observer splice
+    (:func:`_single_forward_denoised`), identical to :func:`_euler_step`, so the recovered
+    ``x0`` is band-only and ghost-free (Bug F); the ancestral renoise still runs afterward.
+    When no observer/fractional rows are present the plain ``ctx.model`` forward is used.
+
     Guarantees:
 
     - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
@@ -473,7 +478,16 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
 
     carrier = ctx.sigmas[ctx.i]
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
-    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
+    # Clean-K/V observer splice: route the forward through the exact band-only side stream
+    # when fractional rows are present, identical to _euler_step (sampler.py gate above).
+    # Without this gate the ancestral step integrates toward a ghost-contaminated denoised on
+    # fractional rows (Bug F); the ancestral renoise below still runs afterward, unchanged.
+    obs = ctx.state.get("observer")
+    frac = ctx.state.get("frac_mask")
+    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
+        denoised = _single_forward_denoised(ctx, carrier, s_in, extra_args)
+    else:
+        denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
     if ctx.callback is not None:
         ctx.callback(
             {

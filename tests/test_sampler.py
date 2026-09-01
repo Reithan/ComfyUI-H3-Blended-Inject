@@ -1494,3 +1494,78 @@ class TestAudioAncestralAxisSplit:
             f"m=1 with audio must match stock RF-ancestral; max diff="
             f"{float((out - stock_out).abs().max())}"
         )
+
+
+class TestAncestralSpliceGate:
+    """Regression for Bug F: _euler_ancestral_rf_step must route through the clean-K/V
+    observer splice (_single_forward_denoised) on fractional rows, exactly like _euler_step.
+
+    Before the fix the ancestral step called ctx.model(...) directly with no observer/frac
+    gate, so fractional rows integrated toward a ghost-contaminated denoised (visible as a
+    distorted ghost frame on low-denoise single-frame injects under euler_ancestral).
+
+    The splice itself is GPU-only (# pragma: no cover); these tests assert only the GATING
+    decision by monkeypatching _single_forward_denoised with a sentinel, so no GPU is needed.
+    """
+
+    def _make_ctx(self, state: dict[str, Any], model: Any) -> _StepContext:
+        x_prev = torch.tensor([[1.0, 2.0]])
+        sigmas = torch.tensor([0.7, 0.4])
+        row = torch.tensor([0.6])
+        row_next = torch.tensor([0.4])
+        return _StepContext(
+            model=model,
+            x_prev=x_prev,
+            i=0,
+            sigmas=sigmas,
+            sig_row=row,
+            sig_row_next=row_next,
+            sig_row_v=row,
+            sig_row_v_next=row_next,
+            sig_g=row,
+            sig_g_next=row_next,
+            extra_args=None,
+            callback=None,
+            disable=None,
+            kwargs={"noise_sampler": _FixedNoiseSampler(torch.zeros(1, 2)), "eta": 0.0},
+            base_fn=lambda *a, **k: x_prev,
+            state=state,
+        )
+
+    def test_fires_splice_when_observer_and_fractional(self, monkeypatch: Any) -> None:
+        """observer set AND frac_mask.any() → forward goes through _single_forward_denoised."""
+        called: list[bool] = []
+
+        def _sentinel(ctx: Any, sigma: Any, s_in: Any, extra: Any) -> torch.Tensor:
+            called.append(True)
+            return ctx.x_prev * 0.5
+
+        monkeypatch.setattr("comfyui_h3_blended_inject.sampler._single_forward_denoised", _sentinel)
+        state = {"observer": object(), "frac_mask": torch.tensor([True])}
+        _euler_ancestral_rf_step(self._make_ctx(state, _ScaleModel(0.8)))
+        assert called == [True], "fractional rows must route through the clean-K/V splice"
+
+    def test_skips_splice_when_no_observer(self, monkeypatch: Any) -> None:
+        """No observer → plain ctx.model forward, splice never called."""
+        called: list[bool] = []
+
+        def _sentinel(ctx: Any, sigma: Any, s_in: Any, extra: Any) -> torch.Tensor:
+            called.append(True)
+            return ctx.x_prev
+
+        monkeypatch.setattr("comfyui_h3_blended_inject.sampler._single_forward_denoised", _sentinel)
+        _euler_ancestral_rf_step(self._make_ctx({}, _ScaleModel(0.8)))
+        assert called == [], "no observer → splice must not fire"
+
+    def test_skips_splice_when_no_fractional_rows(self, monkeypatch: Any) -> None:
+        """observer set but frac_mask all False → splice never called."""
+        called: list[bool] = []
+
+        def _sentinel(ctx: Any, sigma: Any, s_in: Any, extra: Any) -> torch.Tensor:
+            called.append(True)
+            return ctx.x_prev
+
+        monkeypatch.setattr("comfyui_h3_blended_inject.sampler._single_forward_denoised", _sentinel)
+        state = {"observer": object(), "frac_mask": torch.tensor([False])}
+        _euler_ancestral_rf_step(self._make_ctx(state, _ScaleModel(0.8)))
+        assert called == [], "no fractional rows → splice must not fire"
