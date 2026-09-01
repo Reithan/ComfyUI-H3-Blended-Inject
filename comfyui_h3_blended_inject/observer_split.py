@@ -26,11 +26,19 @@ hidden and leaked residual fade-noise) and the second-stream sampler path (which
 disabled the split and lost self-reception).  See
 ``c2-rho-fix-paths/observed-level-plant/second-stream.md``.
 
-The pure helpers — ``observer_call_update``, ``_fractional_rows``, ``_call_plan``
-— are importable and unit-tested on CPU.  The comfy-coupled functions
-(``install_observer_split``, ``_attention_with_cached_kv``, ``_make_block_patch``)
-require a live ComfyUI + H3 model and are exercised only on GPU runs; their
-``comfy`` imports stay lazy so this module imports cleanly on CPU.
+An EXACT single-forward path (Option II) collapses the two forwards to ~1: it
+carries a band-only side stream ``h_m`` and, per block, builds ONE combined K/V
+set read by two queries.  It is bit-for-bit equal to the two-forward result (see
+``c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md``).
+
+The pure helpers — ``observer_call_update``, ``_fractional_rows``,
+``_observer_timestep``, ``_embed_ratio``, ``_blend_hidden``, ``_band_mod_index``,
+``_call_plan`` — are importable and unit-tested on CPU.  The comfy-coupled
+functions (``install_observer_split``, ``_observer_time_embed``,
+``_attention_with_cached_kv``, ``_norm_rope_query``, ``_dual_attention``,
+``_single_plan``, ``_make_block_patch``) require a live ComfyUI + H3 model and are
+exercised only on GPU runs; their ``comfy`` imports stay lazy so this module
+imports cleanly on CPU.
 """
 
 from __future__ import annotations
@@ -149,6 +157,9 @@ def install_observer_split(  # pragma: no cover - requires live ComfyUI model (G
     state: dict[str, Any] = {
         "shift_v": float(getattr(dm, "sigma_shift_video", 12.0)),
         "shift_a": float(getattr(dm, "sigma_shift_audio", 3.0)),
+        # dm is captured so the single-forward path can build the side stream's observer
+        # time-embedding (t_emb_m) from the model's own adaLN curve / time-embedder.
+        "dm": dm,
     }
 
     vm = pooled_obs.get("denoise_mask")
@@ -210,6 +221,72 @@ def _call_plan(state: dict[str, Any], call: dict[str, Any], segs: list[Any]) -> 
     return pos
 
 
+def _single_plan(  # pragma: no cover - GPU
+    state: dict[str, Any], call: dict[str, Any], segs: list[Any]
+) -> dict[str, Any] | None:
+    """Single-forward splice plan: band token positions + aligned per-row side-stream data.
+
+    Like :func:`_call_plan` but also gathers, in the SAME seg-iteration order as ``pos``, the
+    per-step ``ratio`` (block-0 embed-blend weight) and ``mod`` (adaLN mod-row index into the
+    side stream's ``t_emb_m`` table) that the sampler primed onto each stream.  Concatenating all
+    three in lockstep guarantees the side hidden ``h_m``, its modulation, and its clean-embed init
+    stay row-aligned to the global token positions regardless of video/audio segment order.
+    """
+    plan = call.get("splan", "unset")
+    if plan != "unset":
+        return plan
+
+    pos_parts: list[torch.Tensor] = []
+    ratio_parts: list[torch.Tensor] = []
+    mod_parts: list[torch.Tensor] = []
+    for a, b, row in segs:
+        if not torch.is_tensor(row):
+            continue
+        tag = int(row[0].item() % 3)
+        for key, want_tag in (("video", 0), ("audio", 2)):
+            stream = state.get(key)
+            if stream is None or tag != want_tag:
+                continue
+            if (b - a) != stream["n"] or "ratio" not in stream or "mod_index" not in stream:
+                continue  # layout mismatch or side stream not primed this step — skip
+            pos_parts.append(stream["pos"].to(row.device) + a)
+            ratio_parts.append(stream["ratio"].to(row.device))
+            mod_parts.append(stream["mod_index"].to(row.device))
+    if not pos_parts:
+        call["splan"] = None
+        return None
+
+    plan = {
+        "pos": torch.cat(pos_parts),
+        "ratio": torch.cat(ratio_parts),
+        "mod": torch.cat(mod_parts),
+    }
+    call["splan"] = plan
+    return plan
+
+
+def _observer_time_embed(  # pragma: no cover - GPU
+    dm: Any, levels: torch.Tensor, dtype: Any, device: Any
+) -> torch.Tensor:
+    """Side stream's ``t_emb_m`` table for the observer timestep ``levels`` (model.py:683-691).
+
+    Reuses the model's own adaLN curve (when ``use_adaln_curves``) or ``time_embedder`` so the side
+    stream is modulated at the observer levels ``m`` exactly as the two-forward capture would be —
+    the capture forward's adaLN table is not present in a σ_row-labelled single forward, so we
+    rebuild just the band's ``m`` levels here.  Returns an ``[len(levels), t_dim]`` table indexed by
+    :func:`_band_mod_index`.
+    """
+    import comfy.model_management
+
+    t_vals = levels.to(torch.float32).to(device)
+    if getattr(dm, "use_adaln_curves", False):
+        table = comfy.model_management.cast_to(dm.adaln_t_table, device=device)
+        pos = t_vals.clamp(0.0, 1.0) * (table.shape[0] - 1)
+        i0 = pos.floor().long().clamp(max=table.shape[0] - 2)
+        return torch.lerp(table[i0], table[i0 + 1], (pos - i0).unsqueeze(1))
+    return dm.time_embedder(t_vals).to(dtype)
+
+
 def _attention_with_cached_kv(  # pragma: no cover - GPU
     attn: Any,
     x: torch.Tensor,
@@ -265,17 +342,120 @@ def _attention_with_cached_kv(  # pragma: no cover - GPU
     return attn.out_proj(out.squeeze(0))
 
 
+def _norm_rope_query(  # pragma: no cover - GPU
+    attn: Any, q_raw: torch.Tensor, rope_slice: torch.Tensor, qw: Any, kw: Any, rot: int
+) -> torch.Tensor:
+    """RMSNorm + split-half rope for a QUERY-only band tensor at its own token positions.
+
+    Mirrors the q half of ``Attention.forward`` (model.py:173-187) but for just the ``[B, inner]``
+    band queries; ``rope_slice`` is ``rope_freqs[:, pos]`` so each side query is rotated at its
+    TRUE global token position (identical to the two-forward capture's band q).  The fused kernel
+    needs a k argument, so a throwaway clone is passed and discarded.
+    """
+    import comfy.model_management
+    import comfy.quant_ops
+
+    b = q_raw.shape[0]
+    q = q_raw.view(1, b, attn.heads, attn.head_dim)
+    k_dummy = q.clone()
+    if comfy.model_management.in_training:
+        q, _ = comfy.quant_ops.ck.rms_rope_split_half(
+            q, k_dummy, rope_slice, qw, kw, epsilon=attn.q_norm.eps, rot_dim=rot
+        )
+    else:
+        comfy.quant_ops.ck.rms_rope_split_half_(
+            q, k_dummy, rope_slice, qw, kw, epsilon=attn.q_norm.eps, rot_dim=rot
+        )
+    return q[0]
+
+
+def _dual_attention(  # pragma: no cover - GPU
+    attn: Any,
+    x_main: torch.Tensor,
+    x_m: torch.Tensor,
+    pos: torch.Tensor,
+    rope_freqs: Any,
+    transformer_options: dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One combined K/V set read by two queries — the single-forward core.
+
+    Builds the ONE combined K/V set = the main stream's K/V (from ``x_main`` at σ_row) with the
+    band rows overwritten by the side stream's raw K/V (from ``x_m`` at observer ``m``), then reads
+    it with an extended query ``[q_main ; q_m]``.  ``q_main`` reproduces the splice forward's
+    attention (feeds ``denoised``); ``q_m`` reproduces the capture forward's band attention (evolves
+    ``h_m``).  Because the band K/V are spliced RAW before the fused norm+rope, they are rotated at
+    their true positions by the full-length pass — exactly as the two-forward splice does.
+    """
+    import comfy.model_management
+    from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
+
+    s = x_main.shape[0]
+    inner = attn.heads * attn.head_dim
+    q, k, v = attn.qkv_proj(x_main).split(inner, dim=-1)
+    q_m, k_m, v_m = attn.qkv_proj(x_m).split(inner, dim=-1)
+    k[pos] = k_m.to(k.dtype)
+    v[pos] = v_m.to(v.dtype)
+    v = v.view(s, attn.heads, attn.head_dim)
+    if rope_freqs is not None:
+        q = q.view(1, s, attn.heads, attn.head_dim)
+        k = k.view(1, s, attn.heads, attn.head_dim)
+        qw = comfy.model_management.cast_to(attn.q_norm.weight, device=x_main.device)
+        kw = comfy.model_management.cast_to(attn.k_norm.weight, device=x_main.device)
+        rot = rope_freqs.shape[-3] * 2
+        import comfy.quant_ops
+
+        if comfy.model_management.in_training:
+            q, k = comfy.quant_ops.ck.rms_rope_split_half(
+                q, k, rope_freqs, qw, kw, epsilon=attn.q_norm.eps, rot_dim=rot
+            )
+        else:
+            comfy.quant_ops.ck.rms_rope_split_half_(
+                q, k, rope_freqs, qw, kw, epsilon=attn.q_norm.eps, rot_dim=rot
+            )
+        q = q[0]
+        k = k[0]
+        q_m = _norm_rope_query(attn, q_m, rope_freqs[:, pos], qw, kw, rot)
+    else:
+        q = attn.q_norm(q.view(s, attn.heads, attn.head_dim))
+        k = attn.k_norm(k.view(s, attn.heads, attn.head_dim))
+        q_m = attn.q_norm(q_m.view(q_m.shape[0], attn.heads, attn.head_dim))
+    v = v.clone()
+    q_ext = torch.cat([q, q_m], dim=0)
+    qc = AttentionTensorContainer(q_ext.transpose(0, 1).unsqueeze(0))
+    kc = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))
+    vc = AttentionTensorContainer(v.transpose(0, 1).unsqueeze(0))
+    out = optimized_attention(
+        qc,
+        kc,
+        vc,
+        attn.heads,
+        mask=None,
+        skip_reshape=True,
+        transformer_options=transformer_options,
+    ).squeeze(0)
+    return attn.out_proj(out[:s]), attn.out_proj(out[s:])
+
+
 def _make_block_patch(  # pragma: no cover - GPU
     dm: Any, block: Any, state: dict[str, Any], idx: int
 ) -> Any:
-    """Replace-patch for one DiT block, two-forward clean-K/V splice.
+    """Replace-patch for one DiT block, clean-K/V splice (two-forward and single-forward).
 
-    ``capture`` mode (clean-content forward): snapshot this block's fractional-row
-    K/V (raw PRE-rope ``qkv_proj`` output) into ``state["kv_cache"][idx]``, then
-    run the original block untouched.  ``splice`` mode (truthful σ_row forward):
-    replay ``DiTBlock.forward`` (model.py:286-291) with the fractional rows' K/V
-    overwritten by the cached clean K/V — so neighbours (and the row itself) read
-    the frame at its clean denoise level while its Q/gate/MLP stay truthful.
+    Two-forward modes:
+    - ``capture`` (clean-content forward): snapshot this block's fractional-row K/V (raw PRE-rope
+      ``qkv_proj`` output) into ``state["kv_cache"][idx]``, then run the original block untouched.
+    - ``splice`` (truthful σ_row forward): replay ``DiTBlock.forward`` (model.py:286-291) with the
+      fractional rows' K/V overwritten by the cached clean K/V — so neighbours (and the row itself)
+      read the frame at its clean denoise level while its Q/gate/MLP stay truthful.
+
+    Single-forward modes (Option II, exact):
+    - ``embed_capture`` (one-time, clean inject): snapshot the block-0 band hidden ``h_clean``.
+    - ``single``: carry a band-only side stream ``h_m`` (init ``ratio·h_main0 + (1−ratio)·h_clean``)
+      alongside the main stream; per block build ONE combined K/V (main K/V, band overwritten by the
+      side stream's) read by two queries — main at σ_row (→ ``denoised``) and band at observer ``m``
+      (→ evolves ``h_m``).  Reproduces the two-forward result in ~1 forward.  See
+      ``c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md``.
+
     Falls through to the original block when no observer state is armed.
     """
 
@@ -290,6 +470,49 @@ def _make_block_patch(  # pragma: no cover - GPU
         h = args["img"]
         t_emb = args["t_emb"]
         segs = args["mod_segments"]
+
+        if mode == "embed_capture":
+            # One-time: snapshot the clean inject's block-0 band hidden (embed of `clean`).
+            if idx == 0:
+                cpos = _call_plan(state, call, segs)
+                if cpos is not None:
+                    state["h_clean"] = h[cpos].detach().clone()
+            return extra["original_block"](args)
+
+        if mode == "single":
+            plan = _single_plan(state, call, segs)
+            if plan is None or state.get("h_clean") is None:
+                return extra["original_block"](args)
+            pos = plan["pos"]
+            band_mod = plan["mod"]
+            t_emb_m = state["t_emb_m"]
+            segs_m = [(0, int(pos.shape[0]), band_mod)]
+            if idx == 0:
+                h_m = _blend_hidden(h[pos], state["h_clean"].to(h.dtype), plan["ratio"])
+            else:
+                h_m = state.get("h_m")
+                if h_m is None:
+                    return extra["original_block"](args)
+            smsa, scmsa, gmsa, smlp, scmlp, gmlp = block.adaln_proj(t_emb)
+            sm_m, scm_m, gm_m, sm2_m, scm2_m, gm2_m = block.adaln_proj(t_emb_m)
+            h_mod_main = _mod_scale_shift(block.norm1(h), smsa, scmsa, segs)
+            h_mod_m = _mod_scale_shift(block.norm1(h_m), sm_m, scm_m, segs_m)
+            main_out, band_out = _dual_attention(
+                block.attn,
+                h_mod_main,
+                h_mod_m,
+                pos,
+                args["rope_freqs"],
+                args["transformer_options"],
+            )
+            x = _mod_gate(h, gmsa, main_out, segs)
+            h2 = _mod_scale_shift(block.norm2(x), smlp, scmlp, segs)
+            x = _mod_gate(x, gmlp, block.mlp(h2), segs)
+            x_m = _mod_gate(h_m, gm_m, band_out, segs_m)
+            h2_m = _mod_scale_shift(block.norm2(x_m), sm2_m, scm2_m, segs_m)
+            state["h_m"] = _mod_gate(x_m, gm2_m, block.mlp(h2_m), segs_m)
+            return {"img": x}
+
         pos = _call_plan(state, call, segs)
         if pos is None:
             return extra["original_block"](args)
