@@ -70,6 +70,49 @@ def _fractional_rows(rows: torch.Tensor) -> dict[str, Any] | None:
     }
 
 
+def _observer_timestep(m: torch.Tensor, sigma: torch.Tensor, pin: float) -> torch.Tensor:
+    """Per-row observer timestep ``t_obs = clamp(1 − m·σ, max=pin)`` (model.py:593-609).
+
+    ``m`` is the per-row fractional denoise and ``sigma`` the modality's global sigma at this
+    step (``sigma_v`` for video, the shifted ``sigma_a`` for audio).  The single forward carries a
+    SECOND time-embedding modulated at these observer levels so the side stream can be gated at
+    ``m`` while the main stream stays at ``σ_row`` — the two-forward capture's adaLN table is not
+    available in a splice-labeled forward, so we recompute the observer timesteps here and feed
+    them back through the model's own time-embedder/curve on GPU.
+
+    ``pin`` is the modality cond-timestep ceiling (``t_pin_v = max(t_v, 0.999)`` for video,
+    ``t_pin_a = 1.0`` for audio); a fully-clean row (m→0) pins at the cond level exactly like the
+    native inject path.
+    """
+    return (1.0 - m * sigma).clamp(max=pin)
+
+
+def _embed_ratio(sig_obs: torch.Tensor, sig_row: torch.Tensor) -> torch.Tensor:
+    """Block-0 embed-blend weight ``ratio = clamp(σ_obs / σ_row, 0, 1)``.
+
+    The observer content is ``x_obs = clean + ratio·(x_prev − clean) = (1−ratio)·clean +
+    ratio·x_prev`` with ``ratio = σ_obs/σ_row`` (clean-kv-split.md).  Because the H3 patch-embed is
+    affine and row-wise, ``embed(x_obs) = ratio·embed(x_prev) + (1−ratio)·embed(clean)`` EXACTLY
+    when the two weights sum to 1 — so the side stream's block-0 hidden is this same ratio-blend of
+    the main and clean block-0 hiddens, reproducing the two-forward capture's embed bit-for-bit
+    without a second patch-embed pass.  Clamped because ``σ_obs = m·σ_g ≤ σ_row`` should hold but
+    schedule rounding can nudge the quotient just past 1.
+    """
+    return (sig_obs / sig_row.clamp(min=1e-6)).clamp(0.0, 1.0)
+
+
+def _blend_hidden(h_main: torch.Tensor, h_clean: torch.Tensor, ratio: torch.Tensor) -> torch.Tensor:
+    """Row-wise ``ratio·h_main + (1−ratio)·h_clean`` over the fractional band.
+
+    ``h_main``/``h_clean`` are ``(band, dim)`` block-0 hiddens (main stream at ``x_prev``, captured
+    clean stream at the static ``clean`` inject); ``ratio`` is the per-row ``(band,)`` embed weight
+    from :func:`_embed_ratio`.  The weight broadcasts over the feature dim so each fractional row
+    blends at its own observer level.
+    """
+    r = ratio.reshape(-1, *([1] * (h_main.dim() - 1))).to(h_main.dtype)
+    return r * h_main + (1.0 - r) * h_clean
+
+
 def install_observer_split(  # pragma: no cover - requires live ComfyUI model (GPU)
     m: Any,
     schedule_tail_cfg: dict[str, Any],
