@@ -1,8 +1,8 @@
 """Tests for comfyui_h3_blended_inject.observer_split — CPU-testable per-call helpers.
 
 The pure helpers ``observer_call_update``, ``_fractional_rows``, and ``_call_plan`` are exercised
-here.  The comfy-coupled functions (install_observer_split, _attention_with_cached_kv,
-_make_block_patch) are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
+here.  The comfy-coupled functions (install_observer_split, _dual_attention, _make_block_patch)
+are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
 """
 
 from __future__ import annotations
@@ -21,9 +21,10 @@ from comfyui_h3_blended_inject.observer_split import (
 
 
 class TestObserverCallUpdate:
-    """The clean-K/V mechanism carries no per-call labels — the capture forward publishes the
-    m labels through ``pooled_current`` — so this helper only bumps the per-forward token that
-    invalidates the cached splice-position plan between the two forwards of a step.
+    """The clean-K/V mechanism carries no per-call labels — the single forward publishes the
+    truthful σ_row labels through ``pooled_current`` (the one-time embed-capture publishes m) — so
+    this helper only bumps the per-forward token that invalidates the cached splice-position plan
+    between forwards.
     """
 
     def test_sets_call_and_token(self) -> None:
