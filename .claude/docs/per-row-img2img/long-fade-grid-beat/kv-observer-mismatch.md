@@ -152,6 +152,30 @@ TRADE, not a clean win: moiré should VANISH **and** the keyframe GHOST should R
 vanishes with NO ghost return, the linear-broadcast story is INCOMPLETE — reviving a regime/OOD
 co-cause. So #81 must watch BOTH symptoms (streamers AND ghost), not only the streamers.
 
+**Dual content-side test now exists.** #81 closes Δ on the OBSERVATION side (observation UP to
+content). The CONTENT-side dual — plant injected noise at observed `m·σ_g` while keeping
+self-evolution at `σ_row` (content DOWN to observation) — is recorded in
+[../c2-rho-fix-paths/observed-level-plant.md](../c2-rho-fix-paths/observed-level-plant.md).
+
+**Content-side dual GPU-tested (2026-08-31).** It kills the observer-side fade noise + Bug-E break
+and reveals a self-side colour tint — same Δ, two-sided. Confirms the residue is real; and per the
+over-determined labels (no-noise⇒content=obs, no-tint⇒content=self, denoise⇒self=σ_row) forcing
+observer=σ_row IS #81 → the ghost trade above is the predicted price. See observed-level-plant.md.
+
+**Self-side tint → per-step DC de-bias PLAN (UNVERIFIED).** The colour tint the content-side dual
+revealed is planned to be cleared by a per-step DC-only re-centering that removes the sigma-mismatch
+overshoot's low-freq residue WITHOUT weakening the denoise (which would revive the ghost). See the
+"Per-step self-side DC de-bias" section of
+[../c2-rho-fix-paths/observed-level-plant.md](../c2-rho-fix-paths/observed-level-plant.md).
+
+**ROOT FIX supersedes the DC plan (analytically verified; GPU in progress).** The DC/low-pass patch only
+chases the tint's low-freq residue. The principled root fix is the CLEAN-KV-SPLIT design
+([../c2-rho-fix-paths/observed-level-plant/clean-kv-split.md](../c2-rho-fix-paths/observed-level-plant/clean-kv-split.md)):
+keep the observer-split architecture (self-reception + broadcast at `m·σ_g`), change only the K/V content
+source to `x_obs = denoised + σ_obs·û` (prev-step denoised re-noised to observer level). The SECOND-STREAM
+(Option I) design that formerly held this slot was OVERTURNED 2026-08-31 (split-off caused self-reception
+regression; see second-stream.md). Clean-KV-split keeps the split ON — the CONTENT-side complement to #81.
+
 ## Discriminator test — stock-linear long fade (DISTINCT from #81)
 
 NEW test, distinct from #81: disable the remap AND the split (pure composite / MC-equivalent = ROW 1
