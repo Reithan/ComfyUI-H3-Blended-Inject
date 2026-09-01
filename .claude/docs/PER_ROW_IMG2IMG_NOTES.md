@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `consolidate-wiki-from-stale-prs`) — salvaged docs from stale PRs #26/#19: sampler-class-support split + σ_v-axis ancestral scope note in audio-axis-verdict.md.
+Last updated: 2026-09-01 (branch `reextract-audio-ancestral-sigma-v-axis`) — PR #31 GPU: σ_v audio fix falsified (stochastic, not axis) + euler_a clean-K/V ghost; audio-axis-verdict.md + bugs.md F.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -87,18 +87,19 @@ single engine via a per-row ancestral step. See
   debugging why comfy/H3 behaves a certain way.*
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
-- [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed), B (stochastic, open), C (free-audio
-  ancestral axis, FIXED by Fix A), D (optional inject_list, fixed), E (long-fade video interference,
-  open). *Read when debugging fractional-region artifacts.*
+- [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed; record in bugs/), B (stochastic,
+  open — euler_a fractional-audio cause), C (ancestral axis, fixed), D (inject_list, fixed), E
+  (long-fade video, open), F (euler_a clean-K/V gap → fractional video ghost, open). *Read for
+  fractional artifacts.*
 - [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
   DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
   FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*
 - [audio-carry-identity.md](per-row-img2img/audio-carry-identity.md): **CONFIRMED (source-derived
   math):** why the ×S audio fix is exact globally but leaks per-row for m<1 (C2 audibility
   AMBIGUOUS); candidate wrapper compensation. *Read when fractional AUDIO artifacts appear.*
-- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED free audio
-  (ancestral integration → σ_v axis); H2 FALSIFIED (fade-length confound); σ_a-LABEL proof valid;
-  primary long-fade VIDEO bug open.** *Read for euler_a audio behavior.*
+- [audio-axis-verdict.md](per-row-img2img/audio-axis-verdict.md): **Fix A VALIDATED free audio; H2
+  FALSIFIED; σ_a-LABEL proof valid (child); PR #31 σ_v re-extract FALSIFIED as the audio cause
+  (GPU 2026-09-01 — stochastic, not axis); long-fade VIDEO open.** *Read for euler_a audio.*
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*

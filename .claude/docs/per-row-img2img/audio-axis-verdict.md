@@ -1,12 +1,43 @@
 <!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28;
      short-fade whistle RESOLVED = C2 ρ ancestral-amplified, GPU 0/0/49/73 2026-08-29 — canonical in audio-carry-identity.md;
-     primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid) -->
+     primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid;
+     PR #31 σ_v RE-EXTRACT fix SHIPPED but did NOT resolve GPU audio noise; FALSIFIED as the audio-noise cause
+     2026-09-01 — euler CLEAN, euler_ancestral NOISY ⇒ cause is stochastic ancestral renoise (Bug B), NOT axis) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by late fade-length GPU data (same date);
      euler-discriminator collapsed (tests differed in fade length, not sampler); σ_a-label proof from comfy-ref @b78cec87 -->
 # Audio ancestral axis mismatch — Fix A VALIDATED for free audio; H2 FALSIFIED; primary long-fade video bug open
 
 Consequence 3 of the [audio carry identity](audio-carry-identity.md).
 Read when debugging `_euler_ancestral_rf_step`, Fix A, or fractional-region audio ([bugs.md](bugs.md)).
+
+## PR #31 σ_v RE-EXTRACT — SHIPPED but FALSIFIED as the audio-noise cause (GPU 2026-09-01) — read first
+
+PR #31 (`reextract-audio-ancestral-sigma-v-axis`) re-extracts the ancestral integration onto the
+σ_v axis in `_euler_ancestral_rf_step` via new `sig_row_v`/`sig_row_v_next` (per-row x0 from the
+global-carrier velocity projected onto σ_v). Real, unit-verified change — σ_a vs σ_v per-row
+schedules genuinely differ (max diff ~0.32) — but a **no-op for every VIDEO row**
+(`sig_row_v == sig_row`); it perturbs ONLY audio rows.
+
+GPU (user, 2026-09-01; single-frame fractional injects; baseline = current `main`): the audible
+audio noise **PERSISTS** under `euler_ancestral`. The σ_v-axis-mismatch hypothesis is INSUFFICIENT
+as the audio-artifact cause.
+
+**Decisive discriminator (same branch/prompt, only sampler changed):** `euler` produces NEITHER the
+audio noise NOR the video ghost; `euler_ancestral` produces BOTH. Both symptoms collapse onto ONE
+sampler-specific root cause, revising the audio conclusion:
+
+- The audio noise is **NOT** an σ_a/σ_v axis mismatch. It is `euler_ancestral`'s per-step STOCHASTIC
+  renoise (`eta>0`) breaking the per-row scale-invariance fractional denoise relies on — the
+  documented "noise shim insufficient / stochastic unsupported" finding ([bugs.md](bugs.md) Bug B).
+  Deterministic `euler` injects nothing → clean.
+- PR #31 chased the WRONG cause. Status: **shipped-but-did-not-resolve; FALSIFIED as the audio cause
+  (axis); real cause is stochastic ancestral renoise (Bug B).** The re-extraction stays a proven
+  no-op on video (no regression) — but do NOT present it as the audio fix.
+- The co-occurring VIDEO ghost is a separate wiring gap (clean-K/V not routed under
+  euler_ancestral) — see [bugs.md](bugs.md) Bug F.
+
+Fix A below is unaffected (it fixed the m=1 free-audio renoise mis-scale, GPU-validated
+2026-08-28); this note concerns the fractional-inject audio artifact only.
 
 ## VALIDATED for free audio (controlled GPU 2026-08-28) — read this first
 
@@ -101,34 +132,8 @@ both terms independently necessary. See
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 
-This model-contract proof is independent of the axis fix and remains valid.
-
-**VERDICT: σ_a is removable for the ancestral INTEGRATION but LOAD-BEARING for the LABEL.**
-Fix B (full-unification: σ_v for BOTH label AND integration) remains **REJECTED — by
-model-contract proof, not assumption.**
-
-**PROOF (independently verified from source + model, not circular):** our sampler passes the model
-a fraction `w = sig_row/sig_g` (sampler.py:755,758); the model computes `t_row = 1 − w·σ_g`
-(comment sampler.py:754; model `_forward` comfy model.py:604-605 `rows_t = 1 − m·σ_a`). For
-audio, `sig_g = sig_a[i]` which EQUALS the model's own internally-derived σ_a (both from
-time_shift_sigma(σ_v)). So current `w = sig_row_a/sig_a[i]` → model yields `1 − sig_row_a`
-(truthful label). If the σ_v fraction were passed instead (`w = sig_row_v/sig_v[i]`), the model
-still multiplies by ITS σ_a → `1 − sig_row_v·(σ_a/σ_v)`. Since time_shift_sigma is nonlinear
-(σ_a/σ_v ≈ 0.27→1.0 across the schedule,
-[dit-forward.md](native-h3-mechanism/dit-forward.md)), this MISLABELS audio, worst at
-early/high-σ steps. The σ_a denominator is required for a truthful label.
-
-**σ_a IS LOAD-BEARING IN THREE SITES** (only the ancestral integration axis was ever questioned;
-Fix A moves ONLY that integration, not the label):
-
-1. Per-row label denominator `w = sig_row/sig_g` (sampler.py:557,755) — proven above.
-2. Observer-label K/V split — observer labels `t_obs = 1−m·σ` use shifted σ_a for audio
-   ([label-ratio-and-observer-split.md](schedule-tail-late-delta/label-ratio-and-observer-split.md):95).
-3. Deterministic r-scaling `r = (sig_row−sig_row_next)/(sig_g−sig_g_next)` in `_euler_step`
-   (:305) and `_fallback_step` (:272) — unifying to σ_v would perturb a path with zero benefit.
-
-**PROVENANCE — deliberate design:** σ_a axis was intentional, introduced in commit 41c488d
-("Ship schedule-tail remap + observer-label K/V split": "complete the audio port: audio rows run
-the remap on the sigma-shifted audio schedule via time_shift_sigma"). The schedule-tail remap idx
-(`k_d`, `_stream_row_sigma` sampler.py:496-499) is axis-INDEPENDENT; the 17n+5 A/V tail join
-controls layout, not sigma axis — so σ_a affects only sigma VALUES, not tail alignment.
+Carved out to [audio-axis-verdict/sigma-a-label-proof.md](audio-axis-verdict/sigma-a-label-proof.md)
+(char/line budget). Short: **σ_a is removable for the ancestral INTEGRATION but LOAD-BEARING for the
+model LABEL** — Fix B (σ_v for BOTH label and integration) stays REJECTED by model-contract proof.
+σ_a is load-bearing in three sites (per-row label denominator, observer-label K/V split,
+deterministic r-scaling). See the child for the full source proof and provenance.

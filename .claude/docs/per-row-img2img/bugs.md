@@ -1,7 +1,8 @@
 <!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: FIXED by Fix A,
      GPU-validated 2026-08-28; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, DECOUPLED
-     2026-08-28 — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor, M-A/M-C/M-D/M-E refuted) -->
+     2026-08-28 — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor, M-A/M-C/M-D/M-E refuted;
+     F euler_ancestral clean-K/V wiring gap → fractional video ghost: OPEN, GPU 2026-09-01) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by fade-length GPU data (same date, late); Bug E decoupling matrix on 0/0/39/90 · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -10,43 +11,13 @@ these bugs live in is described in [our-architecture](our-architecture.md).
 
 ## Bug A
 
-**Fractional AUDIO garbled under deterministic euler (FIXED).**
-
-**Symptom** (user, GPU): "39f inject f0 denoise 0.01, audio fade, fade 0/0/17/39, euler: video
-perfect, audio garbled/staticky in the inject portion." Video fine, m==0 audio fine, only
-fractional (0<m<1) audio corrupted.
-
-**Root cause:** comfy applies `MiniMaxH3.process_latent_in`[^plin] to `sample_custom`'s
-latent_image, multiplying the AUDIO slice by `audio_scale = 4.0` (video ×1.0). So the `x_global`
-the sampler holds has audio ×4. But our init-lerp clean term (`clean_packed`) was packed RAW
-(audio ×1). The lerp `m·x_global + (1−m)·clean_packed` mixed 4× and 1× audio ⇒ fractional audio
-img2img'd from a 4×-mismatched reference ⇒ static. m=1 drops the clean term (fine); m=0 restored
-post-sampling (fine) ⇒ only 0<m<1 audio affected.
-
-**Fix** (commit "fix fractional-audio garble: scale init-lerp clean term by audio_scale"):
-- `sampler.py::scale_packed_audio(packed, video_element_count, audio_scale)`: scales the audio
-  tail in place; no-op when scale==1.0 or no audio tail.
-- `nodes.py::_run_sampler`: after `pack_latents(clean_components)`, compute
-  `n_video_elems = prod(latent_shapes[0][1:])`, read `audio_scale`, call `scale_packed_audio`.
-- Regression: `tests/test_sampler.py::TestScalePackedAudio` (4 tests). Suite 522 pass, ruff clean.
-
-**Scale is NOT fixed at ×4:** `audio_scale = shift_video/shift_audio` (S), set by the user via the
-"ModelSamplingMiniMaxH3 / MiniMax H3 Sigma Shift" node. Official guidance: `shift_video` permissive
-(~10–14+, tune per movement speed/detail); `shift_audio` ≈ 3±1, leave at default. S = 4.0 only at
-defaults 12/3. `_run_sampler` reads it dynamically from `model_sampling.audio_scale`; correct.
-
-**CAVEAT: carry IS active in our path (source-verified, corrected 2026-08-23).** A prior version
-of this doc claimed our path "does NOT set audio_scale in the payload (we bypass native
-extra_conds)". **FALSE**: `sample_custom → process_conds`[^pconds] calls `model.extra_conds`,
-which unconditionally sets `payload["audio_scale"]`[^ec], so the per-step `sigma_v/sigma_a` carry
-in `forward`[^fwd] runs every step. The [audio-carry identity](audio-carry-identity.md) shows this
-is exactly what makes the constant ×S clean-term fix correct at the m=1/global level; the packed
-audio trajectory is plain CONST with clean = S·A. **BUT** the same derivation exposes a residual
-per-row mismatch for 0≤m<1 rows (clean coeff error up to ×S at early steps), the prime suspect if
-fractional audio ever artifacts again. **GPU retest 2026-08-23 (user): fractional audio CLEAN**
-(39f fade, euler, incl. non-default shift): Bug A fix CONFIRMED; the per-row mismatch is not
-perceptible in practice so far. A wrapper-side affine compensation is derivable if it ever shows. `scale_latent_inpaint`[^sli] (factor `(sigma_v/sigma_a)/S`) is the NATIVE counterpart of that
-compensation; unused in our path (`noise_mask=None`).
+**Fractional AUDIO garbled under deterministic euler (FIXED).** Full record carved out to
+[bugs/bug-a-audio-scale.md](bugs/bug-a-audio-scale.md) (char budget). Short: our init-lerp clean
+term was packed RAW (audio ×1) while comfy's `x_global` carries audio ×S → fractional (0<m<1) audio
+img2img'd from a mismatched reference ⇒ static. Fixed by `scale_packed_audio` (scale = dynamic
+`audio_scale = shift_video/shift_audio`). Carry IS active in our path (source-verified); GPU retest
+2026-08-23 fractional audio CLEAN. See the child for the full derivation, the carry caveat, and the
+`scale_latent_inpaint` native counterpart.
 
 ## Bug B
 
@@ -69,6 +40,13 @@ ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine;
 Bug B persists in a new form (r-scaling linearly rescales a displacement that contains the non-linear
 renoise term); the current-architecture per-row step-function design to recover it is in
 [sampler-class-support.md](sampler-class-support.md).
+
+**GPU-CONFIRMED umbrella (2026-09-01, PR #31):** a same-branch/same-prompt sampler swap shows
+`euler` produces NEITHER the fractional audio noise NOR the video ghost; `euler_ancestral` produces
+BOTH. The FRACTIONAL-INJECT audio noise (distinct from Bug C's m=1 free audio) is a symptom of THIS
+bug — `eta>0` renoise breaks per-row scale-invariance. The co-occurring video ghost is the separate
+clean-K/V wiring gap (Bug F). PR #31's σ_v-axis re-extraction did NOT resolve the audio noise (wrong
+cause — axis, not stochastic); see [audio-axis-verdict.md](audio-axis-verdict.md).
 
 **Status: deterministic-only (prototype).** DD (the native img2img-via-mask primitive) is the
 exact dual; it covers stochastic but cracks deterministic on H3 (see
@@ -152,8 +130,24 @@ single rule decomposes into FORMATION (ramp ≥ 51, monotone, no upper edge thro
 table, decoupling matrix, and the mechanism (KV/observer curvature seed + seam-attention SNR-trough,
 theory) live in [long-fade-grid-beat.md](long-fade-grid-beat.md).
 
-[^plin]: `comfy/model_base.py` 2158-2159 (`process_latent_in`, audio ×S).
-[^pconds]: `comfy/samplers.py` 1046-1048 (`process_conds` → `extra_conds`).
-[^ec]: `comfy/model_base.py` ~2199 (`extra_conds` sets `audio_scale`), 2140-2144 (`audio_scale()`).
-[^fwd]: `comfy/ldm/minimax/model.py` `forward` 527-551 (carry 538/549-550).
-[^sli]: `comfy/model_base.py` 2248-2272 (audio factor 2264).
+## Bug F — OPEN: euler_ancestral not wired to clean-K/V single-forward → fractional video keyframes ghost
+
+**Symptom** (user, GPU 2026-09-01, PR #31): under `euler_ancestral`, a single-frame fractional
+inject at **0.3** denoise showed a distorted ghost/noise frame; the same at **0.6** was clean —
+low-fractional-worst, matching the core `0 < min_denoise < 1` keyframe-ghost signature.
+
+**Root cause (source-confirmed):** the clean-K/V observer-splice `_single_forward_denoised` (the
+fade-ghost fix from PR #28, [clean-kv-split.md](c2-rho-fix-paths/observed-level-plant/clean-kv-split.md))
+is wired ONLY into `_euler_step` (sampler.py:395). `_euler_ancestral_rf_step` calls `ctx.model(...)`
+directly at the carrier sigma (sampler.py:476), so fractional rows under `euler_ancestral` bypass
+the ghost fix and ghost.
+
+**Not introduced by PR #31** — the gap exists on `main`; PR #31 is a no-op on video. Stochastic
+ancestral noise can make it vary run-to-run.
+
+**Proposed fix (NOT implemented):** route `_euler_ancestral_rf_step`'s per-row denoised through
+`_single_forward_denoised` as `_euler_step` does. Distinct from Bug B's stochastic renoise (which
+also hits euler_ancestral); both vanish under `euler`.
+
+Source footnotes for Bug A (`^plin`/`^pconds`/`^ec`/`^fwd`/`^sli`) live with its full record in
+[bugs/bug-a-audio-scale.md](bugs/bug-a-audio-scale.md).
