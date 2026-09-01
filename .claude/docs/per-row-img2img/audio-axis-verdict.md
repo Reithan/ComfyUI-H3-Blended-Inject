@@ -143,3 +143,23 @@ Carved out to [audio-axis-verdict/sigma-a-label-proof.md](audio-axis-verdict/sig
 model LABEL** — Fix B (σ_v for BOTH label and integration) stays REJECTED by model-contract proof.
 σ_a is load-bearing in three sites (per-row label denominator, observer-label K/V split,
 deterministic r-scaling). See the child for the full source proof and provenance.
+
+## Co-location verdict — Bug C is TIMELINE-WIDE (not the co-located cause) (2026-09-01)
+
+Bug C (audio σ_a integration mis-scale on `euler_ancestral`) is TIMELINE-WIDE: in drop mode every
+audio row has `audio_denoise=1.0` (m=1); `sig_a ≠ carrier` applies to ALL audio rows uniformly.
+It CANNOT localize to a single inject. "Single-frame drop-mode audio noise = Bug C" was a
+mis-attribution.
+
+The inject-local co-located audio noise was Bug F (video→audio joint-attention coupling):
+pre-#32 the ancestral path bypassed the clean-K/V splice → fractional VIDEO band denoised was
+ghost-contaminated → H3's shared A/V attention imprinted it on co-located audio. ATTRIBUTED
+(consistent with Bug E audio-tracks-visual GPU precedent). NOT isolated by a dedicated A/B —
+post-#32 both symptoms gone (retrodiction).
+
+Fade-band hiss = the plant-axis root cause documented in
+[euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) §"Root cause". Inject-local
+because audio is fractional ONLY in fade ramps.
+
+Bug C fix (σ_v-axis integration) is REAL and part of PR #32 — it is just timeline-wide, not the
+co-located injector-local cause.

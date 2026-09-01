@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — combined euler_ancestral fix design; see euler-ancestral-per-row-fix.md.
+Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — plant-axis fade-audio fix (PR #32, GPU pending) + Bug B mechanism + co-location verdict; see euler-ancestral-per-row-fix.md, bugs.md, audio-axis-verdict.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -89,11 +89,11 @@ per-row ancestral step. See
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
 - [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed; record in bugs/), B (stochastic,
-  open — euler_a fractional-audio cause), C (ancestral axis, OPEN on main — fix designed), D
-  (inject_list, fixed), E (long-fade video, open), F (euler_a clean-K/V gap → fractional video
-  ghost, open). *Read for fractional artifacts.*
+  open — v̂-error re-excitation mechanism), C (ancestral axis, shipped PR #32 GPU pending,
+  timeline-wide), D (inject_list, fixed), E (long-fade video, open), F (attributed retrodiction
+  post-#32). *Read for fractional artifacts.*
 - [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **THEORY
-  (UNVERIFIED):** combined euler_a fix = clean-K/V wiring (F) + σ_v axis (C); neither half alone. *Read before implementing.*
+  (GPU PENDING):** plant-axis fix SHIPPED PR #32; Bug B mechanism + co-location verdict. *Read for euler_a artifacts.*
 - [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
   DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
   FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*

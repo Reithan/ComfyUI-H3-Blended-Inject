@@ -1,8 +1,9 @@
-<!-- provenance: bug (A: fixed; B: open/deferred; C free-audio ancestral axis: fix DESIGNED, NOT
-     MERGED — no σ_v-axis change on main; C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
+<!-- provenance: bug (A: fixed; B: open/deferred, mechanism refined 2026-09-01 (v-hat error, not coeff);
+     C free-audio ancestral axis: SHIPPED PR #32 plant-axis fix (GPU pending, timeline-wide);
+     C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, DECOUPLED
      2026-08-28 — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor, M-A/M-C/M-D/M-E refuted;
-     F euler_ancestral clean-K/V wiring gap → fractional video ghost: OPEN, GPU 2026-09-01) -->
+     F euler_ancestral clean-K/V wiring gap: ATTRIBUTED retrodiction post-#32 2026-09-01) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by fade-length GPU data (same date, late); Bug E decoupling matrix on 0/0/39/90 · repo @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
@@ -34,6 +35,14 @@ so per-row compression can't be reproduced by scaling the injected noise. The ol
 Separately, our sampler.py ran audio's ancestral integration (denoised_r, si/sigma_down/ratio/
 renoise_coeff) on σ_a instead of σ_v — a real bug for FREE audio, now FIXED (see Bug C).
 
+**Mechanism refinement (2026-09-01, PR #32 design):** the per-row ancestral algebra
+(`renoise_coeff`) is EXACT and level-preserving given accurate v̂ — **not a coeff defect**.
+Retention = VELOCITY-ESTIMATION ERROR (`x0̂ = x0 + σ_row·(v − v̂)`) re-excited each step by
+fresh ancestral injection; deterministic euler makes the same error but never re-excites it. For
+fractional AUDIO specifically, the systematic v̂ error source was init-plant axis incoherence
+(plant used σ_a ratio for audio content sitting on σ_v); fixed by PR #32 plant-axis fix — see
+[euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) §"Bug B mechanism REFINEMENT".
+
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
 [stochastic-recovery-theory](stochastic-recovery-theory.md). Under the shipped schedule-tail remap
@@ -58,8 +67,13 @@ doesn't care. Supported path = deterministic (euler / res_multistep / dpmpp_2m).
 
 ## Bug C
 
-**Free-audio euler_ancestral distortion — an our-node axis bug. Fix DESIGNED + branch-validated,
-but OPEN on `main` (NOT MERGED). Retracts the earlier "sampler-independent noise floor" framing.**
+**Free-audio euler_ancestral distortion — an our-node axis bug. Plant-axis fix SHIPPED PR #32
+(GPU pending). Retracts the earlier "sampler-independent noise floor" framing.**
+
+**Co-location note (2026-09-01):** Bug C is TIMELINE-WIDE — all audio rows are m=1 in drop mode
+(`audio_denoise=1.0`); `sig_a≠carrier` applies uniformly, not just to inject-local rows. So
+"single-frame drop-mode audio noise = Bug C" was a mis-attribution. The inject-local co-located
+noise was Bug F (joint-attention coupling, see below). Bug C stays REAL — it is just timeline-wide.
 
 ⚠ **Merge-state correction (2026-09-01):** NO σ_v-axis change is on `main`.
 `_euler_ancestral_rf_step` (sampler.py:412) is untouched since PR #16 and calls `ctx.model(...)`
@@ -120,24 +134,11 @@ passthrough (no-op inject). **Status: FIXED, pending merge.**
 
 ## Bug E — OPEN: Long-fade video-latent interference (moiré/streamers), sampler-independent
 
-**Symptom** (user, GPU 2026-08-28): moiré / streamers / electric patterns when a substantial
-frozen held block coexists with a long fade ramp; sampler-independent; audio tracks via joint
-attention; present on main before Fix A or σ̃.
-
-**DECOUPLED 2026-08-28 — M-B is the unique surviving model.** A GPU single-variable perturbation
-matrix on `0/0/39/90` plus the earlier L=55 shift series isolate the three-way confound. Define
-held = ekf−skf, ramp = efo−ekf. **ERROR ⟺ held ≥ ~28 AND ramp ≥ 51**, both terms independently
-necessary: ramp-necessity from `0/0/39/85` (CLEAN) vs `0/0/39/90` (ERROR) at fixed held;
-held-necessity from `0/0/25/80` (CLEAN) vs `0/0/30/85` (ERROR) at fixed ramp=55. The competing
-single-factor models are all REFUTED — pure-ramp band (M-A), held-alone (M-E), midpoint-position
-(M-D), and trailing-free-heals (M-C). The c=39→40 flip is just ramp crossing 51→50 (a continuous
-frame-length threshold, not grid-quantized). S2 cell-alignment was GPU-FALSIFIED earlier the same day.
-
-**REFINED** ([long-fade-grid-beat/two-stage-heal.md](long-fade-grid-beat/two-stage-heal.md)): M-B's
-single rule decomposes into FORMATION (ramp ≥ 51, monotone, no upper edge through 68) ∧ NOT-HEALED
-(held ≥ ~28, a soft healing boundary; held≈29 → MIXED); numeric predictions unchanged. Full data
-table, decoupling matrix, and the mechanism (KV/observer curvature seed + seam-attention SNR-trough,
-theory) live in [long-fade-grid-beat.md](long-fade-grid-beat.md).
+**Symptom:** moiré / streamers / electric patterns when a substantial frozen held block coexists
+with a long fade ramp; sampler-independent; audio tracks via joint attention. DECOUPLED 2026-08-28:
+**ERROR ⟺ held ≥ ~28 AND ramp ≥ 51** (both terms independently necessary; M-B unique survivor;
+M-A/M-C/M-D/M-E refuted). Full data, decoupling matrix, and mechanism theory in
+[long-fade-grid-beat.md](long-fade-grid-beat.md).
 
 ## Bug F — OPEN: euler_ancestral not wired to clean-K/V single-forward → fractional video keyframes ghost
 
@@ -154,10 +155,17 @@ fractional rows under `euler_ancestral` bypass the ghost fix and ghost.
 **Not introduced by PR #31** — the gap exists on `main`; PR #31 is a no-op on video. Stochastic
 ancestral noise can make it vary run-to-run.
 
-**Proposed fix (NOT implemented):** route `_euler_ancestral_rf_step`'s per-row denoised through
+**Proposed fix:** route `_euler_ancestral_rf_step`'s per-row denoised through
 `_single_forward_denoised` as `_euler_step` does. This is half 1 of the combined fix design in
 [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) (half 2 = the σ_v axis for Bug C).
 Distinct from Bug B's stochastic renoise (which also hits euler_ancestral); both vanish under `euler`.
+
+**Post-#32 attribution (2026-09-01, retrodiction):** post-PR #32 both the video ghost AND the
+co-located audio noise are gone. The single-frame drop-mode audio noise is ATTRIBUTED to Bug F
+(H3's shared A/V attention imprinted the ghost-contaminated VIDEO denoised on co-located audio —
+consistent with Bug E audio-tracks-visual GPU precedent in
+[audio-axis-verdict.md](audio-axis-verdict.md)). NOT isolated by a dedicated A/B; retrodiction
+only. Clean-K/V wiring fix may be included in PR #32 or resolved indirectly via the plant-axis fix.
 
 Source footnotes for Bug A (`^plin`/`^pconds`/`^ec`/`^fwd`/`^sli`) live with its full record in
 [bugs/bug-a-audio-scale.md](bugs/bug-a-audio-scale.md).
