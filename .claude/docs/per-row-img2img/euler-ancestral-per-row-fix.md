@@ -44,7 +44,7 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 | Content-axis fix (PR #32 revised, commits 4644fcf+e4a9940) | SHIPPED; GPU PARTIAL — ring narrowed mid-m; both ends clean; hiss shorter |
 | Euler regression check | CONFIRMED CLEAN GPU 2026-09-01 (prime_side_stream shared path; no regression) |
 | Fade-audio hiss | OPEN — C2 durable port is LEADING NEXT STEP (GPU pending; see c2-durable-port.md) |
-| C2 carry-compression durable port (c2-durable-port.md) | DECIDED 2026-09-01; implementation spec written; GPU A/B pending |
+| C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED (residual: single mid-fade crackle, under evaluation) |
 
 ## Child docs
 

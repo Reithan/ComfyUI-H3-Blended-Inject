@@ -1,5 +1,5 @@
-<!-- provenance: theory + decision (user 2026-09-01) + SHIPPED (commits e3e167f+parent, GPU A/B pending) -->
-<!-- verified: 2026-09-01 — Fable round-6 term-for-term re-affirmation; shipped e3e167f; 98 CPU tests pass; GPU A/B pending -->
+<!-- provenance: theory + decision (user 2026-09-01) + SHIPPED (commits e3e167f+parent, GPU A/B CONFIRMED partial) -->
+<!-- verified: 2026-09-01 — Fable round-6 term-for-term re-affirmation; shipped e3e167f; 98 CPU tests pass; GPU A/B CONFIRMED partial (mid-fade crackle residual) -->
 # C2 carry-compression durable port — PR #32 decision
 
 Decision record and implementation spec for porting the C2 x0/trajectory correction into the
@@ -136,4 +136,14 @@ the `where`-gate, not the formulas (formulas yield the same result at m=1 by con
 **CPU tests:** `TestC2AudioAncestralUpdate` — 5 tests including fail-then-pass vs v4's frozen
 coefficient; 98 sampler tests total pass. ruff clean.
 
-**GPU A/B pending:** e4a9940 (content-axis only) vs e3e167f (+ C2 correction).
+## GPU result (2026-09-01)
+
+C2 durable port CONFIRMED: mid-fade audio noise now much shorter and quieter (ladder precedent
+held, loud→faint). Residual has CHANGED CHARACTER: a single point-like 'crackle' at mid-fade —
+a discontinuity at one audio tick/step, not a sustained per-step ring.
+
+Under evaluation (Fable round 7): point-like candidates — dense-grid k_d round() boundary at
+m≈0.5 between adjacent audio rows; frac_audio gate flip for a row at one step; one-step c_fresh
+clamp-to-zero / ill-conditioned (1−sd); observer content-ratio clamp saturation; one-shot i=0
+plant transient; A/V join / 17-frame grid reset landing mid-fade. v6 (m=0 context heat)
+deferred — it addressed a sustained residual at the m=0 fade ends, not a mid-fade point event.

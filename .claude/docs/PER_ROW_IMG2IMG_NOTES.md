@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — content-axis GPU PARTIAL (ring narrowed mid-m; euler UNCHANGED); C2 durable port into euler_ancestral decided (PR #32, GPU pending); see content-axis.md, c2-durable-port.md.
+Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — C2 durable port GPU-confirmed (single mid-fade crackle residual under evaluation, PR #32); see c2-durable-port.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
