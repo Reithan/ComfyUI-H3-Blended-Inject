@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `single-forward-clean-kv-splice`). Single-forward is the sole mechanism; bit-exact GPU verify SKIPPED by user ("close enough"); see c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md.
+Last updated: 2026-09-01 (branch `consolidate-wiki-from-stale-prs`) — salvaged docs from stale PRs #26/#19: sampler-class-support split + σ_v-axis ancestral scope note in audio-axis-verdict.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
