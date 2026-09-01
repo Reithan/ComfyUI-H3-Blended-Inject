@@ -113,6 +113,20 @@ def _blend_hidden(h_main: torch.Tensor, h_clean: torch.Tensor, ratio: torch.Tens
     return r * h_main + (1.0 - r) * h_clean
 
 
+def _band_mod_index(levels: torch.Tensor, row_obs: torch.Tensor, tag: int) -> torch.Tensor:
+    """Per-row adaLN mod-row index into the side stream's own ``t_emb_m`` table.
+
+    Mirrors the model's ``rows_to_mod_index`` (model.py:617-622): each row's observer timestep is
+    located in ``levels`` (the SORTED-UNIQUE set of observer timesteps carried by ``t_emb_m``) and
+    mapped to ``searchsorted(levels, obs)·3 + tag`` — the AdalnProj expands ``[M, t_dim]`` into
+    ``M·3`` mod-rows (3 modalities), so level index ``i`` and modality ``tag`` (video 0, audio 2)
+    select row ``i·3 + tag``.  ``levels`` spans BOTH modalities' observer levels so video and audio
+    band rows index a single shared table; the tag disambiguates the modality slice.
+    """
+    idx = torch.searchsorted(levels, row_obs)
+    return idx.to(torch.long) * 3 + tag
+
+
 def install_observer_split(  # pragma: no cover - requires live ComfyUI model (GPU)
     m: Any,
     schedule_tail_cfg: dict[str, Any],

@@ -10,6 +10,7 @@ from __future__ import annotations
 import torch
 
 from comfyui_h3_blended_inject.observer_split import (
+    _band_mod_index,
     _blend_hidden,
     _call_plan,
     _embed_ratio,
@@ -212,3 +213,32 @@ class TestBlendHidden:
         h_clean = torch.randn(3, 5)
         out = _blend_hidden(h_main, h_clean, torch.zeros(3))
         assert torch.allclose(out, h_clean)
+
+
+class TestBandModIndex:
+    """``searchsorted(levels, obs)·3 + tag`` — mirrors the model's rows_to_mod_index."""
+
+    def test_video_tag_indices(self) -> None:
+        levels = torch.tensor([0.2, 0.5, 0.8])
+        row_obs = torch.tensor([0.2, 0.8, 0.5])  # → level idx 0, 2, 1
+        out = _band_mod_index(levels, row_obs, tag=0)
+        assert out.tolist() == [0, 6, 3]  # idx·3 + 0
+
+    def test_audio_tag_offset(self) -> None:
+        levels = torch.tensor([0.2, 0.5, 0.8])
+        row_obs = torch.tensor([0.2, 0.5])  # → level idx 0, 1
+        out = _band_mod_index(levels, row_obs, tag=2)
+        assert out.tolist() == [2, 5]  # idx·3 + 2
+
+    def test_shared_table_video_and_audio_disjoint_rows(self) -> None:
+        # One shared level table spanning both modalities; tag disambiguates the slice.
+        levels = torch.tensor([0.3, 0.7])
+        vid = _band_mod_index(levels, torch.tensor([0.3, 0.7]), tag=0)
+        aud = _band_mod_index(levels, torch.tensor([0.3, 0.7]), tag=2)
+        assert vid.tolist() == [0, 3]
+        assert aud.tolist() == [2, 5]
+        assert set(vid.tolist()).isdisjoint(aud.tolist())
+
+    def test_returns_long_dtype(self) -> None:
+        out = _band_mod_index(torch.tensor([0.5]), torch.tensor([0.5]), tag=0)
+        assert out.dtype == torch.long
