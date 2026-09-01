@@ -157,9 +157,8 @@ ghost-contaminated → H3's shared A/V attention imprinted it on co-located audi
 (consistent with Bug E audio-tracks-visual GPU precedent). NOT isolated by a dedicated A/B —
 post-#32 both symptoms gone (retrodiction).
 
-Fade-band hiss = the plant-axis root cause documented in
-[euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) §"Root cause". Inject-local
-because audio is fractional ONLY in fade ramps.
+Fade-band hiss: GPU PARTIAL 2026-09-01 — mid-m ring narrowed; euler UNCHANGED; residual stochastic-only.
+Leading next step: C2 durable port (PR #32, GPU pending) — [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md).
 
 Bug C fix (σ_v-axis integration) is REAL and part of PR #32 — it is just timeline-wide, not the
 co-located injector-local cause.

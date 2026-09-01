@@ -1,10 +1,10 @@
 <!-- provenance: bug (A: fixed; B: open/deferred, mechanism refined 2026-09-01 (v-hat error, not coeff);
-     C free-audio ancestral axis: SHIPPED PR #32 plant-axis fix (GPU pending, timeline-wide);
-     C-remaining: H2 REJECTED as fade-length confound 2026-08-28;
+     C free-audio observer content-axis: plant-axis FALSIFIED GPU 2026-09-01; content-axis fix
+     SHIPPED PR #32 revised 4644fcf+e4a9940 GPU PENDING; C full record in bugs/bug-c-audio-axis.md;
      D optional inject_list: fixed-pending-merge; E long-fade video interference: OPEN, DECOUPLED
      2026-08-28 — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor, M-A/M-C/M-D/M-E refuted;
      F euler_ancestral clean-K/V wiring gap: ATTRIBUTED retrodiction post-#32 2026-09-01) -->
-<!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by fade-length GPU data (same date, late); Bug E decoupling matrix on 0/0/39/90 · repo @72b61c6 -->
+<!-- verified: 2026-09-01 · plant-axis FALSIFIED GPU; content-axis fix CPU-tested shipped; Fix A GPU 2026-08-28; H2 falsified fade-length GPU; Bug E decoupling matrix on 0/0/39/90 @72b61c6 -->
 # Bugs: audio scale (A, fixed) & stochastic samplers (B)
 
 Read this when debugging fractional-region artifacts (audio garble, grey/reverse noise). The code
@@ -41,7 +41,7 @@ Retention = VELOCITY-ESTIMATION ERROR (`x0̂ = x0 + σ_row·(v − v̂)`) re-exc
 fresh ancestral injection; deterministic euler makes the same error but never re-excites it. For
 fractional AUDIO specifically, the systematic v̂ error source was init-plant axis incoherence
 (plant used σ_a ratio for audio content sitting on σ_v); fixed by PR #32 plant-axis fix — see
-[euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) §"Bug B mechanism REFINEMENT".
+[euler-ancestral-per-row-fix/plant-axis.md](euler-ancestral-per-row-fix/plant-axis.md) §"Bug B mechanism refinement".
 
 **Possible recovery (THEORY, unverified):** the magnitude shim is insufficient, but a full per-row
 ancestral step driven by `σ_r = m_r·σ` may fix this inside our single engine; see
@@ -67,59 +67,22 @@ doesn't care. Supported path = deterministic (euler / res_multistep / dpmpp_2m).
 
 ## Bug C
 
-**Free-audio euler_ancestral distortion — an our-node axis bug. Plant-axis fix SHIPPED PR #32
-(GPU pending). Retracts the earlier "sampler-independent noise floor" framing.**
+**Free-audio euler_ancestral distortion — audio observer band K/V content wired to wrong axis.**
+Full record, co-location note, H2 rejection, and current fix status in
+[bugs/bug-c-audio-axis.md](bugs/bug-c-audio-axis.md).
 
-**Co-location note (2026-09-01):** Bug C is TIMELINE-WIDE — all audio rows are m=1 in drop mode
-(`audio_denoise=1.0`); `sig_a≠carrier` applies uniformly, not just to inject-local rows. So
-"single-frame drop-mode audio noise = Bug C" was a mis-attribution. The inject-local co-located
-noise was Bug F (joint-attention coupling, see below). Bug C stays REAL — it is just timeline-wide.
+Short: observer side-stream primed K/V content on σ_a axis while audio x_prev sits on σ_v
+post-Fix-A. Plant-axis fix (PR #32 original) FALSIFIED for fade-audio (GPU 2026-09-01:
+single-frame clean / fade hiss persists). Content-axis fix SHIPPED (PR #32 revised, commits
+4644fcf+e4a9940): `_audio_observer_ratio` maps content via `shift⁻¹(m·σ_a)` on σ_v (Möbius
+inverse). GPU PENDING. See [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md) for
+full design + status.
 
-⚠ **Merge-state correction (2026-09-01):** NO σ_v-axis change is on `main`.
-`_euler_ancestral_rf_step` (sampler.py:412) is untouched since PR #16 and calls `ctx.model(...)`
-directly at sampler.py:467; `sig_row_v` does not exist in main's sampler.py. Fix A / the σ_v axis
-was designed and GPU-validated for free audio on unmerged branches (`fix-audio-ancestral-sigma-v-axis`,
-PR #26, PR #31) but never landed. Bug C is therefore **OPEN on main**. The σ_v axis is now folded
-into the combined fix — see [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md).
+## Bug C-remaining — H2 REJECTED; see Bug E for the primary open bug
 
-A prior wiki commit (94b1597) called this a persistent, sampler-INDEPENDENT noise floor present
-even under deterministic euler on free (m=1) audio, and marked the axis verdict FALSIFIED. That run
-used FRACTIONAL injects, conflating two phenomena. **Retracted.** Controlled GPU A/B (user,
-2026-08-28: same prompt, NO fractional injects, minimal graph) shows:
-
-- STOCK KSampler (our node OUT): euler CLEAN, euler_ancestral CLEAN.
-- OUR node, `main`, free audio (m=1): euler CLEAN, euler_ancestral TINNY/REVERB/NOISY.
-- OUR node, Fix A branch, free audio: euler CLEAN, euler_ancestral **CLEAN**.
-
-So free-audio `euler` is CLEAN (no floor); the distortion was an OUR-NODE `euler_ancestral` bug.
-
-**Root cause:** on main, audio rows computed the ancestral RENOISE terms on the σ_a schedule
-(`sig_row`) while the packed audio lives on the σ_v trajectory → mis-scaled renoise injected every
-step → accumulating tinny/reverb noise. euler has no renoise, so it was clean both ways. **Fix
-DESIGNED (Fix A: move denoised_r + si/sigma_down/ratio/renoise_coeff to the σ_v axis)** and
-branch-validated (m=1 audio bit-exact vs stock ancestral, video byte-identical) but NOT on main —
-now part of the combined fix, [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md). σ_a
-stays load-bearing for the LABEL (model-contract proof still valid). Full verdict:
-[audio-axis-verdict.md](audio-axis-verdict.md).
-
-## Bug C-remaining — H2 REJECTED (fade-length confound); see Bug E for the primary open bug
-
-**What H2 was:** euler+fade=CLEAN vs euler_ancestral+fade=NOISY was read as a sampler discriminator
-pointing to the ancestral-renoise mis-scale (σ̃ ≠ sig_row_v for fractional audio) as root cause.
-
-**Why H2 is REJECTED:** new controlled data (user, 2026-08-28 late) shows the original test pair
-used different fade lengths (~30f clean vs ~60f noisy). Fade length, not sampler, was the
-independent variable. euler+LONG fade also artifacts. The discriminator is spurious; H2 is not
-the root cause.
-
-**σ̃ implementation status:** video-byte-identical and m=1 bit-exact (harmless), but UNVALIDATED
-as a fix for the audible artifact. Do not present it as the fix. The mergeable branch
-`fix-audio-ancestral-sigma-v-axis` is Fix-A-only — σ̃/`sig_row_c` is dropped, not shipped.
-
-**The primary open bug is Bug E below.** Consequence-2 ρ status: **REAL and ancestral-amplified**
-— audible on `euler_ancestral` fade ramps, silent on deterministic `euler` (GPU discriminator
-`0/0/49/73`, 2026-08-29). Canonical mechanism + fix paths:
-[audio-carry-identity.md](audio-carry-identity.md).
+See [bugs/bug-c-audio-axis.md](bugs/bug-c-audio-axis.md) for the H2 rejection and σ̃ status.
+The primary open bug is Bug E below; see [audio-carry-identity.md](audio-carry-identity.md) for the
+Consequence-2 ρ mechanism (REAL, ancestral-amplified, GPU discriminator `0/0/49/73` 2026-08-29).
 
 ## Bug D
 

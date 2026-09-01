@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — plant-axis fade-audio fix (PR #32, GPU pending) + Bug B mechanism + co-location verdict; see euler-ancestral-per-row-fix.md, bugs.md, audio-axis-verdict.md.
+Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — content-axis GPU PARTIAL (ring narrowed mid-m; euler UNCHANGED); C2 durable port into euler_ancestral decided (PR #32, GPU pending); see content-axis.md, c2-durable-port.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -88,12 +88,12 @@ per-row ancestral step. See
   debugging why comfy/H3 behaves a certain way.*
 - [differential-diffusion.md](per-row-img2img/differential-diffusion.md): DD mechanism, ghost
   math, why native mask paths fail on H3, the duality. *Read before considering any mask/DD/inpaint approach.*
-- [bugs.md](per-row-img2img/bugs.md): Bug A (audio scale, fixed; record in bugs/), B (stochastic,
-  open — v̂-error re-excitation mechanism), C (ancestral axis, shipped PR #32 GPU pending,
-  timeline-wide), D (inject_list, fixed), E (long-fade video, open), F (attributed retrodiction
-  post-#32). *Read for fractional artifacts.*
-- [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **THEORY
-  (GPU PENDING):** plant-axis fix SHIPPED PR #32; Bug B mechanism + co-location verdict. *Read for euler_a artifacts.*
+- [bugs.md](per-row-img2img/bugs.md): Bug A (fixed), B (stochastic, open), C (content-axis GPU
+  PARTIAL; C2 durable port decided PR #32; bugs/bug-c-audio-axis.md), D (fixed), E (long-fade
+  video, open), F (attributed retrodiction post-#32). *Read for fractional artifacts.*
+- [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **GPU PARTIAL:**
+  content-axis narrowed mid-m ring; C2 durable port decided (PR #32, GPU pending); children
+  plant-axis.md + content-axis.md + c2-durable-port.md. *Read for euler_a artifacts.*
 - [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
   DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
   FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*
@@ -112,33 +112,25 @@ per-row ancestral step. See
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
-- [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md): MC's non-masked "H3
-  Custom Keyframes" (`minimax_keyframes` cond rows); verdict: different tool, not substitute;
-  interop free. *Read for a conditioning-target inject variant.*
+- [conditioning-row-inject.md](per-row-img2img/conditioning-row-inject.md): MC's "H3 Custom
+  Keyframes" cond rows; different tool, not substitute; interop free. *Read for cond inject.*
 - [highres-singleframe-underdenoise.md](per-row-img2img/highres-singleframe-underdenoise.md):
-  **THEORY (UNVERIFIED):** single-frame stills at fractional `min_denoise` come out
-  source-identical @1MP but clean @0.2MP; leading cause: fixed sigma-shift giving
-  resolution-dependent effective denoise (H1); fix: resolution-corrected effective-m. *Read when
-  debugging the high-res single-frame pop.*
+  **THEORY (UNVERIFIED):** single-frame stills source-identical @1MP / clean @0.2MP (H1: fixed
+  sigma-shift gives resolution-dependent effective denoise); fix: resolution-corrected effective-m.
+  *Read when debugging the high-res single-frame pop.*
 - [highres-underdenoise-model.md](per-row-img2img/highres-underdenoise-model.md): **THEORY + 1MP
-  GPU validation (Fable):** α=ρ up-map FALSIFIED; refit single-exponent **γ≈1.6 → d\*≈0.75-0.78
-  @1MP**; FOUR régimes; seam z-score primary gate + ρ_ret / φ̄ tellers. *Read when
-  building/calibrating the resolution-corrected effective-m fix.*
+  GPU (Fable):** γ≈1.6 → d*≈0.75-0.78 @1MP; FOUR régimes; seam z-score gate + ρ_ret/φ̄ tellers.
+  *Read for resolution-corrected effective-m calibration.*
 - [keyframe-two-views-and-knobs.md](per-row-img2img/keyframe-two-views-and-knobs.md): **JOINT
-  MODEL:** the two questions (neighbor-view vs anchor-resolution) + four knobs (A latent-content /
-  B mask / C cond-aug / D composite); maps the "neighbors see clean, keyframe denoises full-time"
-  ideal onto hybrid/route-2 (route-1 = worst fit). *Read to reason about cond+latent composition.*
+  MODEL:** four knobs (A latent-content / B mask / C cond-aug / D composite); hybrid/route-2 ideal
+  (route-1 = worst fit). *Read to reason about cond+latent composition.*
 - [timed-cond-removal-prototype.md](per-row-img2img/timed-cond-removal-prototype.md): **DESIGN:**
-  timed cond-removal on knob C; source-verified (payload COPY + layout drop); surface
-  (`cond_hold_frac`). *Read for the timed-removal prototype.*
-- [lanpaint-langevin-corrector.md](per-row-img2img/lanpaint-langevin-corrector.md): **REFERENCE
-  (external code read):** LanPaint's Langevin inpainting corrector; verdict: new **route 4
-  (per-σ inner-loop equilibration)** and two transplants; attention-logit boost (route-3) REJECTED
-  2026-08-27. KILL RISK: if neighbor conditioning is t_row-label-gated not content-gated, both
-  collapse to single-pass. *Read for corrector/equilibration ideas.*
+  timed cond-removal on knob C (`cond_hold_frac`); source-verified. *Read for timed-removal.*
+- [lanpaint-langevin-corrector.md](per-row-img2img/lanpaint-langevin-corrector.md): **REFERENCE:**
+  LanPaint Langevin corrector; route-4 (per-σ inner-loop equilibration) + two transplants;
+  attention-logit boost (route-3) REJECTED 2026-08-27. *Read for corrector/equilibration ideas.*
 - [latent-hold-release/](per-row-img2img/latent-hold-release/index.md): **STATUS (SUPERSEDED,
-  route-1):** hold-and-release prototype (branch `proto-latent-hold-release`); see subfolder index
-  for child docs. *Read only when working the superseded prototype.*
+  route-1):** hold-and-release prototype. *Read only when working the superseded prototype.*
 - [status-and-open-paths.md](per-row-img2img/status-and-open-paths.md): confirmed-working state +
   open paths. *Read when planning.*
 - [per-row-img2img/experiments-run.md](per-row-img2img/experiments-run.md): run-results index (40
