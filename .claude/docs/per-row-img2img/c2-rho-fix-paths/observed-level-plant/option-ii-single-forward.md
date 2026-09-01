@@ -1,5 +1,7 @@
 <!-- provenance: theory (UNVERIFIED design — exactness proven analytically from comfy source; no GPU run yet) -->
-<!-- verified: analytical only (2026-08-31) — DiT patch-embed linearity + Q/KV separability confirmed from comfy/ldm/minimax/model.py; whole path is GPU-only, unverified -->
+<!-- verified: analytical only (2026-09-01) — patch-embed linearity + Q/KV separability confirmed
+     from comfy/ldm/minimax/model.py; now IMPLEMENTED (branch single-forward-clean-kv-splice, opt-in
+     H3_SINGLE_FORWARD) but GPU path UNVERIFIED — awaits USER GPU exactness run -->
 # Option II — exact single-forward fractional side-stream (performance)
 
 Parent: [../observed-level-plant.md](../observed-level-plant.md).
@@ -81,11 +83,25 @@ Savings scale with `(1 − band/total_tokens)`.
 
 ## Verifiability caveat
 
-The entire path is GPU-coupled (comfy model internals) and cannot be CPU-verified for exactness.
-CPU tests cover only the pure math: block-0 init linear combo, combined-K/V construction, and
-pos/label bookkeeping. GPU verification is a USER task.
+The GPU glue is comfy-model-coupled and cannot be CPU-verified for exactness. It is ALL marked
+`# pragma: no cover` and AWAITS a USER GPU exactness-verification run (must reproduce the
+two-forward result bit-for-bit). GPU-only symbols: `_single_forward_denoised`, `_single_plan`,
+`_observer_time_embed`, `_norm_rope_query`, `_dual_attention`, the `embed_capture`/`single` modes
+of `_make_block_patch`, and the `prime_side_stream` closure.
+
+The pure math IS CPU-tested (all passing, 100% diff-coverage): `_observer_timestep`,
+`_embed_ratio`, `_blend_hidden`, `_band_mod_index` (in observer_split.py); and `_stream_row_sigma`
+tests (in sampler.py) — the shared pure row-sigma helper that computes ratio/σ_row from the
+observer's OWN token-ordered `m` (`stream["m"]`), eliminating the packed↔token mismatch.
 
 ## Status
 
-Design recorded 2026-08-31 on branch `single-forward-clean-kv-splice` (durable). Implementation in
-progress in observer_split.py + sampler.py.
+IMPLEMENTED (durable) on branch `single-forward-clean-kv-splice` in observer_split.py + sampler.py.
+Opt-in via env var `H3_SINGLE_FORWARD` (truthy unless in {"","0","false","False","no"}, and only
+when an observer split is present); DEFAULT OFF — the two-forward clean-K/V mechanism stays default.
+Cost realized: ~1 forward/step + O(band)/block + 1 one-time embed-capture ≈ (1+N) vs 2N forwards
+(the block-0 `h_clean` band hidden is snapshot once by an `embed_capture` forward on the static
+`clean` inject, amortized over N steps).
+
+Provenance stays theory/UNVERIFIED: no GPU confirmation yet. Next step is the USER GPU exactness
+run comparing single-forward vs two-forward output bit-for-bit.
