@@ -23,7 +23,7 @@ x_obs = torch.where(frac, anchor + ratio * (x_prev - anchor), x_prev)
 obs["kv_cache"] = {}
 obs["mode"] = "capture"
 _publish(m_dev.clamp(max=1.0))
-model(x_obs, sigma * s_in, **extra_args)   # discard output; fills kv_cache
+model(x_obs, sigma * s_in, **extra_args)  # discard output; fills kv_cache
 
 # Splice forward: truthful σ_row self forward; block patches overwrite band K/V with the cache.
 obs["mode"] = "splice"
@@ -44,15 +44,16 @@ if mode == "capture":
     h_mod = _mod_scale_shift(block.norm1(h), shift_msa, scale_msa, segs)
     inner = block.attn.heads * block.attn.head_dim
     _, k, v = block.attn.qkv_proj(h_mod[pos]).split(inner, dim=-1)
-    state["kv_cache"][idx] = (k.detach().clone(), v.detach().clone())   # raw PRE-rope K/V
+    state["kv_cache"][idx] = (k.detach().clone(), v.detach().clone())  # raw PRE-rope K/V
     return extra["original_block"](args)
 
 # splice mode: overwrite the fractional band's K/V with the cached clean K/V, Q untouched
 cached = state["kv_cache"].get(idx)
 shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.adaln_proj(t_emb)
 h_mod = _mod_scale_shift(block.norm1(h), shift_msa, scale_msa, segs)
-attn_out = _attention_with_cached_kv(block.attn, h_mod, cached[0], cached[1], pos,
-                                     args["rope_freqs"], args["transformer_options"])
+attn_out = _attention_with_cached_kv(
+    block.attn, h_mod, cached[0], cached[1], pos, args["rope_freqs"], args["transformer_options"]
+)
 x = _mod_gate(h, gate_msa, attn_out, segs)
 h2 = _mod_scale_shift(block.norm2(x), shift_mlp, scale_mlp, segs)
 return {"img": _mod_gate(x, gate_mlp, block.mlp(h2), segs)}
@@ -65,7 +66,7 @@ pass, so spliced keys/values get identical norm/rope at their true positions; Q 
 
 ```python
 q, k, v = attn.qkv_proj(x).split(inner, dim=-1)
-k[pos] = k_cache.to(k.dtype)   # splice cached clean K/V at the band's true token positions
+k[pos] = k_cache.to(k.dtype)  # splice cached clean K/V at the band's true token positions
 v[pos] = v_cache.to(v.dtype)
 # ... then the normal fused RMSNorm + split-half rope pass runs over the full sequence,
 #     so spliced rows are normed/roped exactly as native rows at their positions.
