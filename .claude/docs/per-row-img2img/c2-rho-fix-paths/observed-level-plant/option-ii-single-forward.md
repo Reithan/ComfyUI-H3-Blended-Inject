@@ -1,7 +1,9 @@
 <!-- provenance: theory (UNVERIFIED design — exactness proven analytically from comfy source; no GPU run yet) -->
 <!-- verified: analytical only (2026-09-01) — patch-embed linearity + Q/KV separability confirmed
      from comfy/ldm/minimax/model.py; now the SOLE path (branch single-forward-clean-kv-splice, no
-     env toggle) but GPU path UNVERIFIED — awaits USER GPU exactness run vs a git-historical two-forward build -->
+     env toggle). Bit-exact GPU diff DEFERRED/SKIPPED by user ("close enough for now"); path is
+     visually/empirically accepted (indistinguishable output at ~2/3 end-to-end time), NOT formally
+     bit-exact-verified — analytically exact in reals, empirically accepted, not GPU-bit-confirmed -->
 # Option II — exact single-forward fractional side-stream (performance)
 
 Parent: [../observed-level-plant.md](../observed-level-plant.md).
@@ -84,8 +86,10 @@ Savings scale with `(1 − band/total_tokens)`.
 ## Verifiability caveat
 
 The GPU glue is comfy-model-coupled and cannot be CPU-verified for exactness. It is ALL marked
-`# pragma: no cover` and AWAITS a USER GPU exactness-verification run (must reproduce the
-two-forward result bit-for-bit). GPU-only symbols: `_single_forward_denoised`, `_single_plan`,
+`# pragma: no cover`. The formal bit-exact GPU diff (reproducing the two-forward result
+bit-for-bit) is DEFERRED/SKIPPED by user decision ("close enough for now"): during normal GPU use
+the single-forward path already produced a visually indistinguishable result in ~2/3 the
+end-to-end time of the two-forward build, which is accepted as sufficient. GPU-only symbols: `_single_forward_denoised`, `_single_plan`,
 `_observer_time_embed`, `_norm_rope_query`, `_dual_attention`, the `embed_capture`/`single` modes
 of `_make_block_patch`, and the `prime_side_stream` closure.
 
@@ -105,7 +109,11 @@ Cost realized: ~1 forward/step + O(band)/block + 1 one-time embed-capture ≈ (1
 (the block-0 `h_clean` band hidden is snapshot once by an `embed_capture` forward on the static
 `clean` inject, amortized over N steps).
 
-Provenance stays theory/UNVERIFIED: no GPU confirmation yet. Next step is the USER GPU exactness
-run comparing single-forward vs two-forward output bit-for-bit. With the two-forward code removed,
-that bit-exact diff must now be run against a git-historical build (a checkout of the pre-removal
-commit), not a runtime toggle.
+Provenance stays theory/UNVERIFIED in the strict sense: the path is analytically exact in the
+reals but has NOT been formally bit-exact-verified on GPU. Per USER decision, the bit-exact diff
+is DEFERRED/SKIPPED ("close enough for now") — the single-forward path is visually confirmed
+indistinguishable from the two-forward build at ~2/3 end-to-end time and is accepted as the sole
+mechanism WITHOUT a formal bit-for-bit diff. Should someone later want that diff, it would have to
+run against a git-historical build (a checkout of the pre-removal commit), since the two-forward
+code is gone — but running it is no longer a required step. Do NOT upgrade this to "confirmed
+bit-exact"; it is empirically/visually accepted, not GPU-bit-confirmed.
