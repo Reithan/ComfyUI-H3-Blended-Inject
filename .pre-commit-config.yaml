@@ -6,32 +6,75 @@ default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
-      # Guard: never commit or push directly on main. Runs on both stages.
+      # Guard: block work that lands on main — by branch name, by tracked upstream,
+      # or (on push) by the actual destination ref. Catches a mis-pointed branch,
+      # not just a branch literally named "main".
       - id: forbid-main-commit
-        name: forbid committing directly to main
-        entry: scripts/forbid-main.sh commit
-        language: script
+        name: forbid committing on main or a branch that targets main
+        language: system
+        entry: |
+          bash -c '
+          set -euo pipefail
+          branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
+          if [ "$branch" = "main" ]; then
+            echo "✖ Direct commit on main is blocked; branch + PR instead." >&2
+            exit 1
+          fi
+          upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null || echo "")"
+          if [ "$upstream" = "origin/main" ] || [ "$upstream" = "main" ]; then
+            echo "✖ Branch $branch tracks $upstream — commits here target main. Repoint its upstream off main." >&2
+            exit 1
+          fi
+          '
         stages: [pre-commit]
         always_run: true
         pass_filenames: false
+
       - id: forbid-main-push
-        name: forbid pushing directly to main
-        entry: scripts/forbid-main.sh push
-        language: script
+        name: forbid pushing to main (name, upstream, or destination)
+        language: system
+        entry: |
+          bash -c '
+          set -euo pipefail
+          branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
+          if [ "$branch" = "main" ]; then
+            echo "✖ Direct push from main is blocked; branch + PR instead." >&2
+            exit 1
+          fi
+          # pre-commit sets PRE_COMMIT_REMOTE_BRANCH to the destination ref, e.g. refs/heads/main
+          if [ "${PRE_COMMIT_REMOTE_BRANCH:-}" = "refs/heads/main" ]; then
+            echo "✖ Push destination is main ($PRE_COMMIT_REMOTE_BRANCH); refusing to push onto main." >&2
+            exit 1
+          fi
+          upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null || echo "")"
+          if [ "$upstream" = "origin/main" ] || [ "$upstream" = "main" ]; then
+            echo "✖ Branch $branch tracks $upstream — push targets main. Repoint its upstream off main." >&2
+            exit 1
+          fi
+          '
         stages: [pre-push]
         always_run: true
         pass_filenames: false
 
-      # Heavy check: run tests + diff-coverage before pushing (mirrors CI).
-      - id: pytest
-        name: run tests +coverage before push
-        entry: scripts/pre-push-tests.sh
-        language: script
+      # Slow checks: tests + diff-coverage before push (mirrors CI). Lint/format are
+      # NOT repeated here — they run with autofix at commit time (ruff block below).
+      - id: pre-push-checks
+        name: tests + diff-coverage before push (mirrors CI)
+        language: system
+        entry: |
+          bash -c '
+          set -euo pipefail
+          uv run pytest --cov=. --cov-branch --cov-report=xml
+          uv run diff-cover coverage.xml --compare-branch=origin/main --branch-coverage --fail-under=90
+          '
         stages: [pre-push]
         always_run: true
         pass_filenames: false
 
-  # Fast checks and autofixes on commit.
+  # Fast checks + autofix on commit. External repo (not a local script) but still in
+  # THIS file, so one firejail lock covers every hook. Markdown is added to ruff-format
+  # only: ruff FORMATS Python code blocks in .md (CI runs it tree-wide), but ruff CHECK
+  # ignores markdown, so putting md on the lint hook would only spam a warning.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.4
     hooks:
@@ -41,3 +84,4 @@ repos:
         stages: [pre-commit]
       - id: ruff-format
         stages: [pre-commit]
+        types_or: [python, pyi, jupyter, markdown]
