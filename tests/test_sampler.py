@@ -1569,3 +1569,109 @@ class TestAncestralSpliceGate:
         state = {"observer": object(), "frac_mask": torch.tensor([False])}
         _euler_ancestral_rf_step(self._make_ctx(state, _ScaleModel(0.8)))
         assert called == [], "no fractional rows → splice must not fire"
+
+
+# ---------------------------------------------------------------------------
+# Init-plant axis: ancestral plants fractional rows on σ_v, euler stays on σ_a
+# ---------------------------------------------------------------------------
+
+
+class _CaptureFirstX:
+    """Toy denoiser that records the x handed to its FIRST call (the i=0 plant)."""
+
+    def __init__(self, scale: float = 0.9) -> None:
+        self.scale = scale
+        self.first_x: torch.Tensor | None = None
+
+    def __call__(self, x: torch.Tensor, sigma_t: Any, **extra_args: Any) -> torch.Tensor:
+        if self.first_x is None:
+            self.first_x = x.clone()
+        return x * self.scale
+
+
+class TestAncestralPlantAxis:
+    """Regression for the fade-region audio hiss (task #90).
+
+    The ancestral step must plant fractional AUDIO rows on the σ_v INTEGRATION axis
+    (sig_row_v/sig_v[0]) so the planted content is coherent with the σ_a label the model
+    reads; the old σ_a-ratio plant dropped audio content in at ~σ_v/4, biasing the model's
+    per-step velocity estimate (audible hiss).  euler keeps the σ_a-ratio plant unchanged.
+    4 packed rows: cols 0,1 video / cols 2,3 audio, all at the same fractional m.
+    """
+
+    def _capture_plant(
+        self,
+        base_fn: Any,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+    ) -> torch.Tensor:
+        model = _CaptureFirstX()
+        fn = build_per_row_sampler_function(
+            base_fn, m, clean, _sched(), video_element_count=2, shift_v=12.0, shift_a=3.0
+        )
+        fn(
+            model,
+            x.clone(),
+            sigmas,
+            noise_sampler=_FixedNoiseSampler(torch.zeros_like(x)),
+            eta=0.0,
+        )
+        assert model.first_x is not None, "model was never called"
+        return model.first_x
+
+    def test_ancestral_audio_plant_differs_euler_video_identical(self) -> None:
+        """Ancestral audio plant ≠ euler audio plant (axis differs); video plant identical."""
+        m = torch.full((1, 4), 0.5)
+        x = torch.full((1, 4), 2.0)
+        clean = torch.full((1, 4), 5.0)
+        sigmas = _decreasing(4)  # sig_v[0] == 1.0
+        anc = self._capture_plant(_local_sample_euler_ancestral_rf, m, x, clean, sigmas)
+        eul = self._capture_plant(_local_sample_euler, m, x, clean, sigmas)
+        assert torch.allclose(anc[0, :2], eul[0, :2], atol=1e-6), (
+            "video plant must be byte-identical"
+        )
+        assert not torch.allclose(anc[0, 2:], eul[0, 2:], atol=1e-6), (
+            "audio plant must differ: ancestral on σ_v, euler on σ_a"
+        )
+
+    def test_ancestral_audio_plant_equals_sigma_v_composite(self) -> None:
+        """Ancestral audio plant equals the σ_v composite, not the σ_a composite."""
+        m = torch.full((1, 4), 0.5)
+        x = torch.full((1, 4), 2.0)
+        clean = torch.full((1, 4), 5.0)
+        sigmas = _decreasing(4)
+        n_sig = int(sigmas.shape[-1])
+        steps_n = n_sig - 1
+        sig_row_v0 = _stream_row_sigma(m, 0, steps_n, None, sigmas, n_sig)
+        w_plant = (sig_row_v0 / sigmas[0].clamp(min=1e-8)).clamp(max=1.0)
+        expected_v = w_plant * x + (1.0 - w_plant) * clean
+        anc = self._capture_plant(_local_sample_euler_ancestral_rf, m, x, clean, sigmas)
+        assert torch.allclose(anc[0, 2:], expected_v[0, 2:], atol=1e-6)
+        # And it is NOT the σ_a composite that euler plants.
+        sig_a = _shift_schedule(sigmas, 12.0, 3.0)
+        sig_row_a0 = _stream_row_sigma(m, 0, steps_n, None, sig_a, n_sig)
+        w_a = (sig_row_a0 / sig_a[0].clamp(min=1e-8)).clamp(max=1.0)
+        expected_a = w_a * x + (1.0 - w_a) * clean
+        assert not torch.allclose(anc[0, 2:], expected_a[0, 2:], atol=1e-6)
+
+    def test_m1_rows_bit_identical_to_stock_with_fractional_audio(self) -> None:
+        """m=1 rows stay bit-for-bit equal to stock even with fractional audio rows present."""
+        model = _ScaleModel(0.9)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        sigmas = _decreasing(4)  # steps_n == 3
+        fixed = torch.randn(1, 4)
+        stock = _local_sample_euler_ancestral_rf(
+            model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed)
+        )
+        m = torch.tensor([[1.0, 1.0, 0.5, 0.5]])  # video m=1, audio fractional
+        fn = build_per_row_sampler_function(
+            _local_sample_euler_ancestral_rf, m, clean, _sched(), video_element_count=2
+        )
+        out = fn(model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed))
+        assert torch.allclose(out[0, :2], stock[0, :2], atol=1e-6), (
+            f"m=1 rows must be untouched by the fractional-audio plant; max diff="
+            f"{float((out[0, :2] - stock[0, :2]).abs().max())}"
+        )
