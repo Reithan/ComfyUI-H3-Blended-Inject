@@ -123,6 +123,17 @@ that mostly re-confirms the euler overturn).**
 - (a) Port C2 v3/v4/v6 into `_euler_step`, 5-step euler: audio drops + video persists ⇒ two-layer model confirmed.
 - (b) #81 kill-switch (broadcast curved `σ_row` to K/V), 5-step euler: fade noise vanishes (ghost
   returns) ⇒ noise IS the decoupling residue; persists ⇒ r-lerp arithmetic is the source, decoupling innocent.
+- (c) content-side Δ closure — plant injected noise at observed `m·σ_g`, keep self-evolution at
+  `σ_row` (DUAL of #81, attacks decoupling-residue from the content side). **RUN (GPU 2026-08-31):**
+  content-side closure REMOVES the observer-side fade noise + Bug-E break and REVEALS a self-side
+  colour tint — the noise and the tint are the SAME Δ seen from opposite sides (confirms Layer 1 is
+  real + two-sided). See [observed-level-plant.md](observed-level-plant.md).
+- (d) stock-mask remap port — `H3RescaleNoiseMask` rescales a `noise_mask` (least-squares scalar
+  `m_new = Σσ_g·σ_row / Σσ_g²`) so the STOCK sampler reproduces our curved `σ_row` MAGNITUDE without
+  our per-row step fn. A/B stock+m_new vs our node isolates whether the σ_row value is the whole
+  story. NOT a decoupling test (stock applies the linear observer label natively — reproduces
+  magnitude, not the curved-self/linear-obs split). See
+  [stock-mask-remap-port.md](stock-mask-remap-port.md).
 
 **Gate-mismatch tension.** Config `0/0/49/73` has ramp=24 ≪ Bug E's GPU-confirmed ~51 threshold, so
 Bug E's OWN gate predicts CLEAN — yet 5-step deterministic noise is present. Same-mechanism

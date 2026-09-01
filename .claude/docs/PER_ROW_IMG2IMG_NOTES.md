@@ -6,11 +6,9 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-31 (branch `wiki-per-row-img2img-c2-findings`). Reconciled the fade noise into a
-TWO-LAYER STACK — accepted decoupling Δ residue (both modalities, floor) + C2 carry-compression
-(audio-only, correctable) + ancestral ρ-drift (amplifier); PRIMARY candidate = decoupling-residue vs
-raw `_euler_step` r-lerp arithmetic (not yet distinguished). See
-c2-rho-fix-paths/residual-accounting.md + long-fade-grid-beat/kv-observer-mismatch.md.
+Last updated: 2026-08-31 (branch `clean-kv-observer-splice`). Clean-K/V euler splice promoted to the
+durable (non-proto) implementation; see
+c2-rho-fix-paths/observed-level-plant/clean-kv-split.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -58,6 +56,10 @@ single engine via a per-row ancestral step. See
 
 ## Current direction
 
+- **GPU-CONFIRMED (branch `proto-observed-level-inject-noise`, 2026-08-31):** observer-split
+  fractional K/V come from a two-forward CAPTURE on the STATIC `clean` inject (= exact x0 = exact
+  observer content); prev_denoised regressed (cross-step feedback), anchor stays static.
+  [clean-kv-split.md](per-row-img2img/c2-rho-fix-paths/observed-level-plant/clean-kv-split.md).
 - **SHIPPED (production, branch `implement-inject-schedule-remap`, off `main`):** the schedule-tail
   remap + observer-label K/V split is the SOLE, always-on per-row img2img mechanism — no toggles.
   Mode is `rescheduled`: per-row schedule-tail remap (dense `steps²+1` σ-grid, exact stretched-tail

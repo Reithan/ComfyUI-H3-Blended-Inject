@@ -49,6 +49,12 @@ real/present in `denoised_r` yet only *audible* under ancestral amplification, s
   init-composite bootstrap (falsified), and v6 m=0 audio-context heat fix (implemented, GPU-pending).
 - [residual-accounting.md](residual-accounting.md) — full accounting of the very-quiet hum left after
   v6, ranked remaining candidates (ρ-drift v7 / eta=0 / DiT floor), and the 2×2 discriminator plan.
+- [observed-level-plant.md](observed-level-plant.md) — **theory (UNVERIFIED):** close Δ on the
+  CONTENT side (plant injected noise at observed `m·σ_g`, keep self-evolution at `σ_row`); DUAL of
+  #81; discriminates the decoupling-residue vs r-lerp fork.
+- [stock-mask-remap-port.md](stock-mask-remap-port.md) — **status + confirmed:** `H3RescaleNoiseMask`
+  node + least-squares helper that rescale a `noise_mask` so the STOCK sampler reproduces our curved
+  `σ_row`; discriminator (d) in residual-accounting.md (NOT a decoupling test).
 
 Native precedent for a wrapper-side variant: `scale_latent_inpaint` pre-divides injected clean audio
 by `(σ_v/σ_a)/S` for the same reason.

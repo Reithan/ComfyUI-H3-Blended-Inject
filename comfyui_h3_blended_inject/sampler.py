@@ -27,6 +27,13 @@ sigmas for audio rows and raw video sigmas for video rows.  ``k_d`` / ``span`` d
 ``m`` and are identical for both modalities.  Audio rows are located by the packed video
 prefix length (the same boundary :func:`scale_packed_audio` uses).
 
+**Clean-K/V splice.**  When the observer-split block patches are installed and fractional rows
+exist, the euler step runs two forwards per interval (:func:`_clean_kv_denoised`): a capture
+forward on the clean inject re-noised to the observed level ``σ_obs = m·σ_g``, then a splice
+forward that overwrites the fractional band's K/V with the captured clean K/V.  This lets a
+fractional row broadcast (and perceive itself) as its clean anchor while its own velocity stays
+truthful — no ghost.  See ``observer_split.py`` and the wiki ``clean-kv-split.md``.
+
 The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
 ``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
 and ``sample_euler_ancestral`` (H3's RF-ancestral path, kills Bug B) are registered here (PR1 +
@@ -189,13 +196,13 @@ def build_conditioning_wrapper(
         inp = args_dict["input"]
         c = dict(args_dict["c"])
         active_pooled = schedule_tail.get("pooled_current", schedule_tail["pooled_ones"])
-        # Observer-label K/V split: refresh the per-call observer labels (t_obs = 1 − m·σ)
-        # consumed by the DiT block patches. See observer_split.py.
+        # Clean-K/V observer splice: bump the per-forward token so each forward
+        # rebuilds its block splice plan. See observer_split.py.
         obs = schedule_tail.get("observer")
         if obs is not None:  # pragma: no cover - armed only on GPU runs
             from comfyui_h3_blended_inject.observer_split import observer_call_update
 
-            observer_call_update(obs, float(args_dict["timestep"].flatten()[0]))
+            observer_call_update(obs)
         for key, value in active_pooled.items():
             c[key] = value.to(device=inp.device, dtype=inp.dtype)
         # --- Per-guide step-gated cond (start/end step windows) ---
@@ -256,6 +263,7 @@ class _StepContext:
     sig_row_next: torch.Tensor  # per-row sigma at step i+1
     sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
     sig_g_next: torch.Tensor  # global_sigma(i+1), per-row
+    sig_obs: torch.Tensor  # observed-level sigma m·σ_g at step i (clean-K/V x_obs anchor)
     extra_args: dict[str, Any] | None
     callback: Any  # _cb(i)-wrapped callback, or None
     disable: Any
@@ -289,6 +297,69 @@ def _fallback_step(ctx: _StepContext) -> torch.Tensor:
     return ctx.x_prev + r * (x_base - ctx.x_prev)
 
 
+def _clean_kv_denoised(  # pragma: no cover - requires live H3 model (GPU)
+    ctx: _StepContext,
+    sigma: torch.Tensor,
+    s_in: torch.Tensor,
+    extra_args: dict[str, Any],
+) -> torch.Tensor:
+    """Two-forward clean-K/V denoise for fractional fade rows.
+
+    The observer-split block patches govern SELF-RECEPTION (what a fractional row reads of its
+    OWN K/V) as well as broadcast (what neighbours read).  Instead of relabeling the still-noisy
+    hidden (leaks fade-noise) or splitting the stream off (loses self-reception), we source the
+    fractional rows' K/V from GENUINELY CLEANER CONTENT and splice it in-place:
+
+    - Capture forward: content ``x_obs`` = clean inject re-noised to the observed level
+      ``σ_obs = m·σ_g`` (``x_obs = clean + (σ_obs/σ_row)·(x_prev − clean)``).  Labels published
+      as ``m``.  The block patches snapshot each block's fractional-band raw K/V.
+    - Splice forward: the truthful ``σ_row`` self forward on ``x_prev``; the block patches overwrite
+      the fractional band's K/V with the captured clean K/V.  This forward's ``denoised`` is used.
+
+    The anchor is the STATIC ``clean`` inject, not the model's running x0 estimate.  For an
+    injected keyframe the clean inject IS the ground-truth x0 of the fractional rows, so
+    ``clean`` re-noised to ``σ_obs`` is the EXACT observer content — not an estimate.  An earlier
+    build anchored on the previous step's ``denoised`` (a noisier estimate of what we already know
+    exactly); that formed a cross-step feedback loop (splice denoised → x_obs → cached K/V → next
+    denoised) which amplified into a brightening/colour drift.  The static clean anchor removes the
+    loop and is GPU-confirmed clean.  See wiki ``observed-level-plant/clean-kv-split.md``.
+
+    Two FULL forwards per step (H3 has no uncond → 2 forwards total).
+    """
+    st = ctx.state
+    obs = st["observer"]
+    clean = st["clean"]
+    m_dev = st["m_dev"]
+    frac = st["frac_mask"]
+    make_pooled = st["make_pooled"]
+    schedule_tail = st["schedule_tail"]
+    pdev = st["pdev"]
+    pdtype = st["pdtype"]
+    eps = 1e-8
+
+    def _publish(w_vec: torch.Tensor) -> None:
+        if make_pooled is not None:
+            schedule_tail["pooled_current"] = make_pooled(w_vec.to(device=pdev, dtype=pdtype))
+
+    # Observer content: static clean inject re-noised to σ_obs (no cross-step feedback).
+    anchor = clean
+    ratio = (ctx.sig_obs / ctx.sig_row.clamp(min=eps)).clamp(max=1.0)
+    x_obs = torch.where(frac, anchor + ratio * (ctx.x_prev - anchor), ctx.x_prev)
+
+    # Capture forward: clean content, m labels; block patches snapshot fractional-band K/V.
+    obs["kv_cache"] = {}
+    obs["mode"] = "capture"
+    _publish(m_dev.clamp(max=1.0))
+    ctx.model(x_obs, sigma * s_in, **extra_args)  # discard output; fills kv_cache
+
+    # Splice forward: truthful σ_row self forward; block patches overwrite band K/V with the cache.
+    obs["mode"] = "splice"
+    _publish((ctx.sig_row / ctx.sig_g).clamp(max=1.0))
+    denoised = ctx.model(ctx.x_prev, sigma * s_in, **extra_args)
+    obs["mode"] = None
+    return denoised
+
+
 def _euler_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row euler step: inline comfy's deterministic euler then apply r-scale.
 
@@ -303,7 +374,13 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
     sigma_i = ctx.sigmas[ctx.i]
-    denoised = ctx.model(ctx.x_prev, sigma_i * s_in, **extra_args)
+    st = ctx.state
+    obs = st.get("observer")
+    frac = st.get("frac_mask")
+    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
+        denoised = _clean_kv_denoised(ctx, sigma_i, s_in, extra_args)
+    else:
+        denoised = ctx.model(ctx.x_prev, sigma_i * s_in, **extra_args)
     d = (ctx.x_prev - denoised) / sigma_i
     if ctx.callback is not None:
         ctx.callback(
@@ -562,6 +639,20 @@ def build_per_row_sampler_function(
         # Must be created once here so each step call shares the same dict object.
         step_state: dict[str, Any] = {}
 
+        # Clean-K/V root fix: when the observer-split patches are installed and fractional rows
+        # exist, each euler step runs two forwards (capture the fractional rows' clean-content K/V,
+        # then splice it into the truthful σ_row self forward).  See wiki
+        # c2-rho-fix-paths/observed-level-plant/clean-kv-split.md.  observer is None (no fractional
+        # rows / install skipped) → single-forward euler, unchanged.
+        step_state["observer"] = schedule_tail.get("observer")
+        step_state["clean"] = clean
+        step_state["m_dev"] = m_dev
+        step_state["frac_mask"] = frac_mask
+        step_state["make_pooled"] = make_pooled
+        step_state["schedule_tail"] = schedule_tail
+        step_state["pdev"] = m_packed.device
+        step_state["pdtype"] = m_packed.dtype
+
         x_cur = x
         sig_row = row_sigma(0)
         schedule_tail["total_steps"] = steps_n
@@ -569,14 +660,20 @@ def build_per_row_sampler_function(
             schedule_tail["current_step"] = i
             sig_g = global_sigma(i).clamp(min=1e-8)
             sig_g_next = global_sigma(i + 1)
+            # Observed-level sigma m·σ_g: the noise level neighbours are told the fractional row
+            # carries.  The clean-K/V splice re-noises the clean inject to this level to build the
+            # capture forward's observer content (x_obs); the self-label below stays σ_row.
+            sig_obs = m_dev * sig_g
             # Truthful label: model computes t_row = 1 − w·σ_g = 1 − σ_row (per modality).
             w = (sig_row / sig_g).clamp(max=1.0)
             if make_pooled is not None:
                 schedule_tail["pooled_current"] = make_pooled(
                     w.to(device=m_packed.device, dtype=m_packed.dtype)
                 )
-            # Init-only clean composite: place each row on its noise-line at σ_row(0), then
-            # never re-inject (per-region SDEdit on the stretched tail).
+            # Init-only clean composite: plant each row's ACTUAL latent noise at the truthful
+            # self-attention level σ_row (w = sig_row/σ_g).  The clean-K/V mechanism sources the
+            # observed-level content for neighbours from the capture forward's K/V, so x_prev
+            # carries the σ_row content the splice (self) forward integrates.
             if i == 0:
                 x_cur = w * x_cur + (1.0 - w) * clean
             x_prev = x_cur
@@ -590,6 +687,7 @@ def build_per_row_sampler_function(
                 sig_row_next=sig_row_next,
                 sig_g=sig_g,
                 sig_g_next=sig_g_next,
+                sig_obs=sig_obs,
                 extra_args=extra_args,
                 callback=_cb(i),
                 disable=disable,

@@ -1,8 +1,8 @@
 """Tests for comfyui_h3_blended_inject.observer_split — CPU-testable per-call helpers.
 
-Only ``observer_call_update`` and ``_fractional_rows`` are exercised here; everything below
-them (install_observer_split, _call_plan, _attention_with_observer_kv, _make_block_patch) is
-GPU-only (# pragma: no cover) and requires a live ComfyUI + H3 model.
+The pure helpers ``observer_call_update``, ``_fractional_rows``, and ``_call_plan`` are exercised
+here.  The comfy-coupled functions (install_observer_split, _attention_with_cached_kv,
+_make_block_patch) are GPU-only (# pragma: no cover) and require a live ComfyUI + H3 model.
 """
 
 from __future__ import annotations
@@ -10,77 +10,100 @@ from __future__ import annotations
 import torch
 
 from comfyui_h3_blended_inject.observer_split import (
-    AUDIO_COND_TIMESTEP,
-    VISUAL_COND_TIMESTEP,
+    _call_plan,
     _fractional_rows,
     observer_call_update,
 )
-from comfyui_h3_blended_inject.sampler import time_shift_sigma
-
-
-class TestConstants:
-    def test_cond_timestep_pins(self) -> None:
-        assert VISUAL_COND_TIMESTEP == 0.999
-        assert AUDIO_COND_TIMESTEP == 1.0
 
 
 class TestObserverCallUpdate:
-    def test_video_only(self) -> None:
-        m = torch.tensor([0.25, 0.5, 0.75])
-        obs = {"video": {"m": m}, "shift_v": 12.0, "shift_a": 3.0}
-        sigma_v = 0.4
-        observer_call_update(obs, sigma_v)
-        t_pin = max(1.0 - sigma_v, VISUAL_COND_TIMESTEP)
-        expected = (1.0 - m * sigma_v).clamp(max=t_pin)
-        assert torch.allclose(obs["call"]["t_obs_v"], expected)
-        assert "t_obs_a" not in obs["call"]
+    """The clean-K/V mechanism carries no per-call labels — the capture forward publishes the
+    m labels through ``pooled_current`` — so this helper only bumps the per-forward token that
+    invalidates the cached splice-position plan between the two forwards of a step.
+    """
 
-    def test_audio_only_uses_shifted_sigma(self) -> None:
-        m = torch.tensor([0.3, 0.6])
-        obs = {"audio": {"m": m}, "shift_v": 12.0, "shift_a": 3.0}
-        sigma_v = 0.4
-        observer_call_update(obs, sigma_v)
-        sigma_a = time_shift_sigma(sigma_v, 12.0, 3.0)
-        t_pin = max(1.0 - sigma_a, AUDIO_COND_TIMESTEP)
-        expected = (1.0 - m * sigma_a).clamp(max=t_pin)
-        assert torch.allclose(obs["call"]["t_obs_a"], expected)
-        assert "t_obs_v" not in obs["call"]
-
-    def test_both_streams(self) -> None:
-        mv = torch.tensor([0.5])
-        ma = torch.tensor([0.5])
-        obs = {"video": {"m": mv}, "audio": {"m": ma}, "shift_v": 12.0, "shift_a": 3.0}
-        sigma_v = 0.5
-        observer_call_update(obs, sigma_v)
-        assert "t_obs_v" in obs["call"]
-        assert "t_obs_a" in obs["call"]
-        # Audio runs the shifted sigma → different label than video at the same m.
-        assert not torch.allclose(obs["call"]["t_obs_v"], obs["call"]["t_obs_a"])
-
-    def test_default_shifts_when_absent(self) -> None:
-        """shift_v/shift_a default to 12/3 when not provided in obs."""
-        m = torch.tensor([0.5])
-        obs = {"audio": {"m": m}}
-        observer_call_update(obs, 0.4)
-        sigma_a = time_shift_sigma(0.4, 12.0, 3.0)
-        expected = (1.0 - m * sigma_a).clamp(max=max(1.0 - sigma_a, AUDIO_COND_TIMESTEP))
-        assert torch.allclose(obs["call"]["t_obs_a"], expected)
+    def test_sets_call_and_token(self) -> None:
+        obs: dict = {}
+        observer_call_update(obs)
+        assert obs["_token"] == 1
+        assert obs["call"] == {"token": 1}
 
     def test_token_increments_across_calls(self) -> None:
-        obs = {"video": {"m": torch.tensor([0.5])}, "shift_v": 12.0, "shift_a": 3.0}
-        observer_call_update(obs, 0.5)
+        obs: dict = {}
+        observer_call_update(obs)
         first = obs["_token"]
         assert obs["call"]["token"] == first
-        observer_call_update(obs, 0.4)
+        observer_call_update(obs)
         assert obs["_token"] == first + 1
         assert obs["call"]["token"] == first + 1
 
-    def test_no_streams_still_sets_call_and_token(self) -> None:
+    def test_fresh_call_dict_each_forward(self) -> None:
+        # A new call dict per forward means a stale ``plan`` cannot leak across forwards.
         obs: dict = {}
-        observer_call_update(obs, 0.5)
-        assert obs["call"]["token"] == 1
-        assert "t_obs_v" not in obs["call"]
-        assert "t_obs_a" not in obs["call"]
+        observer_call_update(obs)
+        obs["call"]["plan"] = "stale"
+        observer_call_update(obs)
+        assert "plan" not in obs["call"]
+
+
+def _seg(a: int, b: int, tag: int) -> tuple[int, int, torch.Tensor]:
+    """A ``mod_segments`` entry (a, b, row) whose modality tag = int(row[0] % 3)."""
+    return (a, b, torch.tensor([float(tag), 0.0, 0.0]))
+
+
+class TestCallPlan:
+    """``_call_plan`` maps fractional-row indices to GLOBAL token positions across the video/audio
+    ``mod_segments`` and caches the result on the per-forward ``call`` dict.
+    """
+
+    def test_cached_plan_returned_verbatim(self) -> None:
+        cached = torch.tensor([7, 9])
+        call = {"plan": cached}
+        assert _call_plan({}, call, []) is cached
+
+    def test_video_only_positions_offset_by_segment_start(self) -> None:
+        state = {"video": {"n": 4, "pos": torch.tensor([1, 3])}}
+        call: dict = {}
+        pos = _call_plan(state, call, [_seg(0, 4, 0)])
+        assert pos is not None
+        assert pos.tolist() == [1, 3]
+        # Result is cached on the call dict.
+        assert call["plan"] is pos
+
+    def test_video_and_audio_positions_concatenated(self) -> None:
+        state = {
+            "video": {"n": 4, "pos": torch.tensor([1])},
+            "audio": {"n": 4, "pos": torch.tensor([2])},
+        }
+        pos = _call_plan(state, {}, [_seg(0, 4, 0), _seg(4, 8, 2)])
+        assert pos is not None
+        assert pos.tolist() == [1, 6]  # video 1+0, audio 2+4
+
+    def test_non_tensor_rows_skipped(self) -> None:
+        state = {"video": {"n": 4, "pos": torch.tensor([1])}}
+        segs = [(0, 4, "not-a-tensor"), _seg(0, 4, 0)]
+        pos = _call_plan(state, {}, segs)
+        assert pos is not None
+        assert pos.tolist() == [1]
+
+    def test_absent_stream_segment_skipped(self) -> None:
+        # No audio stream armed; a tag-2 segment contributes nothing.
+        state = {"video": {"n": 4, "pos": torch.tensor([1])}}
+        pos = _call_plan(state, {}, [_seg(0, 4, 0), _seg(4, 8, 2)])
+        assert pos is not None
+        assert pos.tolist() == [1]
+
+    def test_layout_mismatch_segment_skipped(self) -> None:
+        # Segment width (b - a) != stream["n"] → skipped rather than mis-spliced.
+        state = {"video": {"n": 4, "pos": torch.tensor([1])}}
+        pos = _call_plan(state, {}, [_seg(0, 5, 0)])
+        assert pos is None
+
+    def test_no_matching_segments_returns_none_and_caches(self) -> None:
+        state = {"video": {"n": 4, "pos": torch.tensor([1])}}
+        call: dict = {}
+        assert _call_plan(state, call, []) is None
+        assert call["plan"] is None
 
 
 class TestFractionalRows:
