@@ -6,9 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-08-31 (branch `clean-kv-observer-splice`). Clean-K/V euler splice promoted to the
-durable (non-proto) implementation; see
-c2-rho-fix-paths/observed-level-plant/clean-kv-split.md.
+Last updated: 2026-08-31 (branch `single-forward-clean-kv-splice`). Option II exact single-forward side-stream design recorded; see c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +

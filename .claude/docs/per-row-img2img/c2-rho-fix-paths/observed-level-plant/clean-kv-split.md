@@ -70,8 +70,11 @@ Cost: 2 forwards/step when fractional rows exist (same as Option I), correct arc
 **Audio extension:** packed per-element `σ_obs`/`σ_row` on the audio-shifted schedule
 (`time_shift_sigma`); no separate code path needed.
 
-**No Option II needed.** The clean-anchored two-forward is the working mechanism; the earlier
-escalation to Option II (true single-forward two-hidden per-block K/V splice) is NOT required.
+**Option II (single-forward) — correctness vs performance.** For CORRECTNESS the clean-anchored
+two-forward is complete; Option II is NOT required to make results right. It IS being pursued as a
+durable PERFORMANCE path: an EXACT single-forward that collapses the 2 forwards/step to ~1 by
+carrying a fractional side-stream, reproducing this mechanism bit-for-bit. See
+[option-ii-single-forward.md](option-ii-single-forward.md).
 
 ## GPU result (2026-08-31)
 
