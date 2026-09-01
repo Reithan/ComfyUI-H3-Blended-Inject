@@ -284,6 +284,34 @@ def _stream_row_sigma(
     return coarse[lo] * (1.0 - fr) + coarse[hi] * fr
 
 
+def _audio_observer_ratio(
+    mrow: torch.Tensor,
+    sig_a_i: torch.Tensor,
+    i: int,
+    steps_n: int,
+    dense_v: torch.Tensor | None,
+    sig_v: torch.Tensor,
+    n_sig: int,
+    shift_a: float,
+    shift_v: float,
+) -> torch.Tensor:
+    """Content-axis-coherent audio observer band embed-blend ratio (claude-opus-4-8).
+
+    The observer band's spliced K/V CONTENT must sit on the σ_v integration axis — the same
+    axis the main stream now integrates and plants on (stock ``sample_euler_ancestral_RF`` and
+    the plant-axis fix).  The trained audio contract pairs label ``1 − s`` with content at
+    ``shift⁻¹(s)`` on the σ_v axis (Fix A, m=1 GPU-validated), so for the native observer label
+    ``1 − m·σ_a`` the coherent content level is ``shift⁻¹(m·σ_a)`` — the exact Möbius shift
+    inverse, ``_shift_schedule(m·σ_a, shift_a, shift_v)``.  The row denominator is read on the
+    σ_v grid to match.  Reduces to the σ_a-axis ratio at ``m=0`` (→0, freeze) and ``m=1`` (→1);
+    diverges only mid-``m``, where the fade-region audio hiss peaks.  The LABEL is unchanged
+    (still ``1 − m·σ_a`` via :func:`_observer_timestep`); only the content ratio moves to σ_v.
+    """
+    sig_row_band_v = _stream_row_sigma(mrow, i, steps_n, dense_v, sig_v, n_sig)
+    target = _shift_schedule(mrow * sig_a_i, shift_a, shift_v)
+    return _embed_ratio(target, sig_row_band_v)
+
+
 @dataclass
 class _StepContext:
     """Per-step context passed to each row step function.
@@ -736,8 +764,24 @@ def build_per_row_sampler_function(
                 if stream is None:
                     continue
                 mrow = stream["m"].to(device=x.device, dtype=x.dtype)
-                sig_row_band = _stream_row_sigma(mrow, i, steps_n, dgrid, cgrid, n_sig)
-                stream["ratio"] = _embed_ratio(mrow * glob_i, sig_row_band)
+                if key == "audio":
+                    # Content-axis coherence (claude-opus-4-8): the audio band's spliced K/V
+                    # content lives on the σ_v integration axis (see _audio_observer_ratio);
+                    # the label below stays native σ_a-faithful.  Fixes mid-fade audio hiss.
+                    stream["ratio"] = _audio_observer_ratio(
+                        mrow,
+                        glob_i,
+                        i,
+                        steps_n,
+                        dense_v if has_dense else None,
+                        sig_v,
+                        n_sig,
+                        shift_a,
+                        shift_v,
+                    )
+                else:
+                    sig_row_band = _stream_row_sigma(mrow, i, steps_n, dgrid, cgrid, n_sig)
+                    stream["ratio"] = _embed_ratio(mrow * glob_i, sig_row_band)
                 obslev = _observer_timestep(mrow, glob_i, pin)
                 stream["_obs"] = obslev
                 stream["_tag"] = tag
