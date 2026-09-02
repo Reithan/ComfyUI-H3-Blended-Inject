@@ -46,6 +46,7 @@ imports stay lazy so this module loads without a ComfyUI environment.
 from __future__ import annotations
 
 import inspect
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -59,6 +60,18 @@ from comfyui_h3_blended_inject.observer_split import (
     _observer_time_embed,
     _observer_timestep,
 )
+
+#: Diagnostic A/B toggle (round-10 δ-reinjection discriminator).  ``H3BI_DISABLE_C2=1`` skips the
+#: exact σ_c-axis C2 carry correction for fractional AUDIO rows, routing them through the same
+#: σ_v-axis ancestral path as video.  If the low-m fade static is C2-internal (δ re-injection via
+#: ε̂ = (y − a·ĉ)/σ_c) it should drop markedly; if it is the mode-independent per-row injection
+#: error it should persist ≈unchanged.  See wiki euler-ancestral-per-row-fix/delta-reinjection.md.
+C2_DISABLE_ENV = "H3BI_DISABLE_C2"
+
+
+def _c2_enabled() -> bool:
+    """C2 audio carry correction is ON unless ``H3BI_DISABLE_C2`` is exactly ``"1"``."""
+    return os.environ.get(C2_DISABLE_ENV, "0") != "1"
 
 
 def scale_packed_audio(
@@ -596,7 +609,7 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     # C2 carry correction (claude-opus-4-8): fractional AUDIO rows get the exact σ_c-axis
     # RF-ancestral update (see _c2_audio_ancestral_update).  Gated by torch.where so m=1 rows
     # stay bit-exact stock and video is byte-identical; no-op when audio is absent or S == 1.
-    if ctx.audio_mask is not None and ctx.audio_scale != 1.0:
+    if ctx.audio_mask is not None and ctx.audio_scale != 1.0 and _c2_enabled():
         frac_audio = ctx.audio_mask & (ctx.sig_row > 0.0) & (ctx.sig_row < ctx.sig_g)
         if bool(frac_audio.any()):
             x_c2 = _c2_audio_ancestral_update(

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 import torch
 from hypothesis import given
 from hypothesis import strategies as st
@@ -23,8 +24,10 @@ from hypothesis import strategies as st
 from comfyui_h3_blended_inject.observer_split import _embed_ratio
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
+    C2_DISABLE_ENV,
     _audio_observer_ratio,
     _c2_audio_ancestral_update,
+    _c2_enabled,
     _clean_at_model_scale,
     _euler_ancestral_rf_step,
     _shift_schedule,
@@ -1917,3 +1920,24 @@ class TestCleanAtModelScale:
         assert torch.allclose(out[0, 2:], expected.expand(2))
         # Sanity: the audio anchor is genuinely cooler than the packed value (S× hot without it).
         assert float(expected) < 1.0
+
+
+class TestC2DisableEnv:
+    """``H3BI_DISABLE_C2`` opt-out: only the literal ``"1"`` skips the C2 audio carry correction.
+
+    Diagnostic A/B toggle for the round-10 δ-reinjection discriminator (Test B): with C2 off, a
+    fractional audio row falls through to the σ_v-axis ancestral path (same as video).
+    """
+
+    def test_default_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(C2_DISABLE_ENV, raising=False)
+        assert _c2_enabled() is True
+
+    def test_one_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(C2_DISABLE_ENV, "1")
+        assert _c2_enabled() is False
+
+    def test_other_values_keep_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for val in ("0", "", "true", "on", "2"):
+            monkeypatch.setenv(C2_DISABLE_ENV, val)
+            assert _c2_enabled() is True, val
