@@ -373,12 +373,12 @@ class _StepContext:
 #: Type alias for a per-row step function.
 StepFn = Callable[[_StepContext], torch.Tensor]
 
-#: Per-step-fn init-plant axis.  ``"row"`` (default): composite the i=0 clean plant on the
-#: per-row σ_a ratio ``sig_row/sig_g`` (euler's GPU-validated behavior).  ``"v"``: composite on
-#: the σ_v INTEGRATION axis ``sig_row_v/sig_v[0]`` so a fractional AUDIO row's planted content
-#: sits at the σ_v level its label (σ_a = shift(σ_v)) and ancestral integration both assert — the
-#: label↔content contract that keeps the model's per-step velocity estimate unbiased.  Set to
-#: ``"v"`` on the ancestral step (below); video rows are byte-identical either way.
+#: Per-step-fn init-plant axis.  ``"row"`` (default, both steps): composite the i=0 clean plant
+#: on the per-row σ_a ratio ``sig_row/sig_g`` — the packed noise level the C2 ancestral update
+#: books at i=0 (σ_c(0) = σ_a(m)) and euler's GPU-validated plant.  ``"v"``: composite on the σ_v
+#: axis ``sig_row_v/sig_v[0]`` — the pre-C2 plant-axis experiment, GPU-FALSIFIED: under C2 it
+#: over-noises fractional audio rows by σ_v(m)/σ_a(m).  Retained only as the documented
+#: alternative; video rows are byte-identical either way.
 DEFAULT_PLANT_AXIS = "row"
 
 
@@ -665,9 +665,13 @@ def _c2_audio_ancestral_update(
     return x
 
 
-#: The ancestral step plants fractional-row content on its σ_v integration axis (see
-#: :data:`DEFAULT_PLANT_AXIS`); euler keeps the default σ_a-ratio plant.
-_euler_ancestral_rf_step.PLANT_AXIS = "v"  # type: ignore[attr-defined]
+#: The ancestral step plants on the default σ_a-ratio axis, like euler.  The C2 update books a
+#: fractional audio row's packed noise on σ_c = s·σ_v/g, which at i=0 (k₀=1) IS σ_a(m) — so the
+#: σ_a-ratio plant is the truthful one.  The σ_v plant (PR #32 plant-axis fix, GPU-falsified)
+#: handed C2 a row over-noised by σ_v(m)/σ_a(m) (≈2.8× at low m) that the retained-noise chain
+#: carried for ~half the run: static peaking at m≈0.1–0.2 plus fade-wide muffling.  See wiki
+#: ``euler-ancestral-per-row-fix/plant-over-noise.md``.
+_euler_ancestral_rf_step.PLANT_AXIS = "row"  # type: ignore[attr-defined]
 
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
@@ -940,12 +944,12 @@ def build_per_row_sampler_function(
             # the observed-level content for neighbours from block-0 embed capture, so x_prev
             # carries the σ_row content the main forward integrates.
             #
-            # Plant axis: on the σ_v-plant step (ancestral) the composite uses the σ_v-axis ratio
-            # sig_row_v/sig_v[0] so a fractional AUDIO row lands at the σ_v level its label (σ_a)
-            # and ancestral integration assert — otherwise the σ_a ratio drops audio content in at
-            # ~σ_v/4, biasing the model's velocity estimate every step (audible fade hiss).  Video
-            # rows have sig_row_v == sig_row so this is byte-identical to the σ_a ratio; m=1 → 1,
-            # m=0 → 0 either way, so stock bit-identity and exact-preserve are untouched.
+            # Plant axis (DEFAULT_PLANT_AXIS): both steps use the σ_a ratio w = sig_row/sig_g —
+            # for a fractional AUDIO row this is the packed noise level σ_c(0) the C2 ancestral
+            # update books, so the row enters the retained-noise chain at its truthful level.  The
+            # "v" branch (σ_v ratio) is the GPU-falsified plant-axis experiment: under C2 it
+            # over-noises audio rows by σ_v(m)/σ_a(m).  Video rows have sig_row_v == sig_row so
+            # both are byte-identical; m=1 → 1, m=0 → 0 either way (stock parity, exact preserve).
             if i == 0:
                 if plant_axis == "v":
                     w_plant = (sig_row_v / sig_v[0].clamp(min=1e-8)).clamp(max=1.0)

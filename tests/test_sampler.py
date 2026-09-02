@@ -1576,7 +1576,7 @@ class TestAncestralSpliceGate:
 
 
 # ---------------------------------------------------------------------------
-# Init-plant axis: ancestral plants fractional rows on σ_v, euler stays on σ_a
+# Init-plant axis: BOTH steps plant fractional rows on the σ_a (= σ_c at i=0) axis
 # ---------------------------------------------------------------------------
 
 
@@ -1594,12 +1594,14 @@ class _CaptureFirstX:
 
 
 class TestAncestralPlantAxis:
-    """Regression for the fade-region audio hiss (task #90).
+    """Regression for the low-m fade-audio static + muffling (round 9, plant-over-noise.md).
 
-    The ancestral step must plant fractional AUDIO rows on the σ_v INTEGRATION axis
-    (sig_row_v/sig_v[0]) so the planted content is coherent with the σ_a label the model
-    reads; the old σ_a-ratio plant dropped audio content in at ~σ_v/4, biasing the model's
-    per-step velocity estimate (audible hiss).  euler keeps the σ_a-ratio plant unchanged.
+    The C2 ancestral update books a fractional AUDIO row's packed noise on the σ_c axis, which
+    at i=0 (k₀=1) is σ_a(m).  The i=0 plant must therefore use the σ_a ratio ``sig_row/sig_g``
+    as its noise coefficient — the same plant euler uses.  The σ_v-axis plant (PR #32's
+    plant-axis fix, GPU-falsified) handed C2 a row over-noised by σ_v(m)/σ_a(m) (up to ~2.8×
+    at low m); the RF-ancestral retained-noise chain carried that excess for ~half the run
+    (static peaking at m≈0.1–0.2, muffling across the fade).
     4 packed rows: cols 0,1 video / cols 2,3 audio, all at the same fractional m.
     """
 
@@ -1625,40 +1627,39 @@ class TestAncestralPlantAxis:
         assert model.first_x is not None, "model was never called"
         return model.first_x
 
-    def test_ancestral_audio_plant_differs_euler_video_identical(self) -> None:
-        """Ancestral audio plant ≠ euler audio plant (axis differs); video plant identical."""
+    def test_ancestral_plant_identical_to_euler_all_rows(self) -> None:
+        """Ancestral and euler plant the same composite on video AND audio rows."""
         m = torch.full((1, 4), 0.5)
         x = torch.full((1, 4), 2.0)
         clean = torch.full((1, 4), 5.0)
         sigmas = _decreasing(4)  # sig_v[0] == 1.0
         anc = self._capture_plant(_local_sample_euler_ancestral_rf, m, x, clean, sigmas)
         eul = self._capture_plant(_local_sample_euler, m, x, clean, sigmas)
-        assert torch.allclose(anc[0, :2], eul[0, :2], atol=1e-6), (
-            "video plant must be byte-identical"
-        )
-        assert not torch.allclose(anc[0, 2:], eul[0, 2:], atol=1e-6), (
-            "audio plant must differ: ancestral on σ_v, euler on σ_a"
+        assert torch.allclose(anc, eul, atol=1e-6), (
+            "ancestral plant must equal euler's on every row (σ_a ratio = σ_c at i=0)"
         )
 
-    def test_ancestral_audio_plant_equals_sigma_v_composite(self) -> None:
-        """Ancestral audio plant equals the σ_v composite, not the σ_a composite."""
+    def test_ancestral_audio_plant_equals_sigma_a_composite(self) -> None:
+        """Ancestral audio plant equals the σ_a (= σ_c at i=0) composite, not the σ_v one."""
         m = torch.full((1, 4), 0.5)
         x = torch.full((1, 4), 2.0)
         clean = torch.full((1, 4), 5.0)
         sigmas = _decreasing(4)
         n_sig = int(sigmas.shape[-1])
         steps_n = n_sig - 1
-        sig_row_v0 = _stream_row_sigma(m, 0, steps_n, None, sigmas, n_sig)
-        w_plant = (sig_row_v0 / sigmas[0].clamp(min=1e-8)).clamp(max=1.0)
-        expected_v = w_plant * x + (1.0 - w_plant) * clean
-        anc = self._capture_plant(_local_sample_euler_ancestral_rf, m, x, clean, sigmas)
-        assert torch.allclose(anc[0, 2:], expected_v[0, 2:], atol=1e-6)
-        # And it is NOT the σ_a composite that euler plants.
         sig_a = _shift_schedule(sigmas, 12.0, 3.0)
         sig_row_a0 = _stream_row_sigma(m, 0, steps_n, None, sig_a, n_sig)
         w_a = (sig_row_a0 / sig_a[0].clamp(min=1e-8)).clamp(max=1.0)
         expected_a = w_a * x + (1.0 - w_a) * clean
-        assert not torch.allclose(anc[0, 2:], expected_a[0, 2:], atol=1e-6)
+        anc = self._capture_plant(_local_sample_euler_ancestral_rf, m, x, clean, sigmas)
+        assert torch.allclose(anc[0, 2:], expected_a[0, 2:], atol=1e-6)
+        # And it is NOT the σ_v composite (over-noised by σ_v(m)/σ_a(m) under C2 bookkeeping).
+        sig_row_v0 = _stream_row_sigma(m, 0, steps_n, None, sigmas, n_sig)
+        w_v = (sig_row_v0 / sigmas[0].clamp(min=1e-8)).clamp(max=1.0)
+        expected_v = w_v * x + (1.0 - w_v) * clean
+        assert not torch.allclose(anc[0, 2:], expected_v[0, 2:], atol=1e-6)
+        # The σ_v plant's noise coefficient really is larger — the over-noise this guards.
+        assert float(w_v[0, 2]) > float(w_a[0, 2])
 
     def test_m1_rows_bit_identical_to_stock_with_fractional_audio(self) -> None:
         """m=1 rows stay bit-for-bit equal to stock even with fractional audio rows present."""
