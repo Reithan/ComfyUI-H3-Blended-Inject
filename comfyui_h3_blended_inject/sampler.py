@@ -312,6 +312,31 @@ def _audio_observer_ratio(
     return _embed_ratio(target, sig_row_band_v)
 
 
+def _clean_at_model_scale(
+    clean: torch.Tensor,
+    audio_mask: torch.Tensor | None,
+    sigma_v: torch.Tensor,
+    sigma_a: torch.Tensor | None,
+    audio_scale: float,
+) -> torch.Tensor:
+    """Packed ``clean`` rescaled so the network sees the audio slice at ITS clean scale.
+
+    The packed latent carries audio as ``audio_scale·x_audio`` (``process_latent_in``) and the DiT
+    forward multiplies the audio slice by ``carry = σ_a/σ_v`` before the network sees it
+    (``comfy/ldm/minimax/model.py`` forward, 527-538).  A clean audio latent fed to the model at
+    ``σ_v`` therefore arrives ``audio_scale·carry`` too hot — ``S`` (=4) at ``σ_v = 1``.  Native
+    ``scale_latent_inpaint`` (``model_base.py`` 2257-2265) undoes exactly this with factor
+    ``(σ_v/σ_a)/audio_scale``; the one-time observer embed capture must do the same, otherwise
+    ``h_clean`` on the audio band is the embed of ``S·A`` and every fractional audio row's side
+    stream is anchored ``(1−ratio)·(S−1)`` off the RF manifold — largest at low ``m`` (the
+    0/0/0/90 crackle band, ``m ≈ 0.1–0.2``).  Video slice and ``audio_mask is None`` unchanged.
+    """
+    if audio_mask is None or sigma_a is None or audio_scale == 1.0:
+        return clean
+    factor = (sigma_v.clamp(min=1e-6) / sigma_a.clamp(min=1e-6)) / audio_scale
+    return torch.where(audio_mask, clean * factor.to(clean.dtype), clean)
+
+
 @dataclass
 class _StepContext:
     """Per-step context passed to each row step function.
@@ -886,7 +911,14 @@ def build_per_row_sampler_function(
                     m_dev.clamp(max=1.0).to(device=m_packed.device, dtype=m_packed.dtype)
                 )
             obs0["mode"] = "embed_capture"
-            model(clean, sigmas[0] * s_in0, **(extra_args or {}))
+            clean_model = _clean_at_model_scale(
+                clean,
+                audio_mask,
+                sig_v[0],
+                None if sig_a is None else sig_a[0],
+                (shift_v / shift_a) if shift_a else 1.0,
+            )
+            model(clean_model, sigmas[0] * s_in0, **(extra_args or {}))
             obs0["mode"] = None
 
         x_cur = x

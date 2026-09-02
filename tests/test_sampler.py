@@ -25,6 +25,7 @@ from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
     _audio_observer_ratio,
     _c2_audio_ancestral_update,
+    _clean_at_model_scale,
     _euler_ancestral_rf_step,
     _shift_schedule,
     _StepContext,
@@ -1870,3 +1871,48 @@ class TestC2AudioAncestralUpdate:
         assert torch.allclose(out[0, :2], out2[0, :2], atol=1e-7), "video must be byte-identical"
         # Fractional audio columns DID go through the C2 path (sentinel present in out2).
         assert torch.isnan(out2[0, 2:]).all() and torch.isfinite(out[0, 2:]).all()
+
+
+class TestCleanAtModelScale:
+    """Observer embed capture must hand the network the clean AUDIO slice at its own scale.
+
+    Regression for the S×-hot ``h_clean`` audio anchor (the 0/0/0/90 low-m crackle): the packed
+    clean carries ``audio_scale·A`` and the DiT forward multiplies audio by ``σ_a/σ_v`` before the
+    network sees it, so the capture must pre-scale by ``(σ_v/σ_a)/audio_scale`` — the same factor
+    native ``scale_latent_inpaint`` applies (model_base.py 2264).
+    """
+
+    S = 12.0 / 3.0
+
+    def test_no_audio_passthrough_is_identity(self) -> None:
+        clean = torch.randn(1, 4)
+        out = _clean_at_model_scale(clean, None, torch.tensor(1.0), None, self.S)
+        assert out is clean
+
+    def test_audio_scale_one_is_identity(self) -> None:
+        clean = torch.randn(1, 4)
+        am = torch.tensor([[False, False, True, True]])
+        out = _clean_at_model_scale(clean, am, torch.tensor(1.0), torch.tensor(1.0), 1.0)
+        assert out is clean
+
+    def test_sigma_one_divides_audio_by_audio_scale(self) -> None:
+        # σ_v = 1 ⇒ σ_a = 1 ⇒ carry = 1 ⇒ network sees packed audio raw ⇒ factor is exactly 1/S.
+        clean = torch.tensor([[1.0, 2.0, 4.0, 8.0]])
+        am = torch.tensor([[False, False, True, True]])
+        sig_v = torch.tensor([1.0, 0.5, 0.0])
+        sig_a = _shift_schedule(sig_v, 12.0, 3.0)
+        out = _clean_at_model_scale(clean, am, sig_v[0], sig_a[0], self.S)
+        assert torch.allclose(out[0, :2], clean[0, :2]), "video slice untouched"
+        assert torch.allclose(out[0, 2:], clean[0, 2:] / self.S)
+
+    def test_matches_native_scale_latent_inpaint_factor(self) -> None:
+        # Generic σ_v: factor = (σ_v/σ_a)/S, i.e. undo the forward's carry then the packed scale.
+        clean = torch.ones(1, 4)
+        am = torch.tensor([[False, False, True, True]])
+        sig_v = torch.tensor(0.6)
+        sig_a = _shift_schedule(sig_v, 12.0, 3.0)
+        out = _clean_at_model_scale(clean, am, sig_v, sig_a, self.S)
+        expected = (sig_v / sig_a) / self.S
+        assert torch.allclose(out[0, 2:], expected.expand(2))
+        # Sanity: the audio anchor is genuinely cooler than the packed value (S× hot without it).
+        assert float(expected) < 1.0
