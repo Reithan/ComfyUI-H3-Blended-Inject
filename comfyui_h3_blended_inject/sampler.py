@@ -720,13 +720,16 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
             if dbg_path and terms is not None:  # pragma: no cover - diagnostic-only wiring
                 m_dev = ctx.state.get("m_dev")
                 if m_dev is not None:
+                    # steps_n = len(schedule) − 1 (raw sigmas hold steps_n+1 entries, last = 0
+                    # endpoint).  Self-contained — the nested schedule_tail["total_steps"] stash
+                    # is one level below ctx.state and was read as 0, collapsing every k_d bin.
                     _c2_debug_log(
                         dbg_path,
                         ctx.i,
                         m_dev,
                         frac_audio,
                         terms,
-                        int(ctx.state.get("total_steps", 0)),
+                        max(1, int(len(ctx.sigmas)) - 1),
                     )
     return x
 
