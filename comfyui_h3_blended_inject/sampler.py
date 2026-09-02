@@ -79,7 +79,8 @@ def _c2_enabled() -> bool:
 #: Diagnostic δ-leak logger (round-10 Option 3).  ``H3BI_C2_DEBUG`` unset → off; ``"1"`` → default
 #: temp CSV; any other value is used verbatim as the CSV path.  Dumps, per (step, k_d bin) over the
 #: fractional-AUDIO rows, the RMS of the C2 update's retained term ``r_ret·ε̂`` (carries the δ leak),
-#: the fresh term ``c_fresh·noise`` (theory: ≈0 at η=1), the clean term ``a'·ĉ``, and the leak
+#: the fresh term ``c_fresh·noise`` (NONZERO at η=1 — sd = σ_c'²/σ_c, so r_ret = σ_c'²/σ_c and
+#: c_fresh = √(σ_c'²−r_ret²) > 0; it →0 only as m→0), the clean term ``a'·ĉ``, and the leak
 #: coefficient ``1 − σ_c'/σ_c``.  δ-reinjection predicts leak_to_signal grows as m→0.  Reads the
 #: mechanism straight out of the sampler — no audio export.  See wiki delta-reinjection.md.
 C2_DEBUG_ENV = "H3BI_C2_DEBUG"
