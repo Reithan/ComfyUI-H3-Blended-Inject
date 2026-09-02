@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-01 (branch `fix-euler-ancestral-per-row-renoise`) — audio band anchor fix (fe0343a+91078cc) implemented, GPU pending; see audio-anchor-scale.md.
+Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — round-9: anchor fix FALSIFIED for peak; root cause = PLANT_AXIS "v" untruthful under C2; revert + fix record in euler-ancestral-per-row-fix/plant-over-noise.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -91,9 +91,9 @@ per-row ancestral step. See
 - [bugs.md](per-row-img2img/bugs.md): Bug A (fixed), B (stochastic, open), C (content-axis GPU
   PARTIAL; C2 durable port decided PR #32; bugs/bug-c-audio-axis.md), D (fixed), E (long-fade
   video, open), F (attributed retrodiction post-#32). *Read for fractional artifacts.*
-- [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **C2 GPU CONFIRMED;**
-  residual low-m band; anchor fix pending GPU; children plant-axis.md + content-axis.md +
-  c2-durable-port.md + audio-anchor-scale.md. *Read for euler_a artifacts.*
+- [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **C2 CONFIRMED;
+  anchor FALSIFIED round 9; PLANT_AXIS revert pending GPU;** + plant-over-noise.md child.
+  *Read for euler_a artifacts.*
 - [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
   DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
   FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*

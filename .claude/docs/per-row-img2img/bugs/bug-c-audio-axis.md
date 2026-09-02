@@ -1,5 +1,5 @@
-<!-- provenance: bug (OPEN — plant-axis FALSIFIED for fade-audio GPU 2026-09-01; content-axis fix SHIPPED PR #32 revised commits 4644fcf+e4a9940, GPU PARTIAL 2026-09-01; C2 durable port DECIDED, GPU pending) -->
-<!-- verified: 2026-09-01 GPU falsification of plant-axis; content-axis GPU PARTIAL; Fix A m=1 free audio GPU-CONFIRMED 2026-08-28 -->
+<!-- provenance: bug (OPEN — content-axis: GPU PARTIAL; C2 durable port: GPU CONFIRMED; anchor fix: FALSIFIED for peak round-9; root cause = PLANT_AXIS over-noise per plant-over-noise.md) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-9: anchor falsified for 0.75–1.0 s peak; PLANT_AXIS revert approved, GPU pending -->
 # Bug C — Audio observer axis defect (euler_ancestral, fade-region hiss)
 
 Full record for Bug C (audio axis defect) and Bug C-remaining (H2 rejection). This is the
@@ -13,9 +13,11 @@ for the current fix design.
 Content-axis fix SHIPPED PR #32 revised commits 4644fcf+e4a9940 (GPU PARTIAL 2026-09-01 —
 ring narrowed mid-m; both ends clean; hiss shorter; euler UNCHANGED).
 Plant-axis fix FALSIFIED for fade-audio (GPU 2026-09-01, single-frame clean / fade hiss persists).
-C2 durable port GPU CONFIRMED (user 2026-09-01, PR #32; residual localized: low-m band ≈0.75–1.0 s;
-anchor fix implemented fe0343a+91078cc, GPU pending) — see
-[../euler-ancestral-per-row-fix/audio-anchor-scale.md](../euler-ancestral-per-row-fix/audio-anchor-scale.md).
+C2 durable port GPU CONFIRMED (user 2026-09-01, PR #32; residual localized: low-m band ≈0.75–1.0 s).
+Round-9 (2026-09-02): anchor fix fe0343a+91078cc FALSIFIED for peak — introduces muffling.
+Root cause = `PLANT_AXIS = "v"` makes i=0 plant untruthful under C2's σ_c bookkeeping;
+fix = revert to "row"; GPU pending. See
+[../euler-ancestral-per-row-fix/plant-over-noise.md](../euler-ancestral-per-row-fix/plant-over-noise.md).
 
 **Co-location note (2026-09-01):** Bug C is TIMELINE-WIDE — all audio rows are m=1 in drop mode
 (`audio_denoise=1.0`); `sig_a≠carrier` applies uniformly, not just to inject-local rows. So

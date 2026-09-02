@@ -145,4 +145,9 @@ held, loud→faint). Residual changed character to a brief crackle.
 91-f fade (same seed/euler_a), the residual spans ≈0.75–1.0 s → m ≈ 0.11–0.18 BAND at LOW m,
 NOT a mid-fade point. All C2-path singularities at m≈0.1–0.2 checked benign.
 Top candidate: audio band anchor `h_clean` S× too hot; fix implemented fe0343a+91078cc.
-Full analysis and GPU plan: [audio-anchor-scale.md](audio-anchor-scale.md).
+Full analysis: [audio-anchor-scale.md](audio-anchor-scale.md).
+
+**Round-9 addendum (2026-09-02):** anchor fix FALSIFIED for the peak — introduces muffling.
+Root cause: `PLANT_AXIS = "v"` makes i=0 plant use σ_v axis while C2 books on σ_c,
+over-noising every fractional audio row by F₀ = σ_v(m)/σ_a(m).
+Fix = revert PLANT_AXIS to "row". Full analysis: [plant-over-noise.md](plant-over-noise.md).

@@ -1,6 +1,15 @@
-<!-- provenance: theory (GPU-UNVERIFIED — fix implemented fe0343a+91078cc, awaiting Run 1) -->
-<!-- verified: 2026-09-01 (branch fix-euler-ancestral-per-row-renoise) · datum GPU-CONFIRMED; fix implemented; GPU Run 1 pending -->
+<!-- provenance: theory (GPU-FALSIFIED for peak — anchor introduces muffling; fix retained as model-scale-correct; root cause in plant-over-noise.md) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-9 GPU runs falsify anchor as peak cause; anchor fix fe0343a+91078cc retained (K/V content scale correct) -->
 # Audio observer band: clean anchor scale bug — round 8
+
+**Round-9 verdict:** anchor fix FALSIFIED for the 0.75–1.0 s peak; it introduced muffling by
+removing compensation for an over-noised row. Root cause identified as `PLANT_AXIS = "v"` making
+i=0 plant untruthful under C2's σ_c bookkeeping. Fix = revert PLANT_AXIS to "row".
+See [plant-over-noise.md](plant-over-noise.md) for the full round-9 record.
+The anchor correction itself is RETAINED (K/V content amplitude is model-scale-correct;
+the over-noise is a separate, more fundamental error).
+
+
 
 Continuation of the C2 durable port residual investigation.
 Context: [c2-durable-port.md](c2-durable-port.md) (C2 port, crackle residual corrected localization).

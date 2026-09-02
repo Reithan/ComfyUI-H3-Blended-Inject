@@ -1,6 +1,11 @@
-<!-- provenance: bug (FALSIFIED as fade-audio cause GPU 2026-09-01; shipped PR #32 commits 3e82dba+e3ec742; historical negative result — preserved, do not delete) -->
-<!-- verified: 2026-09-01 GPU falsification; CPU-tested ship 3e82dba+e3ec742 -->
+<!-- provenance: bug (FALSIFIED as fade-audio cause GPU 2026-09-01; SUPERSEDED round 9 — σ_v plant untruthful under C2, being reverted; historical record preserved, do not delete) -->
+<!-- verified: 2026-09-02 · round-9: PLANT_AXIS "v" is untruthful under C2 σ_c bookkeeping and is being reverted to "row" -->
 # Plant-axis fix — shipped record & GPU falsification
+
+**⚠ SUPERSEDED (round 9, 2026-09-02):** `PLANT_AXIS = "v"` is untruthful under C2's σ_c
+bookkeeping. The σ_v plant was self-consistent with the old per-step σ_v update; it became
+an error when C2 moved bookkeeping to σ_c. PLANT_AXIS is being reverted to "row".
+See [plant-over-noise.md](plant-over-noise.md) for the full root-cause analysis and fix.
 
 Shipped fix (PR #32 original, commits 3e82dba + e3ec742): planting fractional rows on the σ_v
 INTEGRATION axis for the ancestral init-step. FALSIFIED as the fade-audio hiss cause by GPU

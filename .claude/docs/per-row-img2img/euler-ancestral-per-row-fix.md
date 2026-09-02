@@ -1,6 +1,6 @@
-<!-- provenance: bug (Bug F: ATTRIBUTED retrodiction post-#32; plant-axis: SHIPPED+FALSIFIED GPU 2026-09-01;
-     content-axis: GPU PARTIAL 2026-09-01; C2 durable port: GPU CONFIRMED; round-8 anchor fix fe0343a+91078cc, GPU pending) -->
-<!-- verified: 2026-09-01 (branch fix-euler-ancestral-per-row-renoise) · C2 durable port GPU CONFIRMED; residual localized low-m band (round 8); anchor fix fe0343a+91078cc -->
+<!-- provenance: bug (Bug F: ATTRIBUTED; plant-axis: SHIPPED+FALSIFIED; content-axis: GPU PARTIAL;
+     C2 durable port: GPU CONFIRMED; anchor fix: FALSIFIED for peak round 9; PLANT_AXIS revert pending GPU) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-9: anchor FALSIFIED; root cause = PLANT_AXIS "v" untruthful under C2; fix = revert to "row" -->
 # euler_ancestral per-row fix — index
 
 Design and shipped record for the combined fix that clears both `euler_ancestral` per-row
@@ -13,6 +13,11 @@ Read alongside [bugs.md](bugs.md) Bug C (axis) + Bug F (clean-K/V gap) and
 
 Stock H3 handles `euler_ancestral` cleanly, so OUR per-row machinery is the cause. A same-branch,
 same-prompt sampler swap isolates it: `euler` shows NEITHER artifact; `euler_ancestral` shows BOTH.
+
+⚠ **"euler clean" qualifier:** this was observed on a 24-f fade. Long-fade runs (≥91 frames) also
+show a deterministic noise floor in both modalities (both samplers) — see
+[c2-rho-fix-paths/residual-accounting.md](c2-rho-fix-paths/residual-accounting.md).
+The "euler clean" claim holds for the two specific artifacts listed below, not for all fade noise.
 
 1. **VIDEO ghost (Bug F).** `_euler_ancestral_rf_step` (sampler.py:412) calls `ctx.model(...)`
    directly at sampler.py:467 with NO observer/frac gate. `_euler_step` routes through the
@@ -42,15 +47,17 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 | Plant-axis fix (PR #32, commits 3e82dba+e3ec742) | SHIPPED; FALSIFIED for fade-audio GPU 2026-09-01 |
 | Content-axis fix (PR #32 revised, commits 4644fcf+e4a9940) | SHIPPED; GPU PARTIAL — ring narrowed mid-m; both ends clean; hiss shorter |
 | Euler regression check | CONFIRMED CLEAN GPU 2026-09-01 (prime_side_stream shared path; no regression) |
-| Fade-audio hiss | OPEN — audio band anchor fix pending GPU; see audio-anchor-scale.md |
-| C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED; residual localized low-m band (round 8); anchor fix fe0343a+91078cc implemented |
+| Anchor fix fe0343a+91078cc (audio-anchor-scale.md) | FALSIFIED for peak (round 9 GPU) — introduces muffling; retained as model-scale-correct K/V fix |
+| C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED; residual localized low-m band; anchor falsified — root cause = PLANT_AXIS |
+| Plant-over-noise (PLANT_AXIS revert to "row") | PENDING GPU — fix approved 2026-09-02; see plant-over-noise.md |
 
 ## Child docs
 
 - [plant-axis.md](euler-ancestral-per-row-fix/plant-axis.md) — plant-axis fix record + GPU FALSIFICATION + bypass sub-theory refutation + Bug B refinement
 - [content-axis.md](euler-ancestral-per-row-fix/content-axis.md) — content-axis observer fix (GPU PARTIAL 2026-09-01; residual stochastic-only)
 - [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md) — C2 carry-compression durable port: Fable round-5 verdict, mechanism, decision, spec (GPU CONFIRMED; residual localized low-m band)
-- [audio-anchor-scale.md](euler-ancestral-per-row-fix/audio-anchor-scale.md) — round-8: hot audio band anchor theory, impl (fe0343a+91078cc), GPU plan
+- [audio-anchor-scale.md](euler-ancestral-per-row-fix/audio-anchor-scale.md) — round-8: hot audio band anchor theory, impl (fe0343a+91078cc); FALSIFIED for peak (round 9)
+- [plant-over-noise.md](euler-ancestral-per-row-fix/plant-over-noise.md) — round-9: PLANT_AXIS "v" untruthful under C2; root cause of 0.75–1.0 s peak; fix = revert to "row"; GPU pending
 
 ## Co-location verdict (resolves earlier mis-attribution)
 
