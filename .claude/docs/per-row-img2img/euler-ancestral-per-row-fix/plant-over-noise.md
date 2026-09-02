@@ -123,3 +123,5 @@ the user described as "contained" to 0.75–1.0 s. A spectrogram would settle it
   The fixed-logger run then confirmed δ-as-residual: ret_clean_corr climbs monotonically as m→0 (+0.94
   at k_d=19) — content re-injected via ε̂ under-cancellation + 1/σ_c amplification. See
   [delta-reinjection.md](delta-reinjection.md) for the full record.
+- **Noise-carry fix IMPLEMENTED** (commit a28a62b): true-noise `εc` carried as sampler state
+  instead of re-inverting `ĉ` each step; CPU-verified (117 tests, |corr|<0.05); GPU pending.

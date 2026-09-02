@@ -1,7 +1,7 @@
 <!-- provenance: bug (Bug F: ATTRIBUTED; plant-axis: SHIPPED+FALSIFIED; content-axis: GPU PARTIAL;
      C2 durable port: GPU CONFIRMED; anchor fix: FALSIFIED round 9; PLANT_AXIS revert: GPU CONFIRMED round 10 — muffling fixed, static persists;
-     δ-reinjection: δ-residual CONFIRMED via ret_clean_corr (Branch 1); fix = de-invert ε̂, design pending; δ-as-C2-GENERATOR stays FALSIFIED (Test B round-10)) -->
-<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-10: PLANT_AXIS revert GPU CONFIRMED — muffling fixed, static persists 0.25–1.5 s; δ-residual CONFIRMED via ret_clean_corr (Branch 1) -->
+     δ-reinjection: δ-residual CONFIRMED Branch 1; noise-carry fix IMPLEMENTED commit a28a62b, CPU-verified; AWAITING GPU) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · noise-carry fix IMPLEMENTED (commit a28a62b): CPU 117 tests pass; GPU cross-check pre-registered -->
 # euler_ancestral per-row fix — index
 
 Design and shipped record for the combined fix that clears both `euler_ancestral` per-row
@@ -51,7 +51,7 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 | Anchor fix fe0343a+91078cc (audio-anchor-scale.md) | FALSIFIED for peak (round 9 GPU) — introduces muffling; retained as model-scale-correct K/V fix |
 | C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED; residual localized low-m band; anchor falsified — root cause = PLANT_AXIS |
 | Plant-over-noise (PLANT_AXIS revert to "row") | GPU CONFIRMED 2026-09-02 — muffling fixed; static persists 0.25–1.5 s band |
-| δ re-injection (round-10, ret_clean_corr) | δ-as-RESIDUAL CONFIRMED (Branch 1): corr climbs toward low m (+0.94 at k_d=19) = content re-injected by ε̂ under-cancellation + 1/σ_c; fix = de-invert ε̂; GENERATOR FALSIFIED (Test B) |
+| δ re-injection noise-carry fix (commit a28a62b) | IMPLEMENTED + CPU-verified (117 tests pass, |corr|<0.05 at low m); root cause = denoiser-shrinkage content leak into re-inverted ε̂; fix = persist true-noise carry; AWAITING GPU |
 
 ## Child docs
 
@@ -60,7 +60,7 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 - [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md) — C2 carry-compression durable port: Fable round-5 verdict, mechanism, decision, spec (GPU CONFIRMED; residual localized low-m band)
 - [audio-anchor-scale.md](euler-ancestral-per-row-fix/audio-anchor-scale.md) — round-8: hot audio band anchor theory, impl (fe0343a+91078cc); FALSIFIED for peak (round 9)
 - [plant-over-noise.md](euler-ancestral-per-row-fix/plant-over-noise.md) — round-9: PLANT_AXIS "v" untruthful under C2; root cause of 0.75–1.0 s peak; fix = revert to "row"; GPU CONFIRMED (muffling fixed, static persists)
-- [delta-reinjection.md](euler-ancestral-per-row-fix/delta-reinjection.md) — round-10: Test B → δ-as-generator FALSIFIED; ret_clean_corr (Branch 1) → δ-as-RESIDUAL CONFIRMED (ε̂ under-cancellation + 1/σ_c); fix = de-invert ε̂
+- [delta-reinjection.md](euler-ancestral-per-row-fix/delta-reinjection.md) — round-10: δ-as-RESIDUAL CONFIRMED (Branch 1, ε̂ under-cancellation + 1/σ_c); noise-carry fix IMPLEMENTED commit a28a62b (CPU-verified, GPU pending)
 
 ## Co-location verdict (resolves earlier mis-attribution)
 
