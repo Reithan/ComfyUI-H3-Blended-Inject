@@ -725,6 +725,11 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
         if bool(frac_audio.any()):
             dbg_path = _c2_debug_path()
             terms: dict[str, torch.Tensor] | None = {} if dbg_path else None
+            # Persisted true-noise carry (NOISE-CARRY FIX): init from the plant at i==0, then
+            # thread forward so the retained channel never re-inverts the shrunk clean estimate.
+            eps_carry = None if ctx.i == 0 else ctx.state.get("c2_eps_carry")
+            w_plant = (ctx.sig_row / ctx.sig_g.clamp(min=1e-8)).clamp(max=1.0)
+            carry_out: dict[str, torch.Tensor] = {}
             x_c2 = _c2_audio_ancestral_update(
                 ctx.x_prev,
                 v,
@@ -738,8 +743,17 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
                 eta,
                 None if noise is None else noise * s_noise,
                 terms=terms,
+                eps_carry=eps_carry,
+                clean_raw=ctx.state.get("clean"),
+                w_plant=w_plant,
+                carry_out=carry_out,
             )
             x = torch.where(frac_audio, x_c2, x)
+            eps_next = carry_out.get("eps_next")
+            if eps_next is not None:
+                prev = ctx.state.get("c2_eps_carry")
+                base = torch.zeros_like(ctx.x_prev) if prev is None else prev
+                ctx.state["c2_eps_carry"] = torch.where(frac_audio, eps_next, base)
             if dbg_path and terms is not None:  # pragma: no cover - diagnostic-only wiring
                 m_dev = ctx.state.get("m_dev")
                 if m_dev is not None:
@@ -770,6 +784,11 @@ def _c2_audio_ancestral_update(
     eta: float,
     noise: torch.Tensor | None,
     terms: dict[str, torch.Tensor] | None = None,
+    *,
+    eps_carry: torch.Tensor | None = None,
+    clean_raw: torch.Tensor | None = None,
+    w_plant: torch.Tensor | None = None,
+    carry_out: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Exact RF-ancestral update for a fractional audio row on its true packed axis (C2 port).
 
@@ -788,6 +807,25 @@ def _c2_audio_ancestral_update(
     gates by ``frac_audio`` so m=1 is bit-exact by exclusion.  Terminal (``σ_a'=0``): ``σ_c'=0``,
     ``a'=1``, ``r_ret=0``, no fresh noise → ``x = Ĉ`` (stock's ``x = denoised``); no division by
     ``σ_a'`` or ``σ_v'`` anywhere.
+
+    NOISE-CARRY FIX (claude-opus-4-8, euler-ancestral-per-row-fix): the retained-noise channel
+    must NOT be re-derived each step as ``ε̂ = (y − a·Ĉ)/σ_c``.  The denoiser shrinks its clean
+    estimate ``Ĉ = γ·C_true`` (γ<1, set by GLOBAL noise not local σ_c), so ``a·Ĉ`` under-removes
+    content and ``ε̂`` retains a ``[a(1−γ)/σ_c]·C_true`` leak — amplified by 1/σ_c, re-injected
+    coherently each step (measured corr(retained,clean) → +0.95 at low m).  Instead we CARRY the
+    true unit noise ``εc`` as sampler state:
+
+      * init (i=0, ``eps_carry is None``): the plant is ground truth — it books ``y =
+        w·x_noise + (1−w)·clean_raw`` with the plant's OWN coefficient ``(1−w)`` and the RAW
+        (un-shrunk) clean.  So ``εc = (y − (1−w)·clean_raw)/σ_c = (w/σ_c)·x_noise`` is pure noise
+        by construction, zero content, at correct C2 scale (under RF σ_max=1, w=σ_c ⇒ εc=x_noise,
+        unit).  Uses ``(1−w)``/``clean_raw``, NEVER ``a·Ĉ`` (a≠(1−w); leaves ((1−w)−a)·clean).
+      * carry (i>0): ``εc`` is passed in via ``eps_carry`` and never touches the shrunk ``Ĉ``.
+      * advance: ``εc' = (r_ret·εc + c_fresh·noise)/σ_c'`` — the noise part of the new state at
+        level σ_c', unit by construction (var = r_ret² + c_fresh² = σ_c'²).  Returned via
+        ``carry_out["eps_next"]`` (full-shape); caller persists it in ``ctx.state``.
+
+    The clean channel (``a_next·Ĉ``) and fresh term are unchanged; stochasticity is preserved.
     """
     eps = 1e-8
     sig_c = (s * sigma / g.clamp(min=eps)).clamp(min=eps)
@@ -797,17 +835,33 @@ def _c2_audio_ancestral_update(
     a = (1.0 - s) / (1.0 + (S - 1.0) * g)
     a_next = (1.0 - s_next) / (1.0 + (S - 1.0) * g_next)
     c_hat = (1.0 - (S - 1.0) * (s - g)) * y - sig_c * v
-    eps_hat = (y - a * c_hat) / sig_c
+    # Retained-noise channel: carry the TRUE unit noise, never re-derive it from the
+    # content-contaminated inversion (y − a·Ĉ)/σ_c (see NOISE-CARRY FIX in the docstring).
+    if eps_carry is not None:
+        eps_c = eps_carry
+    elif clean_raw is not None and w_plant is not None:
+        # init at plant step: extract the EXACT planted noise using the plant's own content
+        # coefficient (1−w) and the RAW (un-shrunk) clean.
+        eps_c = (y - (1.0 - w_plant) * clean_raw) / sig_c
+    else:  # fallback (no carry/plant info): pre-fix inversion — leaks content when Ĉ shrinks
+        eps_c = (y - a * c_hat) / sig_c
     sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
     r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
     clean_term = a_next * c_hat
-    retained_term = r_ret * eps_hat
+    retained_term = r_ret * eps_c
     x = clean_term + retained_term
     fresh_term = torch.zeros_like(c_hat)
     if noise is not None and eta > 0:
         c_fresh = torch.sqrt(torch.clamp(sig_c_next**2 - r_ret**2, min=0.0))
         fresh_term = noise * c_fresh
         x = x + fresh_term
+    if carry_out is not None:
+        # noise part of the new state at level σ_c', normalized to unit (var = σ_c'²).
+        carry_out["eps_next"] = torch.where(
+            sig_c_next > eps,
+            (retained_term + fresh_term) / sig_c_next.clamp(min=eps),
+            torch.zeros_like(x),
+        )
     if terms is not None:
         terms["retained"] = retained_term
         terms["clean"] = clean_term

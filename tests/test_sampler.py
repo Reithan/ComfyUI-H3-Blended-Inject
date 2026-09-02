@@ -1834,6 +1834,119 @@ class TestC2AudioAncestralUpdate:
             "must NOT reproduce v4's step-i-frozen clean coefficient (ρ-drift)"
         )
 
+    def test_noise_carry_init_is_content_orthogonal_vs_leaky_inversion(self) -> None:
+        """Plant-based retained-noise init is content-free; the old inversion leaks under shrinkage.
+
+        Reproduces the measured mid-fade leak (corr(retained,clean) → +0.95 at low m): build y via
+        the ACTUAL plant lerp ``y = w·x_noise + (1−w)·C``, inject denoiser shrinkage ``Ĉ = γ·C``
+        (γ<1), and compare corr(retained, clean) for the fixed carry init (uses the plant's (1−w)
+        with RAW clean) vs the old ``(y − a·Ĉ)/σ_c`` inversion.  Fail-then-pass guard for the
+        euler-ancestral-per-row noise-carry fix.
+        """
+        torch.manual_seed(3)
+        N = 256
+        C = torch.randn(1, N)  # true content (raw clean)
+        x_noise = torch.randn(1, N)  # planted noise, independent of C
+        sigma, sigma_next = torch.tensor(1.0), torch.tensor(0.7)
+        g = _shift_schedule(sigma, 12.0, 3.0).expand(1, N)
+        g_next = _shift_schedule(sigma_next, 12.0, 3.0).expand(1, N)
+        s, s_next = 0.06 * g, 0.06 * g_next  # low m → small σ_c → strong 1/σ_c amplification
+        sig_c = s * sigma / g
+        a = (1.0 - s) / (1.0 + (self.S - 1.0) * g)
+        w = (s / g).clamp(max=1.0)  # plant coefficient at i=0 (sigma == g so w == σ_c)
+        y = w * x_noise + (1.0 - w) * C  # ACTUAL plant lerp
+        # Denoiser shrinkage: Ĉ = γ·C_correct where a·C_correct == (1−w)·C (the true content).
+        gamma = 0.4
+        c_hat = gamma * (1.0 - w) / a * C
+        v = ((1.0 - (self.S - 1.0) * (s - g)) * y - c_hat) / sig_c
+
+        def _corr(u: torch.Tensor, t: torch.Tensor) -> float:
+            u = u - u.mean()
+            t = t - t.mean()
+            return float((u * t).sum() / (u.norm() * t.norm()).clamp(min=1e-12))
+
+        terms_fix: dict[str, torch.Tensor] = {}
+        _c2_audio_ancestral_update(
+            y,
+            v,
+            s,
+            s_next,
+            g,
+            g_next,
+            sigma,
+            sigma_next,
+            self.S,
+            1.0,
+            torch.randn(1, N),
+            terms=terms_fix,
+            eps_carry=None,
+            clean_raw=C,
+            w_plant=w,
+            carry_out={},
+        )
+        terms_old: dict[str, torch.Tensor] = {}
+        _c2_audio_ancestral_update(  # no clean_raw/w_plant → old (y − a·Ĉ)/σ_c inversion
+            y,
+            v,
+            s,
+            s_next,
+            g,
+            g_next,
+            sigma,
+            sigma_next,
+            self.S,
+            1.0,
+            torch.randn(1, N),
+            terms=terms_old,
+        )
+        corr_fix = abs(_corr(terms_fix["retained"], C))
+        corr_old = _corr(terms_old["retained"], C)
+        assert corr_old > 0.5, f"old inversion should leak content, got {corr_old}"
+        assert corr_fix < 0.05, f"fixed carry must be content-orthogonal, got {corr_fix}"
+
+    def test_noise_carry_advance_stays_unit_and_content_free(self) -> None:
+        """carry_out['eps_next'] = (retained + fresh)/σ_c' is unit-variance and content-orthogonal.
+
+        Advance the carried noise one step and confirm the emitted next-carry has ~unit variance
+        (var = r_ret² + c_fresh² = σ_c'²) and no correlation with the content — so the retained
+        channel never re-acquires content across steps.
+        """
+        torch.manual_seed(5)
+        N = 512
+        C = torch.randn(1, N)
+        eps_in = torch.randn(1, N)  # unit carried noise from a prior step
+        noise = torch.randn(1, N)
+        sigma, sigma_next = torch.tensor(0.7), torch.tensor(0.45)
+        g = _shift_schedule(sigma, 12.0, 3.0).expand(1, N)
+        g_next = _shift_schedule(sigma_next, 12.0, 3.0).expand(1, N)
+        s, s_next = 0.3 * g, 0.3 * g_next
+        y = torch.randn(1, N)
+        v = torch.randn(1, N)
+        carry_out: dict[str, torch.Tensor] = {}
+        _c2_audio_ancestral_update(
+            y,
+            v,
+            s,
+            s_next,
+            g,
+            g_next,
+            sigma,
+            sigma_next,
+            self.S,
+            1.0,
+            noise,
+            eps_carry=eps_in,
+            carry_out=carry_out,
+        )
+        eps_next = carry_out["eps_next"]
+        # Unit variance: emitted carry std ≈ 1 (noise part normalized by σ_c').
+        assert abs(float(eps_next.std()) - 1.0) < 0.1, float(eps_next.std())
+        # Content-orthogonal: carry built only from eps_in and fresh noise, both ⊥ C.
+        cu = eps_next - eps_next.mean()
+        cc = C - C.mean()
+        corr = float((cu * cc).sum() / (cu.norm() * cc.norm()).clamp(min=1e-12))
+        assert abs(corr) < 0.1, corr
+
     def test_eta_zero_is_deterministic_and_noise_ignored(self) -> None:
         """eta=0 → sd = σ_c', r_ret = σ_c', c_fresh = 0: output independent of the noise draw."""
         y, v = torch.randn(1, 4), torch.randn(1, 4)
