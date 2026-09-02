@@ -117,8 +117,9 @@ the user described as "contained" to 0.75–1.0 s. A spectrogram would settle it
   muffling. Truthful "row" plant leaves the static raw: louder and wider (0.75–1.0 s peak
   expands to 0.25–1.5 s band). The plant axis only redistributes the energy; neither setting
   addresses the source.
-- **New theory (refined round-10 Test B):** the remaining static is a candidate for δ re-injection
+- **CONFIRMED δ-residual (round-10 ret_clean_corr, Branch 1):** the remaining static is δ re-injection
   operating WITHIN the C2 update (audio-only, clean-estimate error leak at low m) — NOT C2-generated.
-  Test B (`H3BI_DISABLE_C2=1`) made the static WORSE → C2 is net-corrective; δ-as-generator falsified,
-  δ-as-residual open. Mode-independent injection error (residual-accounting.md) may outrank it. See
-  [delta-reinjection.md](delta-reinjection.md) for the full round-10 record.
+  Test B (`H3BI_DISABLE_C2=1`) made the static WORSE → C2 is net-corrective (δ-as-generator falsified).
+  The fixed-logger run then confirmed δ-as-residual: ret_clean_corr climbs monotonically as m→0 (+0.94
+  at k_d=19) — content re-injected via ε̂ under-cancellation + 1/σ_c amplification. See
+  [delta-reinjection.md](delta-reinjection.md) for the full record.

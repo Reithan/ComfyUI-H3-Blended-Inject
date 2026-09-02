@@ -1,5 +1,5 @@
-<!-- provenance: theory (δ overall UNVERIFIED; δ-as-C2-GENERATOR sub-claim FALSIFIED by Test B round-10; δ-as-RESIDUAL open) -->
-<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · Test B GPU: static WORSE with C2 off → C2 net-corrective; δ-as-generator falsified, δ-as-residual open -->
+<!-- provenance: confirmed (δ-as-RESIDUAL CONFIRMED via ret_clean_corr Branch 1 — content re-injection via ε̂ under-cancellation, amplified 1/σ_c; δ-as-C2-GENERATOR stays FALSIFIED, Test B) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · fixed-logger CSV h3bi_c2_debug-normal-2: ret_clean_corr climbs monotonically as m→0 (+0.94 at k_d=19) → δ-residual CONFIRMED (Branch 1) -->
 # δ re-injection theory — round-10 canonical record
 
 Parent: [euler-ancestral-per-row-fix.md](../euler-ancestral-per-row-fix.md).
@@ -21,24 +21,16 @@ Round-9 verdict (plant-over-noise.md): muffling CONFIRMED fixed by the "row" rev
 FALSIFIED as plant-caused (over-noise MASKED it as muffling; truthful plant leaves it raw, louder,
 0.25–1.5 s). The plant axis only redistributes the energy; neither setting addresses the source.
 
-## δ re-injection theory (UNVERIFIED)
+## δ re-injection theory (original analytical form — confirmed below, sign corrected)
 
 In `_c2_audio_ancestral_update`, ε̂ = (y − a·ĉ)/σ_c is recovered by inverting through the network
-clean estimate ĉ. The 1/σ_c cancels ONLY if ĉ is exact; the network carries error δ = ĉ − C_true.
-Tracking δ through x' = a'·ĉ + r_ret·ε̂: the δ-carried coefficient is (a' − (r_ret/σ_c)·a)·δ. At
-η=1, r_ret ≈ σ_c'²/σ_c, so at low m (a≈a'≈1) this is (1 − (σ_c'/σ_c)²)·δ > 0 and GROWS as m→0.
-Result: an m-graded, content-correlated δ leak, largest at low m → structured static in the low-m band.
-
-Indirect support: Linear Run 3 (low-m compressed to t=0 → static at 0.00 s); Ease_in_out T1
-(low-m stretched → static 0.25–1.5 s).
-
-### c_fresh correction (claude-opus-4-8, 2026-09-02)
-
-Fable's claim c_fresh = √(σ_c'² − r_ret²) ≡ 0 at η=1 conflated η=1 with η=0. C2 downstep
-sd = σ_c'·(1 + (σ_c'/σ_c − 1)·η): η=0 → sd=σ_c', c_fresh=0 (the case Fable mistook for η=1);
-η=1 → sd=σ_c'²/σ_c, c_fresh>0. Fresh stochastic noise IS injected at η=1. Consequences: the δ-leak
-coefficient at low m is 1 − (σ_c'/σ_c)² (not 1 − σ_c'/σ_c); "fresh noise washes δ out as m rises"
-REINSTATED (c_fresh → 0 only as m → 0); core δ conclusion survives — δ dominates at low m.
+clean estimate ĉ. The 1/σ_c cancels ONLY if ĉ is exact; the network carries error δ = ĉ − C_true,
+plus content the a·ĉ term fails to cancel. The leak coefficient at η=1 (r_ret ≈ σ_c'²/σ_c) is
+(1 − (σ_c'/σ_c)²) > 0, GROWING as m→0 → an m-graded, content-correlated leak, largest at low m →
+structured static in the low-m band. Fresh stochastic noise (c_fresh = √(σ_c'² − r_ret²), >0 at η=1,
+→0 only as m→0) washes it out as m rises. NOTE: the original prediction of NEGATIVE ret_clean_corr was
+corrected to POSITIVE by the result below (under-cancellation, not anti-cancellation); the low-m
+concentration held.
 
 ## Round-10 continued: Test B + logger (claude-opus-4-8 + user GPU, 2026-09-02)
 
@@ -55,37 +47,43 @@ persists→residual floor"; the actual "static WORSE" outcome was in neither bra
   carry-compression every fractional audio row re-enters over-noised → bigger retained error →
   louder static). The residual heard WITH C2 on is the portion C2's compression doesn't reach. δ
   operating WITHIN the (necessary) C2 update — the ĉ→ε̂ re-inversion re-injecting network error,
-  amplified at low m by the 1/σ_c division — remains the leading candidate for that RESIDUAL. Test B
-  did NOT falsify δ-as-residual; only δ-as-wholesale-generator.
+  amplified at low m by the 1/σ_c division — is now CONFIRMED as that RESIDUAL (see RESULT below).
+  Test B did NOT falsify δ-as-residual; only δ-as-wholesale-generator.
 
 **Normal-run CSV (C2 on, 20 steps):** retained_rms dominates fresh_rms through steps 0–9 (0.79 vs
 0.27 at step 0, ~2.9×), crossing over ~step 9–10; sig_c decays 0.69→0.09. Consistent with
 schedule-level error retention.
 
-**Logger bug found + fixed:** total_steps was read as `ctx.state.get("total_steps")` but it lives
-one level deeper at `ctx.state["schedule_tail"]["total_steps"]`, so it came through as 0 →
-k_d = round(steps_n·(1−m)) collapsed to 0 for every row → all 7680 fractional rows pooled into ONE
-m-bin. The first CSV thus measured leak-vs-STEP, not leak-vs-m; the δ prediction (leak concentrates
-at low m) was untested. Fixed to `max(1, len(ctx.sigmas)−1)` (self-contained; sigmas hold steps_n+1
-entries).
+**Logger bug (fixed):** total_steps read as `ctx.state.get("total_steps")` came through 0 (it lives at
+`ctx.state["schedule_tail"]["total_steps"]`) → k_d collapsed to 0, pooling all 7680 fractional rows into
+ONE m-bin (first CSV measured leak-vs-STEP, not leak-vs-m). Fixed to `max(1, len(ctx.sigmas)−1)`.
 
-**New discriminating column `ret_clean_corr`:** the prior `leak_to_signal = retained_rms/clean_rms`
-is just ancestral SNR (naturally high at low m) and cannot isolate the artifact. The new column is
-the Pearson corr of the SIGNED retained vs clean terms across each bin's rows. Since
-retained = (r_ret/σ_c)·y − (r_ret·a/σ_c)·ĉ, the re-inverted content component anti-correlates
-retained with clean = a'·ĉ. **δ predicts ret_clean_corr strongly NEGATIVE and growing toward m→0
-(retained "noise" = re-injected content ĉ); ≈0 ⇒ white legitimate ancestral noise, δ absent as a
-residual source.**
+**Discriminating column `ret_clean_corr`** (prior `leak_to_signal = retained_rms/clean_rms` is just
+ancestral SNR): Pearson corr of the SIGNED retained vs clean terms across each bin's rows. Three
+branches were pre-registered — (1) corr grows toward m→0 ⇒ δ confirmed as the residual; (2) corr≈0 ⇒
+white ancestral noise, δ absent; (3) flat/mid-m-peak ⇒ redirect to the observer content path.
 
-### Pre-registered outcomes (next fixed-logger run)
+## RESULT — Branch 1 CONFIRMED (fixed-logger run, CSV h3bi_c2_debug-normal-2, 20 steps)
 
-1. ret_clean_corr strongly negative AND |corr| grows as k_d→steps_n (m→0): δ confirmed as the
-   RESIDUAL, concentrated at the low-m / preserved-keyframe timeline (where static is loudest) →
-   build the "persist ε̂, avoid ĉ→ε̂ re-inversion" fix targeted at low-m rows.
-2. ret_clean_corr ≈0 across bins: retained term is white noise, δ NOT the residual → pivot to
-   observer/content-axis or plant residual.
-3. ret_clean_corr negative but FLAT or mid-m-peaked (not growing toward m→0): content re-injection
-   is uniform/mid-m, matching the content-axis observer ring → redirect to the observer content path.
+Logger fix worked: k_d now bins by m (k_d 1→19 = m 0.95→0.05); `ret_clean_corr` present. **`ret_clean_corr`
+climbs MONOTONICALLY as m falls at every one of the 19 sampling steps.** Step-0 exemplar: k_d=1 (m=0.95)
+−0.07; k_d=4 (m=0.78) −0.35; k_d=10 (m=0.51) −0.13; k_d=12 (m=0.38) +0.47; k_d=14 (m=0.30) +0.88; k_d=16
+(m=0.19) +0.94; k_d=19 (m=0.05) +0.95. Stable across steps: k_d=19 holds ~+0.94 step 0→18; k_d=1 hovers
+near 0. Terminal step 19: retained=0 (leak_coeff=1) → corr=0 trivially.
+- **Branch 2 (white noise, corr≈0) FALSIFIED:** at low m the retained "noise" is +0.94 correlated with
+  clean content ⇒ it IS content, not noise.
+- **Branch 3 (flat / mid-m peak) FALSIFIED:** clean monotonic climb toward low m.
+
+**SIGN CORRECTION (sharpens the mechanism).** Pre-registration predicted strongly NEGATIVE corr (retained
+anti-correlating via the `−a·ĉ` term). Reality is strongly POSITIVE. `retained = (r_ret/σ_c)·(y − a·ĉ)`
+correlating POSITIVELY with `clean = a'·ĉ` ⇒ the `a·ĉ` term is TOO SMALL to cancel y's content at low m:
+the ε̂ inversion UNDER-subtracts the clean signal, so ε̂ ≈ y/σ_c carries content POSITIVELY, and the 1/σ_c
+division AMPLIFIES the leftover at small σ_c. **Confirmed mechanism: content (+ network error δ) leaks into
+ε̂ via under-cancellation at low σ_c, amplified by 1/σ_c, re-injected as the retained term every step →
+low-m preserved-keyframe static.** Magnitude: retained_rms ≈ 0.03–0.15 vs clean_rms ≈ 1–8 at k_d≥16 (a few
+% per step) but STRUCTURED/coherent ⇒ 19 steps accumulate it into audible static instead of averaging out.
+Matches "original voice legible under static" and the 0–0.25 s quiet / 0.25–1.5 s static timeline (corr
+high AND retained magnitude larger at k_d≈14–16).
 
 ## Competing explanation
 
@@ -100,9 +98,14 @@ T1 "1.5–2.0 s sounds like the ORIGINAL." Neither δ nor the mode-independent e
 return-to-source mid-ramp. Either the ear reads low static as "original," or there is a real null at
 m≈0.5 (a≈a', σ_c'/σ_c≈1). Needs a spectrogram to settle.
 
-## Candidate fix (if δ survives as residual)
+## Fix direction (δ-residual CONFIRMED; needs a Fable design pass for exact packed-axis algebra)
 
-"Persist ε̂ as sampler state; never re-derive it by inverting ĉ within the step." Book
-x' = a'·ĉ + σ_c'·ε̂_stored so the δ terms cancel. Stochasticity untouched (η still blends fresh noise
-when η<1). Respects the hard constraint: do NOT disable/eta-gate stochastic noise. **PROPOSED,
-UNVERIFIED — awaiting the fixed-logger ret_clean_corr run.**
+Stop re-deriving retained noise by inverting ĉ. Either persist the actual injected stochastic noise as
+sampler state and carry IT forward, or reformulate the packed update so y's content cancels ĉ's content
+exactly (retained carries only the true residual). Stochasticity untouched — respects the hard constraint:
+do NOT disable/eta-gate stochastic noise. Pre-registered expectation for the fix: low-m `ret_clean_corr`
+collapses toward ~0 (retained becomes noise-like), audible low-m static drops to the euler floor, high-m
+rows unchanged (already corr≈0). Design pending (fable-ancestral-design).
+
+**Status:** δ-reinjection-as-RESIDUAL CONFIRMED as the low-m static mechanism (content re-injection via
+ε̂ under-cancellation + 1/σ_c amplification). δ-as-generator stays FALSIFIED (Test B).
