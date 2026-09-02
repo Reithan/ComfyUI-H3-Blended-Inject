@@ -1,7 +1,6 @@
-<!-- provenance: bug (Bug F wiring: ATTRIBUTED retrodiction post-#32; plant-axis: SHIPPED commits
-     3e82dba+e3ec742 / FALSIFIED fade-audio GPU 2026-09-01; content-axis: GPU PARTIAL 2026-09-01;
-     C2 durable port: DECISION 2026-09-01 GPU pending) -->
-<!-- verified: 2026-09-01 (branch fix-euler-ancestral-per-row-renoise) · content-axis GPU PARTIAL — ring narrowed mid-m; euler UNCHANGED; C2 durable port decided -->
+<!-- provenance: bug (Bug F: ATTRIBUTED retrodiction post-#32; plant-axis: SHIPPED+FALSIFIED GPU 2026-09-01;
+     content-axis: GPU PARTIAL 2026-09-01; C2 durable port: GPU CONFIRMED; round-8 anchor fix fe0343a+91078cc, GPU pending) -->
+<!-- verified: 2026-09-01 (branch fix-euler-ancestral-per-row-renoise) · C2 durable port GPU CONFIRMED; residual localized low-m band (round 8); anchor fix fe0343a+91078cc -->
 # euler_ancestral per-row fix — index
 
 Design and shipped record for the combined fix that clears both `euler_ancestral` per-row
@@ -43,14 +42,15 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 | Plant-axis fix (PR #32, commits 3e82dba+e3ec742) | SHIPPED; FALSIFIED for fade-audio GPU 2026-09-01 |
 | Content-axis fix (PR #32 revised, commits 4644fcf+e4a9940) | SHIPPED; GPU PARTIAL — ring narrowed mid-m; both ends clean; hiss shorter |
 | Euler regression check | CONFIRMED CLEAN GPU 2026-09-01 (prime_side_stream shared path; no regression) |
-| Fade-audio hiss | OPEN — C2 durable port is LEADING NEXT STEP (GPU pending; see c2-durable-port.md) |
-| C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED (residual: single mid-fade crackle, under evaluation) |
+| Fade-audio hiss | OPEN — audio band anchor fix pending GPU; see audio-anchor-scale.md |
+| C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED; residual localized low-m band (round 8); anchor fix fe0343a+91078cc implemented |
 
 ## Child docs
 
 - [plant-axis.md](euler-ancestral-per-row-fix/plant-axis.md) — plant-axis fix record + GPU FALSIFICATION + bypass sub-theory refutation + Bug B refinement
 - [content-axis.md](euler-ancestral-per-row-fix/content-axis.md) — content-axis observer fix (GPU PARTIAL 2026-09-01; residual stochastic-only)
-- [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md) — C2 carry-compression durable port: Fable round-5 verdict, mechanism, decision, spec (GPU pending)
+- [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md) — C2 carry-compression durable port: Fable round-5 verdict, mechanism, decision, spec (GPU CONFIRMED; residual localized low-m band)
+- [audio-anchor-scale.md](euler-ancestral-per-row-fix/audio-anchor-scale.md) — round-8: hot audio band anchor theory, impl (fe0343a+91078cc), GPU plan
 
 ## Co-location verdict (resolves earlier mis-attribution)
 

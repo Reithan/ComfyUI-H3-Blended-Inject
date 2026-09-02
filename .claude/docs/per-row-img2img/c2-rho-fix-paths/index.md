@@ -66,3 +66,6 @@ the C2 carry-compression error (Fable round-5). User decided to port the exact g
 correction into the durable `_euler_ancestral_rf_step`, folded into PR #32. This reverses the
 "C2/ancestral experiments stay proto-only" policy from the durable-base cut. Full spec:
 [../euler-ancestral-per-row-fix/c2-durable-port.md](../euler-ancestral-per-row-fix/c2-durable-port.md).
+C2 durable port GPU CONFIRMED (commits e3e167f+parent). Residual localized to low-m band (round 8);
+anchor fix implemented fe0343a+91078cc, GPU pending:
+[../euler-ancestral-per-row-fix/audio-anchor-scale.md](../euler-ancestral-per-row-fix/audio-anchor-scale.md).

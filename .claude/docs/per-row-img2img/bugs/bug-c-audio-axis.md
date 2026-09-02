@@ -13,8 +13,9 @@ for the current fix design.
 Content-axis fix SHIPPED PR #32 revised commits 4644fcf+e4a9940 (GPU PARTIAL 2026-09-01 —
 ring narrowed mid-m; both ends clean; hiss shorter; euler UNCHANGED).
 Plant-axis fix FALSIFIED for fade-audio (GPU 2026-09-01, single-frame clean / fade hiss persists).
-C2 durable port GPU CONFIRMED (user 2026-09-01, PR #32; residual: single mid-fade crackle under evaluation) — see
-[../euler-ancestral-per-row-fix/c2-durable-port.md](../euler-ancestral-per-row-fix/c2-durable-port.md).
+C2 durable port GPU CONFIRMED (user 2026-09-01, PR #32; residual localized: low-m band ≈0.75–1.0 s;
+anchor fix implemented fe0343a+91078cc, GPU pending) — see
+[../euler-ancestral-per-row-fix/audio-anchor-scale.md](../euler-ancestral-per-row-fix/audio-anchor-scale.md).
 
 **Co-location note (2026-09-01):** Bug C is TIMELINE-WIDE — all audio rows are m=1 in drop mode
 (`audio_denoise=1.0`); `sig_a≠carrier` applies uniformly, not just to inject-local rows. So

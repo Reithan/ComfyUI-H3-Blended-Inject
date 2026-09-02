@@ -1,5 +1,5 @@
-<!-- provenance: theory + decision (user 2026-09-01) + SHIPPED (commits e3e167f+parent, GPU A/B CONFIRMED partial) -->
-<!-- verified: 2026-09-01 — Fable round-6 term-for-term re-affirmation; shipped e3e167f; 98 CPU tests pass; GPU A/B CONFIRMED partial (mid-fade crackle residual) -->
+<!-- provenance: theory + decision (user 2026-09-01) + SHIPPED (commits e3e167f+parent, GPU A/B CONFIRMED; round-8 anchor fix fe0343a+91078cc, GPU pending) -->
+<!-- verified: 2026-09-01 — Fable round-6 re-affirmation; shipped e3e167f; 98 CPU tests pass; GPU CONFIRMED partial (residual localized low-m band, round 8; anchor fix fe0343a+91078cc pending) -->
 # C2 carry-compression durable port — PR #32 decision
 
 Decision record and implementation spec for porting the C2 x0/trajectory correction into the
@@ -139,11 +139,10 @@ coefficient; 98 sampler tests total pass. ruff clean.
 ## GPU result (2026-09-01)
 
 C2 durable port CONFIRMED: mid-fade audio noise now much shorter and quieter (ladder precedent
-held, loud→faint). Residual has CHANGED CHARACTER: a single point-like 'crackle' at mid-fade —
-a discontinuity at one audio tick/step, not a sustained per-step ring.
+held, loud→faint). Residual changed character to a brief crackle.
 
-Under evaluation (Fable round 7): point-like candidates — dense-grid k_d round() boundary at
-m≈0.5 between adjacent audio rows; frac_audio gate flip for a row at one step; one-step c_fresh
-clamp-to-zero / ill-conditioned (1−sd); observer content-ratio clamp saturation; one-shot i=0
-plant transient; A/V join / 17-frame grid reset landing mid-fade. v6 (m=0 context heat)
-deferred — it addressed a sustained residual at the m=0 fade ends, not a mid-fade point event.
+**Residual localization revised (round 8):** the 1 s fade was too coarse to localize. With a
+91-f fade (same seed/euler_a), the residual spans ≈0.75–1.0 s → m ≈ 0.11–0.18 BAND at LOW m,
+NOT a mid-fade point. All C2-path singularities at m≈0.1–0.2 checked benign.
+Top candidate: audio band anchor `h_clean` S× too hot; fix implemented fe0343a+91078cc.
+Full analysis and GPU plan: [audio-anchor-scale.md](audio-anchor-scale.md).
