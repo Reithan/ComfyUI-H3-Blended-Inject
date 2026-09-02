@@ -45,8 +45,10 @@ imports stay lazy so this module loads without a ComfyUI environment.
 
 from __future__ import annotations
 
+import csv
 import inspect
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -72,6 +74,91 @@ C2_DISABLE_ENV = "H3BI_DISABLE_C2"
 def _c2_enabled() -> bool:
     """C2 audio carry correction is ON unless ``H3BI_DISABLE_C2`` is exactly ``"1"``."""
     return os.environ.get(C2_DISABLE_ENV, "0") != "1"
+
+
+#: Diagnostic δ-leak logger (round-10 Option 3).  ``H3BI_C2_DEBUG`` unset → off; ``"1"`` → default
+#: temp CSV; any other value is used verbatim as the CSV path.  Dumps, per (step, k_d bin) over the
+#: fractional-AUDIO rows, the RMS of the C2 update's retained term ``r_ret·ε̂`` (carries the δ leak),
+#: the fresh term ``c_fresh·noise`` (theory: ≈0 at η=1), the clean term ``a'·ĉ``, and the leak
+#: coefficient ``1 − σ_c'/σ_c``.  δ-reinjection predicts leak_to_signal grows as m→0.  Reads the
+#: mechanism straight out of the sampler — no audio export.  See wiki delta-reinjection.md.
+C2_DEBUG_ENV = "H3BI_C2_DEBUG"
+
+
+def _c2_debug_path() -> str | None:
+    """CSV path for the C2 δ-leak diagnostic, or ``None`` when logging is off."""
+    val = os.environ.get(C2_DEBUG_ENV)
+    if not val:
+        return None
+    if val == "1":
+        return os.path.join(tempfile.gettempdir(), "h3bi_c2_debug.csv")
+    return val
+
+
+def _c2_debug_log(
+    path: str,
+    step: int,
+    m: torch.Tensor,
+    frac_mask: torch.Tensor,
+    terms: dict[str, torch.Tensor],
+    steps_n: int,
+) -> None:
+    """Append per-(step, k_d bin) δ-leak stats for fractional-audio rows to ``path`` (CSV).
+
+    Rows are grouped by ``k_d = round(steps_n·(1−m))`` (the discrete denoise-step count, ≤ steps_n
+    bins) so the file stays compact.  Each term is reduced to an RMS over the rows in the bin.
+    """
+    sel = torch.broadcast_to(frac_mask, terms["clean"].shape)
+    if not bool(sel.any()):
+        return
+    m_sel = torch.broadcast_to(m, sel.shape)[sel]
+    k_d = torch.round(steps_n * (1.0 - m_sel)).clamp(0, max(steps_n, 1)).to(torch.long)
+    retained = terms["retained"][sel].abs()
+    fresh = terms["fresh"][sel].abs()
+    clean = terms["clean"][sel].abs()
+    sig_c = terms["sig_c"][sel]
+    sig_c_next = terms["sig_c_next"][sel]
+    leak = 1.0 - sig_c_next / sig_c.clamp(min=1e-8)
+
+    def _rms(t: torch.Tensor, b: torch.Tensor) -> float:
+        return float((t[b] ** 2).mean().clamp(min=0.0).sqrt())
+
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="") as fh:
+        writer = csv.writer(fh)
+        if write_header:
+            writer.writerow(
+                [
+                    "step",
+                    "k_d",
+                    "n",
+                    "m_mean",
+                    "sig_c_mean",
+                    "leak_coeff_mean",
+                    "retained_rms",
+                    "fresh_rms",
+                    "clean_rms",
+                    "leak_to_signal",
+                ]
+            )
+        for kd in torch.unique(k_d).tolist():
+            b = k_d == kd
+            ret_rms = _rms(retained, b)
+            cln_rms = _rms(clean, b)
+            writer.writerow(
+                [
+                    step,
+                    kd,
+                    int(b.sum()),
+                    round(float(m_sel[b].mean()), 6),
+                    round(float(sig_c[b].mean()), 6),
+                    round(float(leak[b].mean()), 6),
+                    round(ret_rms, 8),
+                    round(_rms(fresh, b), 8),
+                    round(cln_rms, 8),
+                    round(ret_rms / cln_rms if cln_rms > 0 else 0.0, 6),
+                ]
+            )
 
 
 def scale_packed_audio(
@@ -612,6 +699,8 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     if ctx.audio_mask is not None and ctx.audio_scale != 1.0 and _c2_enabled():
         frac_audio = ctx.audio_mask & (ctx.sig_row > 0.0) & (ctx.sig_row < ctx.sig_g)
         if bool(frac_audio.any()):
+            dbg_path = _c2_debug_path()
+            terms: dict[str, torch.Tensor] | None = {} if dbg_path else None
             x_c2 = _c2_audio_ancestral_update(
                 ctx.x_prev,
                 v,
@@ -624,8 +713,20 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
                 ctx.audio_scale,
                 eta,
                 None if noise is None else noise * s_noise,
+                terms=terms,
             )
             x = torch.where(frac_audio, x_c2, x)
+            if dbg_path and terms is not None:  # pragma: no cover - diagnostic-only wiring
+                m_dev = ctx.state.get("m_dev")
+                if m_dev is not None:
+                    _c2_debug_log(
+                        dbg_path,
+                        ctx.i,
+                        m_dev,
+                        frac_audio,
+                        terms,
+                        int(ctx.state.get("total_steps", 0)),
+                    )
     return x
 
 
@@ -641,6 +742,7 @@ def _c2_audio_ancestral_update(
     S: float,
     eta: float,
     noise: torch.Tensor | None,
+    terms: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Exact RF-ancestral update for a fractional audio row on its true packed axis (C2 port).
 
@@ -671,10 +773,20 @@ def _c2_audio_ancestral_update(
     eps_hat = (y - a * c_hat) / sig_c
     sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
     r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
-    x = a_next * c_hat + r_ret * eps_hat
+    clean_term = a_next * c_hat
+    retained_term = r_ret * eps_hat
+    x = clean_term + retained_term
+    fresh_term = torch.zeros_like(c_hat)
     if noise is not None and eta > 0:
         c_fresh = torch.sqrt(torch.clamp(sig_c_next**2 - r_ret**2, min=0.0))
-        x = x + noise * c_fresh
+        fresh_term = noise * c_fresh
+        x = x + fresh_term
+    if terms is not None:
+        terms["retained"] = retained_term
+        terms["clean"] = clean_term
+        terms["fresh"] = fresh_term
+        terms["sig_c"] = sig_c
+        terms["sig_c_next"] = sig_c_next
     return x
 
 

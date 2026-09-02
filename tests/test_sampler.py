@@ -24,9 +24,12 @@ from hypothesis import strategies as st
 from comfyui_h3_blended_inject.observer_split import _embed_ratio
 from comfyui_h3_blended_inject.sampler import (
     _NATIVE_ROW_STEPS,
+    C2_DEBUG_ENV,
     C2_DISABLE_ENV,
     _audio_observer_ratio,
     _c2_audio_ancestral_update,
+    _c2_debug_log,
+    _c2_debug_path,
     _c2_enabled,
     _clean_at_model_scale,
     _euler_ancestral_rf_step,
@@ -1941,3 +1944,109 @@ class TestC2DisableEnv:
         for val in ("0", "", "true", "on", "2"):
             monkeypatch.setenv(C2_DISABLE_ENV, val)
             assert _c2_enabled() is True, val
+
+
+class TestC2DebugPath:
+    """``H3BI_C2_DEBUG`` resolves to a CSV path (or None when off)."""
+
+    def test_unset_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(C2_DEBUG_ENV, raising=False)
+        assert _c2_debug_path() is None
+
+    def test_empty_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(C2_DEBUG_ENV, "")
+        assert _c2_debug_path() is None
+
+    def test_one_is_tempdir_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(C2_DEBUG_ENV, "1")
+        p = _c2_debug_path()
+        assert p is not None and p.endswith("h3bi_c2_debug.csv")
+
+    def test_custom_path_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(C2_DEBUG_ENV, "/tmp/my_c2.csv")
+        assert _c2_debug_path() == "/tmp/my_c2.csv"
+
+
+class TestC2AudioAncestralTerms:
+    """``terms=`` out-dict is populated without changing the numeric result."""
+
+    def _args(self) -> tuple:
+        y = torch.randn(1, 4)
+        v = torch.randn(1, 4)
+        s = torch.tensor([[0.0, 0.3, 0.6, 1.0]])
+        s_next = s * 0.5
+        g = torch.tensor([[1.0, 1.0, 1.0, 1.0]])
+        g_next = g * 0.5
+        sigma = torch.tensor(0.8)
+        sigma_next = torch.tensor(0.4)
+        return (y, v, s, s_next, g, g_next, sigma, sigma_next, 4.0, 1.0, torch.randn(1, 4))
+
+    def test_terms_do_not_change_result(self) -> None:
+        args = self._args()
+        base = _c2_audio_ancestral_update(*args)
+        terms: dict[str, torch.Tensor] = {}
+        withd = _c2_audio_ancestral_update(*args, terms=terms)
+        assert torch.allclose(base, withd, atol=1e-7)
+
+    def test_terms_keys_and_shapes(self) -> None:
+        args = self._args()
+        terms: dict[str, torch.Tensor] = {}
+        _c2_audio_ancestral_update(*args, terms=terms)
+        for key in ("retained", "clean", "fresh", "sig_c", "sig_c_next"):
+            assert key in terms, key
+            assert terms[key].shape == args[0].shape
+
+    def test_fresh_zero_when_noise_none(self) -> None:
+        y, v, s, s_next, g, g_next, sig, sig_n, S, eta, _ = self._args()
+        terms: dict[str, torch.Tensor] = {}
+        _c2_audio_ancestral_update(
+            y, v, s, s_next, g, g_next, sig, sig_n, S, eta, None, terms=terms
+        )
+        assert torch.allclose(terms["fresh"], torch.zeros_like(terms["fresh"]))
+
+
+class TestC2DebugLog:
+    """``_c2_debug_log`` writes a compact per-(step, k_d) CSV for fractional-audio rows."""
+
+    def test_writes_header_and_binned_rows(self, tmp_path: Any) -> None:
+        import csv as _csv
+
+        path = str(tmp_path / "c2.csv")
+        m = torch.tensor([[0.0, 0.1, 0.1, 0.9]])  # two rows share k_d, one distinct
+        frac_mask = torch.tensor([[False, True, True, True]])
+        terms = {
+            "retained": torch.tensor([[0.0, 2.0, 2.0, 0.1]]),
+            "clean": torch.tensor([[1.0, 4.0, 4.0, 4.0]]),
+            "fresh": torch.zeros(1, 4),
+            "sig_c": torch.tensor([[1.0, 0.5, 0.5, 0.9]]),
+            "sig_c_next": torch.tensor([[0.5, 0.25, 0.25, 0.45]]),
+        }
+        _c2_debug_log(path, step=3, m=m, frac_mask=frac_mask, terms=terms, steps_n=10)
+
+        with open(path) as fh:
+            rows = list(_csv.DictReader(fh))
+        # Only the 3 fractional rows contribute; k_d = round(10*(1-m)).
+        assert {int(r["k_d"]) for r in rows} == {9, 1}  # m=0.1→9, m=0.9→1
+        kd9 = next(r for r in rows if int(r["k_d"]) == 9)
+        assert int(kd9["n"]) == 2
+        # retained_rms / clean_rms = 2/4 = 0.5 for the low-m bin.
+        assert abs(float(kd9["leak_to_signal"]) - 0.5) < 1e-6
+
+    def test_appends_without_reheader(self, tmp_path: Any) -> None:
+        path = str(tmp_path / "c2.csv")
+        m = torch.tensor([[0.2]])
+        frac_mask = torch.tensor([[True]])
+        terms = {
+            "retained": torch.tensor([[1.0]]),
+            "clean": torch.tensor([[2.0]]),
+            "fresh": torch.zeros(1, 1),
+            "sig_c": torch.tensor([[0.5]]),
+            "sig_c_next": torch.tensor([[0.25]]),
+        }
+        _c2_debug_log(path, 0, m, frac_mask, terms, 10)
+        _c2_debug_log(path, 1, m, frac_mask, terms, 10)
+        with open(path) as fh:
+            lines = fh.read().strip().splitlines()
+        assert lines[0].startswith("step,")  # single header
+        assert sum(1 for ln in lines if ln.startswith("step,")) == 1
+        assert len(lines) == 3  # header + 2 data rows
