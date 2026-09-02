@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — c_fresh ≡0 claim corrected (nonzero at η=1); see euler-ancestral-per-row-fix/delta-reinjection.md.
+Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — Test B falsifies δ-as-generator (δ-as-residual open); logger total_steps + ret_clean_corr fixes; see euler-ancestral-per-row-fix/delta-reinjection.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +

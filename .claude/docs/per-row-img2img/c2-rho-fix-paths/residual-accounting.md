@@ -142,17 +142,19 @@ that mostly re-confirms the euler overturn).**
   magnitude, not the curved-self/linear-obs split). See
   [stock-mask-remap-port.md](stock-mask-remap-port.md).
 
-**Gate-mismatch tension.** Config `0/0/49/73` has ramp=24 ≪ Bug E's GPU-confirmed ~51 threshold, so
-Bug E's OWN gate predicts CLEAN — yet 5-step deterministic noise is present. Same-mechanism
-identification requires "sub-threshold residue everywhere, runaway only in the gate" — plausible but
-UNPROVEN. Bug E stays STILL RULED OUT as the direct cause; this records the tension, not a reversal.
+**Gate-mismatch tension.** Config `0/0/49/73` ramp=24 ≪ Bug E's ~51 threshold; its own gate predicts
+CLEAN yet 5-step deterministic noise is present. "Sub-threshold residue everywhere, runaway only in
+the gate" is plausible but UNPROVEN. Bug E stays RULED OUT as direct cause; tension noted.
 
-**Naturalization caveat.** "The model absorbs the injected noise" was NOT in the wiki before today's
-overturn — it is today's naturalization finding (high steps naturalize the deterministic error into
-diegetic sound), not prior doctrine.
+**Naturalization caveat.** High steps naturalize the deterministic injection error into diegetic
+sound (2026-08-31 finding); not prior doctrine.
+
+**NEW (round 10) — δ re-injection (C2-internal, audio-only, UNVERIFIED):** network clean-estimate
+error δ leaks m-graded static at low m; outranked by the mode-independent injection error above
+(audio-only — cannot explain video or euler noise). Detail:
+[../euler-ancestral-per-row-fix/delta-reinjection.md](../euler-ancestral-per-row-fix/delta-reinjection.md).
 
 ## Confidence + next action
-Overturn + code fact: HIGH (direct GPU + source read). Attribution of the deterministic error's
-mechanism: the Fable endgame re-derivation (separate thread) owns it — this doc records the finding
-only. Next action = that re-derivation (unified carry correction in `_euler_step` + video-noise
-mechanism + the right next discriminator); do NOT build v7 as primary.
+Overturn: HIGH (direct GPU + source read). Mechanism attribution: Fable re-derivation (separate
+thread). Next = unified carry correction in `_euler_step` + video-noise mechanism; do NOT build
+v7 as primary.

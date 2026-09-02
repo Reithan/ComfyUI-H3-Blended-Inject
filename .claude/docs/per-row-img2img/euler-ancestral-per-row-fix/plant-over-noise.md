@@ -1,5 +1,5 @@
-<!-- provenance: theory (GPU-UNVERIFIED — fix = PLANT_AXIS revert to "row", awaiting GPU) -->
-<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · runs 0-3 recorded; fix approved by user; GPU pending -->
+<!-- provenance: confirmed (muffling fix GPU CONFIRMED round 10; static falsified as plant-caused) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-10: PLANT_AXIS "row" revert GPU confirmed — muffling fixed, static persists 0.25–1.5 s (not plant-caused) -->
 # Plant-over-noise: PLANT_AXIS "v" untruthful under C2 — round 9
 
 Round-9 analysis by Fable (`fable-ancestral-design`) and claude-opus-4-8 review/impl.
@@ -108,3 +108,17 @@ plant == σ_a composite == euler's; ≠ σ_v composite. Run fail-then-pass to ve
 
 Model predicts audible shoulders at ~0.55–0.75 s (rows 4–5) and ~1.0–1.1 s (row 8) that
 the user described as "contained" to 0.75–1.0 s. A spectrogram would settle it.
+
+## Round-10 update (GPU T1 result, 2026-09-02)
+
+- **Muffling CONFIRMED fixed:** PLANT_AXIS="row" revert removed the upper-band muffling.
+  This doc's root-cause analysis is validated.
+- **Static FALSIFIED as plant-caused:** over-noise was masking static by converting it to
+  muffling. Truthful "row" plant leaves the static raw: louder and wider (0.75–1.0 s peak
+  expands to 0.25–1.5 s band). The plant axis only redistributes the energy; neither setting
+  addresses the source.
+- **New theory (refined round-10 Test B):** the remaining static is a candidate for δ re-injection
+  operating WITHIN the C2 update (audio-only, clean-estimate error leak at low m) — NOT C2-generated.
+  Test B (`H3BI_DISABLE_C2=1`) made the static WORSE → C2 is net-corrective; δ-as-generator falsified,
+  δ-as-residual open. Mode-independent injection error (residual-accounting.md) may outrank it. See
+  [delta-reinjection.md](delta-reinjection.md) for the full round-10 record.
