@@ -55,6 +55,9 @@ v5 held that a one-shot `i==0` init change self-corrects. Nuance: init changes s
 when the new start stays ON the labeled trajectory. Request A moved the start OFF the σ_row
 trajectory (planted at m·σ_g, integrated on the σ_row tail), so the deterministic euler ODE lands
 at a BIASED fixed point — the tint persists. Not a contradiction; a boundary condition on v5.
+A second boundary condition (round 9): the above self-correction holds only for the CLEAN term;
+the NOISE term of the i=0 plant is retained by the ancestral chain and persists across all steps.
+See [../../euler-ancestral-per-row-fix/plant-over-noise.md](../../euler-ancestral-per-row-fix/plant-over-noise.md).
 
 ## FORWARD OPTIONS (candidates — do NOT pick here)
 

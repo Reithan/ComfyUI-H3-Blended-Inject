@@ -62,6 +62,13 @@ These tie to GPU rungs untouched by the overturn:
 - **NOT init-state-driven.** v5 corrected the i==0 ~S× over-plant exactly; GPU showed no change ⇒ the
   DiT self-corrects one-shot state errors early. COROLLARY: only PERSISTENT, re-applied-every-step
   errors can sustain the residual.
+
+  *(Round-9 boundary condition, 2026-09-02): the COROLLARY holds for the CLEAN coefficient (Ĉ
+  is re-estimated by the network every step). It is FALSE for the NOISE coefficient: stock
+  RF-ancestral's r_ret·ε̂ term carries the initial noise level forward every step, relaxing only
+  through the fresh-noise fraction (F² → ρ²F² + (1−ρ²); e.g. F=1.96→1.39 by i=10 at k_d 17).
+  An i=0 over-plant on the NOISE axis therefore PERSISTS across all steps.
+  Full record: [../euler-ancestral-per-row-fix/plant-over-noise.md](../euler-ancestral-per-row-fix/plant-over-noise.md).*
 - **m=0 audio-context heat is a real contributor.** v6 presents frozen audio rows at
   `clean/(1+(S−1)·sig_g)` instead of `S·A` (native `scale_latent_inpaint` `1/(S·k)`,
   model_base.py:2262-2266); GPU quieter than v4.
