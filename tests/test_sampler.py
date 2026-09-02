@@ -2032,6 +2032,27 @@ class TestC2DebugLog:
         # retained_rms / clean_rms = 2/4 = 0.5 for the low-m bin.
         assert abs(float(kd9["leak_to_signal"]) - 0.5) < 1e-6
 
+    def test_ret_clean_corr_captures_anticorrelation(self, tmp_path: Any) -> None:
+        import csv as _csv
+
+        path = str(tmp_path / "c2.csv")
+        # Two rows share a k_d bin; signed retained perfectly anti-correlates with signed clean
+        # (the δ-reinjection signature).  Pearson corr over the bin must be −1.
+        m = torch.tensor([[0.1, 0.1]])
+        frac_mask = torch.tensor([[True, True]])
+        terms = {
+            "retained": torch.tensor([[1.0, -1.0]]),
+            "clean": torch.tensor([[-2.0, 2.0]]),
+            "fresh": torch.zeros(1, 2),
+            "sig_c": torch.tensor([[0.5, 0.5]]),
+            "sig_c_next": torch.tensor([[0.25, 0.25]]),
+        }
+        _c2_debug_log(path, step=0, m=m, frac_mask=frac_mask, terms=terms, steps_n=10)
+        with open(path) as fh:
+            rows = list(_csv.DictReader(fh))
+        assert "ret_clean_corr" in rows[0]
+        assert abs(float(rows[0]["ret_clean_corr"]) - (-1.0)) < 1e-6
+
     def test_appends_without_reheader(self, tmp_path: Any) -> None:
         path = str(tmp_path / "c2.csv")
         m = torch.tensor([[0.2]])

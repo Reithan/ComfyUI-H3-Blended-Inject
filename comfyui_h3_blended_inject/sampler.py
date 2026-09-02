@@ -81,8 +81,11 @@ def _c2_enabled() -> bool:
 #: fractional-AUDIO rows, the RMS of the C2 update's retained term ``r_ret·ε̂`` (carries the δ leak),
 #: the fresh term ``c_fresh·noise`` (NONZERO at η=1 — sd = σ_c'²/σ_c, so r_ret = σ_c'²/σ_c and
 #: c_fresh = √(σ_c'²−r_ret²) > 0; it →0 only as m→0), the clean term ``a'·ĉ``, and the leak
-#: coefficient ``1 − σ_c'/σ_c``.  δ-reinjection predicts leak_to_signal grows as m→0.  Reads the
-#: mechanism straight out of the sampler — no audio export.  See wiki delta-reinjection.md.
+#: coefficient ``1 − σ_c'/σ_c``, plus ``ret_clean_corr`` — the Pearson corr of the SIGNED retained
+#: vs clean terms across the bin's rows.  δ-reinjection predicts ``ret_clean_corr`` is strongly
+#: NEGATIVE and grows toward m→0 (retained noise = re-injected content ĉ, not white noise);
+#: ≈0 ⇒ legitimate ancestral noise, δ absent.  Reads the mechanism straight out of the sampler —
+#: no audio export.  See wiki delta-reinjection.md.
 C2_DEBUG_ENV = "H3BI_C2_DEBUG"
 
 
@@ -114,15 +117,33 @@ def _c2_debug_log(
         return
     m_sel = torch.broadcast_to(m, sel.shape)[sel]
     k_d = torch.round(steps_n * (1.0 - m_sel)).clamp(0, max(steps_n, 1)).to(torch.long)
-    retained = terms["retained"][sel].abs()
+    retained_s = terms["retained"][sel]
+    clean_s = terms["clean"][sel]
+    retained = retained_s.abs()
     fresh = terms["fresh"][sel].abs()
-    clean = terms["clean"][sel].abs()
+    clean = clean_s.abs()
     sig_c = terms["sig_c"][sel]
     sig_c_next = terms["sig_c_next"][sel]
     leak = 1.0 - sig_c_next / sig_c.clamp(min=1e-8)
 
     def _rms(t: torch.Tensor, b: torch.Tensor) -> float:
         return float((t[b] ** 2).mean().clamp(min=0.0).sqrt())
+
+    def _corr(a: torch.Tensor, c: torch.Tensor, b: torch.Tensor) -> float:
+        """Pearson corr of the SIGNED retained vs clean terms across the rows in bin ``b``.
+
+        δ-reinjection makes ``retained`` carry a ``−(r_ret·a/σ_c)·ĉ`` component, anti-correlating
+        it with ``clean = a'·ĉ``.  Strongly negative (and growing as m→0) ⇒ the retained "noise" is
+        re-injected content estimate, not white ancestral noise.  ≈0 ⇒ legitimate noise, δ absent.
+        """
+        x = a[b]
+        y = c[b]
+        if x.numel() < 2:
+            return 0.0
+        xm = x - x.mean()
+        ym = y - y.mean()
+        denom = float(xm.norm() * ym.norm())
+        return float((xm * ym).sum() / denom) if denom > 0 else 0.0
 
     write_header = not os.path.exists(path)
     with open(path, "a", newline="") as fh:
@@ -140,6 +161,7 @@ def _c2_debug_log(
                     "fresh_rms",
                     "clean_rms",
                     "leak_to_signal",
+                    "ret_clean_corr",
                 ]
             )
         for kd in torch.unique(k_d).tolist():
@@ -158,6 +180,7 @@ def _c2_debug_log(
                     round(_rms(fresh, b), 8),
                     round(cln_rms, 8),
                     round(ret_rms / cln_rms if cln_rms > 0 else 0.0, 6),
+                    round(_corr(retained_s, clean_s, b), 6),
                 ]
             )
 
