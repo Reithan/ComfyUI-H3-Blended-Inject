@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `replace-c2-with-native-audio-composite`) — design decision: drop the C2 audio apparatus, route audio fades through the official mask composite (video-only crack); see per-row-img2img/audio-native-composite.md.
+Last updated: 2026-09-02 (branch `replace-c2-with-native-audio-composite`) — GPU-confirmed: dropping C2 and routing audio fades through the official mask composite is clean under euler_ancestral; see per-row-img2img/audio-native-composite.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +

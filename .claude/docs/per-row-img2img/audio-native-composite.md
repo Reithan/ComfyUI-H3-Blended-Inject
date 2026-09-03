@@ -1,6 +1,16 @@
-<!-- provenance: status + theory (design decision, UNVERIFIED — CPU/GPU pending; supersedes the C2 audio line) -->
-<!-- verified: 2026-09-02 (branch replace-c2-with-native-audio-composite) · comfy-ref source-grounded -->
+<!-- provenance: confirmed (GPU-verified 2026-09-02 — supersedes the C2 audio line) -->
+<!-- verified: 2026-09-02 (branch replace-c2-with-native-audio-composite) · GPU-confirmed clean · comfy-ref source-grounded -->
 # Audio fades → the official ComfyUI mask composite (drop C2)
+
+## GPU verification (2026-09-02, `euler_ancestral`)
+
+- Initial run (same config as prior "spectrogram5"): clean VIDEO **and** clean AUDIO — no
+  static/hiss. The C2 static is gone without the C2 apparatus.
+- Re-ran with the fade envelope at markers 0/0/49/73 (start_fade_in=0, start_keyframes=0,
+  end_keyframes=49, end_fade_out=73): still clean video and audio.
+- Confirms the direction: axis-blind audio (m=1, σ_v axis) + official `KSamplerX0Inpaint`
+  composite via `noise_mask`, dropping the σ_a per-row audio path, kills the ancestral audio
+  static. Video (per-row engine + clean-K/V splice, incl. fractional ancestral rows) stays clean.
 
 ## Core decision
 
