@@ -52,6 +52,10 @@ directly (`/tmp/env_check.py`, `PYTHONPATH=.`):
 - **Keep the +0.5 trap as a general warning for linear/eased 1-frame injects:** consider
   auto-degenerating the envelope (or forcing `none`) when `source_length==1`.
 
+Durable single-still marker guidance (correct spelling `0/0/1/1` + `none`, and why `0/0/0/0` is a
+coincidence not a real hold) now lives in
+[envelope-half-open-model](../envelope-half-open-model.md).
+
 ## Where this thread continues
 
 Findings 7–10 (mechanism trace, the code-identical-prefix puzzle, the min_denoise=0.0 no-op correction,

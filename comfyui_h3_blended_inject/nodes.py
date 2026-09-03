@@ -313,11 +313,12 @@ def _run_sampler(  # pragma: no cover
         import warnings as _warnings
 
         _warnings.warn(
-            f"H3InjectSampler: sampler '{sampler_name}' is stochastic (ancestral/SDE). "
-            "Per-row img2img compression is NOT scale-invariant under stochastic "
-            "renoise on H3's rectified-flow path; fractional/preserved rows will "
-            "come out corrupted (grey static). Use a deterministic sampler "
-            "(euler, res_multistep, dpmpp_2m) or euler_ancestral.",
+            f"H3InjectSampler: sampler '{sampler_name}' is stochastic (ancestral/SDE) with no "
+            "native per-row step, so it falls back to the generic path. Per-row img2img "
+            "compression is NOT scale-invariant under stochastic renoise on H3's rectified-flow "
+            "path; fractional/preserved rows will come out corrupted (grey static). Use a sampler "
+            "with native per-row support: euler, res_multistep, dpmpp_2m, euler_ancestral, "
+            "dpmpp_2s_ancestral, dpmpp_sde, dpmpp_2m_sde, or dpmpp_3m_sde.",
             UserWarning,
             stacklevel=2,
         )
@@ -562,7 +563,8 @@ class H3AddInject:
                             "this is the single frame's denoise value. "
                             "Follows img2img convention on H3's shift-12 schedule: "
                             "d <= 0.3 retains most content; d >= 0.7 is heavy redraw. "
-                            "Values below ~1/steps never release due to step quantization."
+                            "Very small values (~0.5/steps or less) round to exact preserve, "
+                            "since the release step k_d = round(steps*(1-m)) reaches steps."
                         ),
                     },
                 ),
@@ -1075,11 +1077,14 @@ class H3InjectSampler:
                     samplers,
                     {
                         "tooltip": (
-                            "Sampler algorithm.  Deterministic samplers (euler, res_multistep, "
-                            "dpmpp_2m) work correctly with the per-row schedule-tail remap.  "
-                            "Stochastic samplers (euler_ancestral, dpmpp_2s_ancestral, SDE "
-                            "variants) will warn at runtime: the remap is not scale-invariant "
-                            "under stochastic renoise on H3's RF path and results may be incorrect."
+                            "Sampler algorithm.  The major deterministic and stochastic samplers "
+                            "run natively per-row under the schedule-tail remap: euler, "
+                            "res_multistep, dpmpp_2m (deterministic); euler_ancestral and "
+                            "dpmpp_2s_ancestral (ancestral); dpmpp_sde, dpmpp_2m_sde, "
+                            "dpmpp_3m_sde (SDE).  A stochastic sampler with no native per-row "
+                            "step falls back to the generic path and warns at runtime: the "
+                            "remap is not scale-invariant under stochastic renoise on H3's RF "
+                            "path, so fractional/preserved rows may be corrupted."
                         ),
                     },
                 ),
