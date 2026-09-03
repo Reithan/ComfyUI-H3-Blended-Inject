@@ -100,6 +100,29 @@ def _c2_pool_bins() -> int | None:  # pragma: no cover - prototype toggle, GPU-v
     return max(4, n) if n > 1 else 32
 
 
+#: Removal STRENGTH for the pooled leak fix (euler-ancestral static, 2026-09-02).  The first GPU
+#: run at full strength killed the mid-fade static amplitude BUT garbled the injected voice — the
+#: εc-aligned leak is not pure garbage; its COHERENT part is the substrate the network naturalizes
+#: into speech (intelligible under plain ancestral, just buried under the decorrelated static).
+#: ``H3BI_C2_POOL_STRENGTH``: unset/"1" → full removal; ``"replaced"`` → subtract only the fresh-
+#: decorrelated share ``× (1 − r_ret/σ_c′)`` (euler-invariant → leaves the coherent voice substrate
+#: intact, removes only what ancestral would commit as static); a float in [0,1] → that fraction.
+C2_POOL_STRENGTH_ENV = "H3BI_C2_POOL_STRENGTH"
+
+
+def _c2_pool_strength() -> float | str:  # pragma: no cover - prototype toggle, GPU-verified
+    """Pooled leak-removal strength: ``"replaced"``, a float in [0,1], or 1.0 (full, default)."""
+    val = os.environ.get(C2_POOL_STRENGTH_ENV)
+    if not val or val == "1":
+        return 1.0
+    if val == "replaced":
+        return "replaced"
+    try:
+        return max(0.0, float(val))
+    except ValueError:
+        return 1.0
+
+
 #: Diagnostic δ-leak logger (round-10 Option 3).  ``H3BI_C2_DEBUG`` unset → off; ``"1"`` → default
 #: temp CSV; any other value is used verbatim as the CSV path.  Dumps, per (step, k_d bin) over the
 #: fractional-AUDIO rows, the RMS of the C2 update's retained term ``r_ret·ε̂`` (carries the δ leak),
@@ -908,17 +931,24 @@ def _c2_audio_ancestral_update(
         eps_c = (y - (1.0 - w_plant) * clean_raw) / sig_c
     else:  # fallback (no carry/plant info): pre-fix inversion — leaks content when Ĉ shrinks
         eps_c = (y - a * c_hat) / sig_c
-    # PROTOTYPE pooled leak-removal: strip the content-blind, σ_c-neighborhood-pooled estimate of
-    # the denoiser's own-noise leak from ĉ BEFORE recomposition, so ancestral's fresh draw cannot
-    # commit the decorrelated share as permanent broadband static.  Only ĉ (the clean channel) is
-    # touched — the carried eps_c, retained term, fresh term and η are all unchanged.
+    sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
+    r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
+    # PROTOTYPE pooled leak-removal: strip a content-blind, σ_c-pooled estimate of the denoiser's
+    # own-noise leak from the clean estimate before recomposition, so ancestral's fresh draw cannot
+    # commit the decorrelated share as permanent broadband static.  Removal STRENGTH is tunable (see
+    # C2_POOL_STRENGTH_ENV): "replaced" removes only the fresh-decorrelated share (euler-invariant),
+    # preserving the coherent voice substrate; full (default) strips all of it (GPU-observed to
+    # garble the voice).  Only the clean channel is touched; carried noise, retained/fresh, η stay.
     if pool_mask is not None:
         nbins = _c2_pool_bins()
         if nbins is not None:  # pragma: no cover - prototype, GPU-verified
             lam_hat = _pooled_leak_lambda(c_hat, eps_c, sig_c, pool_mask, nbins)
-            c_hat = c_hat - lam_hat * sig_c * eps_c
-    sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
-    r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
+            strength = _c2_pool_strength()
+            if strength == "replaced":
+                factor = (1.0 - r_ret / sig_c_next.clamp(min=eps)).clamp(min=0.0)
+            else:
+                factor = strength
+            c_hat = c_hat - factor * lam_hat * sig_c * eps_c
     clean_term = a_next * c_hat
     retained_term = r_ret * eps_c
     x = clean_term + retained_term
