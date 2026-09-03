@@ -1,5 +1,5 @@
-<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68 2026-08-27; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep both good; PR1 refactor pending; PR4 SDE design UNVERIFIED) -->
-<!-- verified: 2026-09-02 · PR3 multistep BUILT + GPU-CONFIRMED (add-per-row-multistep-steps @6a5e786, user local both good, CPU bit-for-bit m=1 tests, Finding 1 FIXED); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33 -->
+<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep; PR1 refactor pending; PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three; PR5 dpmpp_2s_ancestral BUILT + GPU-CONFIRMED user local 2026-09-03; ALL FOUR PR4-branch samplers GPU-CONFIRMED, PR #36 ready to merge, task-#73 gate CLEARED) -->
+<!-- verified: 2026-09-03 · ALL FOUR PR4-branch samplers GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 ready to merge): sde/2m_sde/3m_sde user local 2026-09-02, dpmpp_2s_ancestral user local 2026-09-03; task-#73 gate FULLY CLEARED; PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local both good, CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33 -->
 # Delivery plan (4 PRs, tasks #66–#73)
 
 Child of [sampler-class-support.md](../sampler-class-support.md) — detailed per-PR specs
@@ -50,33 +50,76 @@ custom σ_a audio path was DROPPED in #33. Source note: plain `sample_dpmpp_2m` 
 and `res_multistep` (1417-1456) use the plain log-σ form `t_fn = sigma.log().neg()`, NOT the
 logit/half-log-SNR form — that complication is confined to the SDE family (PR4).
 
-**PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`. Sequenced
-AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
-(sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO model evals/step (denoised @σ_i, then
-denoised_2 @midpoint σ_s_1, r=1/2 default), NO history, noise injected after EACH sub-step (781,
-791); `sample_dpmpp_2m_sde` (822-873) = ONE eval/step, carries `old_denoised` AND `h_last`, SDE
-noise `σ_{i+1}·(−2hη).expm1().neg().sqrt()·s_noise` (869), solver_type midpoint (default) / heun
-(877). Both: BrownianTreeNoiseSampler, `s_noise·noise_scale`, `offset_first_sigma_for_snr`.
-Corrections vs the draft plan: no `_RF` variants, but RF is IMPLICIT — `sigma_to_half_log_snr`
-(152) branches on CONST → λ = −logit(σ), so α = 1−σ lives INSIDE the helpers; per-row steps run
-the logit form elementwise with σ_row clamped to [ε, 1−ε] (the first-σ offset at 168 fixes only
-the global scalar). `get_ancestral_step` operates in exp(−λ) = σ/α space (776, 785), python
-`min()` (73) → per-row reimpl needs `torch.minimum`. Label refresh is pooled-only: the observer self-refreshes
-per model call from the CALL's σ (`t_obs = 1 − m·σ`, observer_split.py:38-59), but the pooled `w`
-stash publishes once per outer step (sampler.py:558) → `_StepContext` gains a `publish_labels(w)`
-closure so the step sets `w_mid = σ_row_mid/σ_s_1` before eval 2 (elementwise midpoint:
-`λ_row_s1 = λ_row + r·h_row`, `σ_row_mid = sigma_fn(λ_row_s1)`). BrownianTreeNoiseSampler is
-scalar-interval-only (`sort` uses `a < b`, 116) → query at global carrier σ; output is
-unit-variance (149), so all per-row scaling stays in the elementwise coefficients (noise
-correlation structure follows the global schedule — accepted approximation).
-**Merge gated on NEW USER GPU spike (task #73):** leak surface LARGER than PR2's — these lean on
-the SNR mapping rather than the clean RF alpha identity, so rerun the label→timestep leak test
-(39f fade, min_denoise 0.2–0.3) with both samplers before merge.
-Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
-renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
-stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
-BrownianTree (2 evals/step, no history). **Axis re-check when built:** the σ_a/σ_v audio plumbing
-above (`w_mid` on σ_a, label refresh) predates #33's axis-blind design — the custom σ_a audio path
-was dropped, so PR4's own axis handling must be re-verified against the axis-blind base (σ_v for
-every row + official noise_mask composite) before implementing, not the old σ_a machinery. Task #76
-is closed/dropped; PR4 is no longer blocked on it.
+**PR4 `add-per-row-dpmpp-sde-steps` (task #72) — BUILT + GPU-CONFIRMED (user local quality check
+2026-09-02, all three good), PR #36 open.** Per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`,
+all on one branch (user-confirmed). GPU-CONFIRMED on H3: `dpmpp_2m_sde` good (252.89s cold),
+`dpmpp_3m_sde` good (193.89s warm), `dpmpp_sde` good (326.19s warm) — clears the task-#73 GPU merge
+gate (39f fade / min_denoise 0.2–0.3 leak surrogate, all three samplers ran clean). Sequenced AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's
+history carry. Source map (sampling.py @b78cec87): `sample_dpmpp_sde` (738-792) = TWO evals/step,
+NO history; `sample_dpmpp_2m_sde` (822-873) = ONE eval/step, `old_denoised` + `h_last`; both use
+BrownianTreeNoiseSampler + `s_noise·noise_scale`.
+
+**RF is IMPLICIT (SOURCE-CONFIRMED b78cec87):** H3 is CONST (rectified flow), so
+`sigma_to_half_log_snr(σ) = logit(σ).neg() = log((1−σ)/σ)` (152), and in all three SDE samplers
+`alpha_t = sigmas[i+1]·λ_t.exp() = (1−σ)` — the `α = 1−σ` identity lives INSIDE the SNR helpers,
+no `_RF` variants (confirms the plan's "RF IMPLICIT" note). Per-row ports run the logit form
+elementwise over `sig_row`, clamped to `[ε, 1−ε]` at BOTH ends (comfy's `offset_first_sigma_for_snr`
+(168) clamps only the global scalar first-σ; per-row needs both since logit(0)/logit(1) = ±inf).
+
+**Port shapes.**
+- `_dpmpp_2m_sde_step`: 1 eval/step, 1-deep history `(denoised_r, h)` in `ctx.state`; midpoint
+  solver default; renoise `+ noise·sip1·(−2·h·eta).expm1().neg().sqrt()·s_noise`. Direct analog of
+  PR3's `_dpmpp_2m_step` with logit-form λ + SDE renoise.
+- `_dpmpp_3m_sde_step`: 1 eval/step, 2-deep history `(denoised_1, denoised_2, h_1, h_2)`; 3M
+  combiner elementwise, 2M branch as one-history fallback, Euler as no-history fallback.
+- `_dpmpp_sde_step`: 2 evals/step, NO history, needs a mid-eval label refresh. Eval1 → `denoised_r`
+  (the recover spine). Per-row midpoint `λ_s_1 = λ_s + r·h` (r=½), `σ_row_mid = sigmoid(−λ_s_1)`;
+  step-1 ancestral `get_ancestral_step` reimplemented with `torch.minimum` (comfy uses python
+  `min()`, 73). Eval2 at a GLOBAL midpoint carrier `σ_mid_g = sigmoid(−(λ_s_g + r·h_g))` after
+  publishing `w_mid = σ_row_mid/σ_mid_g`; recover `denoised_2_r` via the same velocity identity.
+
+**Plumbing:** a `publish_labels(w)` closure (wraps the loop's existing
+`make_pooled`→`schedule_tail["pooled_current"]`, sampler.py:558), stashed in `step_state`, lets
+`_dpmpp_sde_step` refresh pooled labels between its two evals.
+
+**Noise sampler:** `BrownianTreeNoiseSampler` is scalar-interval-only (`BatchedBrownianTree.sort`
+uses `a < b`, 114-116) → query ONCE at the GLOBAL carrier interval; output is unit-variance (149),
+so ALL per-row scaling lives in the elementwise coefficients (noise correlation follows the global
+schedule — accepted approximation).
+
+**Axis-blind (do NOT resurrect σ_a machinery):** σ_v for every row + official noise_mask composite
+([audio-native-composite.md](../audio-native-composite.md)). The pre-#33 draft's σ_a `w_mid` audio
+plumbing is DROPPED; PR4 runs axis-blind (`w_mid` on σ_v). Task #76 is closed; PR4 is NOT blocked on it.
+
+**Fractional-row cost:** `2m_sde`/`3m_sde` route fractional VIDEO rows through
+`_single_forward_denoised` for free via `_recover_row_denoised` (same as PR3). `dpmpp_sde`'s SECOND
+eval on fractional rows needs its own side-stream priming at the midpoint σ — the one genuinely NEW
+fractional-row path and the main GPU risk.
+
+**Merge gate FULLY CLEARED (USER GPU spike, task #73):** leak surface LARGER than PR2's (these lean
+on the SNR mapping, not the clean RF alpha identity) → user reran the label→timestep leak test (39f
+fade, min_denoise 0.2–0.3) across ALL FOUR PR4-branch samplers. SDE trio (sde/2m_sde/3m_sde) user
+local 2026-09-02; dpmpp_2s_ancestral user local 2026-09-03 ("good"). All four good, no leak — gate
+FULLY CLEARED. PR #36 ready to merge; mark completed only after it merges to `main`.
+
+**PR5 `dpmpp_2s_ancestral` — BUILT (folded into the PR #36 branch `add-per-row-dpmpp-sde-steps`;
+user asked to keep it here, NOT a separate PR) + GPU-CONFIRMED (user local quality check 2026-09-03:
+"good").** New
+`_dpmpp_2s_ancestral_step` registered under `sample_dpmpp_2s_ancestral` in `_NATIVE_ROW_STEPS`.
+Ports comfy `sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734): PR2's exact RF-ancestral renoise
+algebra (`downstep_ratio`→`sigma_down`, `alpha_ip1`/`alpha_down`, `renoise_coeff`,
+`default_noise_sampler` — NOT the SDE BrownianTree) wrapped around a 2-eval DPM++(2S) midpoint
+refine shaped like `_dpmpp_sde_step` (per-row + global midpoint via the half-log-SNR identity,
+`publish_labels(w_mid)` refresh between the two evals). Difference vs `dpmpp_sde`: the inner
+midpoint point `u` is DETERMINISTIC (no ancestral noise on the inner solve); noise is added only in
+the final per-interval renoise. Shared `_default_row_noise_sampler(ctx, extra_args)` helper
+EXTRACTED, now used by BOTH `_euler_ancestral_rf_step` and `_dpmpp_2s_ancestral_step` (the
+euler_ancestral change is a behavior-identical refactor). 2 evals/step, no history; terminal rows
+(`sig_row_next==0`) → denoised_r (matches stock's Euler terminal); m=0 rows freeze; same
+fractional-row caveat as `dpmpp_sde` (eval-2 side stream primed at step σ, not midpoint — the
+task-#73 GPU risk). Tests (`tests/test_sampler.py::TestSDEStepEquivalence`):
+`_local_sample_dpmpp_2s_ancestral` CONST/RF logit reference (`__name__`-routed), m1-equals-stock,
+folded into the eta=0/m0-preserve/fractional/registered-stochastic loops + a callback-once-per-step
+test. Full suite 665 passed, sampler.py diff coverage 100%. GPU-CONFIRMED: user local quality check
+2026-09-03 ("good") on the task-#73 all-samplers leak spike — clears the LAST item, so all four
+PR4-branch samplers (sde/2m_sde/3m_sde/2s_ancestral) are now GPU-confirmed and PR #36 is ready to merge.

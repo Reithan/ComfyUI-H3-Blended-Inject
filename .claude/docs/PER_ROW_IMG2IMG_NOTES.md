@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `add-per-row-multistep-steps` @6a5e786) — native per-row multistep dpmpp_2m/res_multistep BUILT + GPU-CONFIRMED (Finding 1 fixed; axis-blind supersedes σ_v warning); in sampler-class-support.md + its children.
+Last updated: 2026-09-03 (branch `add-per-row-dpmpp-sde-steps`) — PR4 native per-row DPM++ family (dpmpp_sde/2m_sde/3m_sde/2s_ancestral) all BUILT + GPU-CONFIRMED, PR #36 ready to merge. See sampler-class-support.md + delivery-plan.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -112,8 +112,8 @@ per-row ancestral step. See
   the stochastic gate.*
 - [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **CONFIRMED + BUILT:**
   native per-row multistep dpmpp_2m/res_multistep BUILT + GPU-CONFIRMED (PR3 @6a5e786, Finding 1
-  FIXED, CPU bit-for-bit tests, user local GPU 2026-09-02 both good); axis-blind (σ_v every row, no
-  σ_a projection); PR4 SDE still design-stage. *Read when revisiting sampler support.*
+  FIXED, CPU tests, user local GPU both good); axis-blind (σ_v every row, no σ_a projection); PR4
+  SDE family BUILDING (@b78cec87). *Read when revisiting sampler support.*
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
