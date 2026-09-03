@@ -87,7 +87,7 @@ compounding across extensions.
 
 Blended targets **arbitrary injects**: a wider variety of inject lengths at more arbitrary timeline
 points, via principled frame-space snapping (per-17 latent-grid reset, single-frame injects,
-half-open envelope, tail-local A/V join, `17n+5` length snap).
+[half-open envelope](envelope-half-open-model.md), tail-local A/V join, `17n+5` length snap).
 
 **Better BLENDING is the real differentiator.** MC's binary masking requires tight A/V line-up to
 avoid pops; Blended fades the boundary. The guardrail warns/snaps only when a misalignment is NOT
