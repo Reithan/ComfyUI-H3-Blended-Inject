@@ -344,6 +344,7 @@ def _single_forward_denoised(  # pragma: no cover - requires live H3 model (GPU)
     sigma: torch.Tensor,
     s_in: torch.Tensor,
     extra_args: dict[str, Any],
+    x: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Exact single-forward clean-K/V denoise for fractional fade rows (Option II).
 
@@ -359,6 +360,7 @@ def _single_forward_denoised(  # pragma: no cover - requires live H3 model (GPU)
     one combined K/V with two queries, reproducing the two-forward ``denoised`` bit-for-bit at ~half
     the model cost.  See ``option-ii-single-forward.md``.
     """
+    xin = ctx.x_prev if x is None else x
     st = ctx.state
     obs = st["observer"]
     schedule_tail = st["schedule_tail"]
@@ -370,7 +372,7 @@ def _single_forward_denoised(  # pragma: no cover - requires live H3 model (GPU)
         schedule_tail["pooled_current"] = make_pooled(w.to(device=st["pdev"], dtype=st["pdtype"]))
     obs["h_m"] = None
     obs["mode"] = "single"
-    denoised = ctx.model(ctx.x_prev, sigma * s_in, **extra_args)
+    denoised = ctx.model(xin, sigma * s_in, **extra_args)
     obs["mode"] = None
     return denoised
 
@@ -522,14 +524,61 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     return x
 
 
+def _recover_at(
+    ctx: _StepContext,
+    carrier: torch.Tensor,
+    sig_row_target: torch.Tensor,
+    x_input: torch.Tensor,
+    *,
+    fire_callback: bool,
+) -> torch.Tensor:
+    """One model eval at ``carrier`` on ``x_input``; recover per-row ``x0`` at ``sig_row_target``.
+
+    Generalises :func:`_recover_row_denoised` for callers that must denoise a tensor other than
+    ``ctx.x_prev`` and/or map to a per-row sigma other than ``ctx.sig_row`` — specifically the
+    second (midpoint) eval of :func:`_dpmpp_sde_step`.  The conditioning wrapper labels the model
+    with ``t = 1 − w·σ`` so a single forward returns a velocity ``v = (x_input − denoised)/carrier``
+    that maps back to each row's own ``x0`` at the requested level::
+
+        denoised_r = x_input − sig_row_target · v
+
+    Fractional VIDEO rows denoise through the clean-K/V observer splice
+    (:func:`_single_forward_denoised`) so their noisy K/V do not leak into co-located rows via
+    joint attention (Bug F); audio rows carry no observer stream (axis-blind, fade rides the
+    official composite).  ``fire_callback`` gates the euler-shaped callback so a multi-eval step
+    reports only its first eval.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    s_in = x_input.new_ones([x_input.shape[0]])
+    st = ctx.state
+    obs = st.get("observer")
+    frac = st.get("frac_mask")
+    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
+        denoised = _single_forward_denoised(ctx, carrier, s_in, extra_args, x=x_input)
+    else:
+        denoised = ctx.model(x_input, carrier * s_in, **extra_args)
+    if fire_callback and ctx.callback is not None:
+        ctx.callback(
+            {
+                "i": 0,
+                "denoised": denoised,
+                "x": x_input,
+                "sigma": carrier,
+                "sigma_hat": carrier,
+            }
+        )
+    v = (x_input - denoised) / carrier
+    return x_input - sig_row_target * v
+
+
 def _recover_row_denoised(ctx: _StepContext, carrier: torch.Tensor) -> torch.Tensor:
     """One model eval at the global carrier σ; recover per-row ``x0`` via the velocity identity.
 
     Shared spine for the deterministic multistep steps (``_dpmpp_2m_step`` /
-    ``_res_multistep_step``), mirroring the recovery inside :func:`_euler_ancestral_rf_step`.  The
-    conditioning wrapper labels the model with ``t_row = 1 − σ_row`` so a single forward at
-    ``carrier`` returns a velocity ``v = (x_prev − denoised) / carrier`` that maps back to each
-    row's own ``x0``::
+    ``_res_multistep_step``) and the SDE steps' first eval, mirroring the recovery inside
+    :func:`_euler_ancestral_rf_step`.  The conditioning wrapper labels the model with
+    ``t_row = 1 − σ_row`` so a single forward at ``carrier`` returns a velocity
+    ``v = (x_prev − denoised) / carrier`` that maps back to each row's own ``x0``::
 
         denoised_r = x_prev − sig_row · v
 
@@ -539,27 +588,7 @@ def _recover_row_denoised(ctx: _StepContext, carrier: torch.Tensor) -> torch.Ten
     (their fade rides the official composite), so the forward stays axis-blind for audio.  Fires
     the euler-shaped callback once.
     """
-    extra_args = {} if ctx.extra_args is None else ctx.extra_args
-    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
-    st = ctx.state
-    obs = st.get("observer")
-    frac = st.get("frac_mask")
-    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
-        denoised = _single_forward_denoised(ctx, carrier, s_in, extra_args)
-    else:
-        denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
-    if ctx.callback is not None:
-        ctx.callback(
-            {
-                "i": 0,
-                "denoised": denoised,
-                "x": ctx.x_prev,
-                "sigma": carrier,
-                "sigma_hat": carrier,
-            }
-        )
-    v = (ctx.x_prev - denoised) / carrier
-    return ctx.x_prev - ctx.sig_row * v
+    return _recover_at(ctx, carrier, ctx.sig_row, ctx.x_prev, fire_callback=True)
 
 
 def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
@@ -664,6 +693,268 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
     return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
 
 
+# ---------------------------------------------------------------------------
+# Per-row DPM++ SDE family (PR4): dpmpp_sde, dpmpp_2m_sde, dpmpp_3m_sde.
+#
+# Ports comfy's SDE samplers (k_diffusion/sampling.py @b78cec87: sample_dpmpp_sde 737-792,
+# sample_dpmpp_2m_sde 821-873, sample_dpmpp_3m_sde 881-941) to the schedule-tail remap.  H3 is
+# ``CONST`` (rectified flow) so ``sigma_to_half_log_snr(σ) = logit(σ).neg() = log((1−σ)/σ)`` and
+# ``alpha_t = σ·exp(λ) = 1 − σ`` — the RF ``α = 1 − σ`` identity lives INSIDE the SNR helpers.  The
+# per-row steps run the logit form elementwise over ``sig_row`` clamped to ``[ε, 1−ε]`` (comfy's
+# ``offset_first_sigma_for_snr`` only fixes the global scalar σ≈1).  One model eval per interval at
+# the global carrier σ recovers per-row ``x0`` via the shared velocity spine; SDE renoise is queried
+# from a scalar-interval BrownianTree at the GLOBAL carrier interval (unit-variance output, so all
+# per-row scaling stays in the elementwise coefficients — noise correlation follows the global
+# schedule, an accepted approximation).  Axis-blind: σ_v for every row, audio fade rides the
+# official composite.  See ``sampler-class-support/delivery-plan.md`` (PR4), ``native-step-design``.
+# ---------------------------------------------------------------------------
+
+
+#: Upper σ clamp for the half-log-SNR transform.  Mirrors comfy's ``offset_first_sigma_for_snr``
+#: (percent offset ``1e-4`` → σ≈0.9999 for CONST/RF): σ=1 gives λ=−∞ and ``exp(−λ)`` overflow that
+#: makes ``get_ancestral_step`` (called in exp(−λ) space) lose all precision.  ``1e-4`` keeps λ
+#: finite/moderate at the first step; the exact boundary value is an accepted approximation (the
+#: task-#73 GPU spike validates the real schedule).  Lower clamp stays ``1e-8`` (terminal rows are
+#: handled by the ``sig_row_next <= eps`` branch, so this only guards ``log(0)``).
+_SNR_SIGMA_HI = 1.0 - 1e-4
+
+
+def _snr_clamp(sigma: torch.Tensor) -> torch.Tensor:
+    """Clamp σ into the stable half-log-SNR domain ``[1e-8, 1−1e-4]``."""
+    return sigma.clamp(1e-8, _SNR_SIGMA_HI)
+
+
+def _snr_lambda(sigma_c: torch.Tensor) -> torch.Tensor:
+    """Half-log-SNR ``λ = log((1−σ)/σ)`` for CONST/RF (``sigma_c`` pre-clamped to ``(0, 1)``)."""
+    return sigma_c.logit().neg()
+
+
+def _snr_sigma(lam: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`_snr_lambda` for CONST/RF: ``σ = sigmoid(−λ)``."""
+    return (-lam).sigmoid()
+
+
+def _sde_get_ancestral_step(
+    sigma_from: torch.Tensor, sigma_to: torch.Tensor, eta: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Elementwise ``get_ancestral_step`` (sampling.py:68-75) over tensors.
+
+    Comfy's scalar version uses python ``min()``; the per-row reimpl uses ``torch.minimum``.  Called
+    in ``exp(−λ) = σ/α`` space by the SDE steps.  ``eta == 0`` yields ``(sigma_to, 0)`` naturally
+    (``su = min(sigma_to, 0) = 0``, ``sd = sqrt(sigma_to²) = sigma_to``).
+    """
+    inner = torch.clamp(sigma_to**2 * (sigma_from**2 - sigma_to**2) / sigma_from**2, min=0.0)
+    sigma_up = torch.minimum(sigma_to, eta * torch.sqrt(inner))
+    sigma_down = torch.sqrt(torch.clamp(sigma_to**2 - sigma_up**2, min=0.0))
+    return sigma_down, sigma_up
+
+
+def _sde_noise_sampler(ctx: _StepContext, extra_args: dict[str, Any]) -> Any:
+    """Build (once) or fetch the SDE noise sampler, persisted across steps via ``ctx.state``.
+
+    Tests inject a deterministic sampler via ``ctx.kwargs["noise_sampler"]``; the GPU path builds a
+    scalar-interval ``BrownianTreeNoiseSampler`` (queried at the global carrier interval).
+    """
+    if "noise_sampler" not in ctx.state:
+        ns = ctx.kwargs.get("noise_sampler")
+        if ns is None:  # pragma: no cover - GPU (BrownianTree needs the real schedule)
+            from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
+
+            sigmas = ctx.sigmas
+            pos = sigmas[sigmas > 0]
+            ns = BrownianTreeNoiseSampler(
+                ctx.x_prev, pos.min(), sigmas.max(), seed=extra_args.get("seed"), cpu=True
+            )
+        ctx.state["noise_sampler"] = ns
+    return ctx.state["noise_sampler"]
+
+
+def _sde_s_noise(ctx: _StepContext) -> float:
+    """``s_noise`` scaled by the model_sampling ``noise_scale`` attr (GPU-only), matching stock."""
+    s_noise = ctx.kwargs.get("s_noise", 1.0)
+    if hasattr(ctx.model, "inner_model"):  # pragma: no cover
+        s_noise = s_noise * getattr(
+            ctx.model.inner_model.model_patcher.get_model_object("model_sampling"),
+            "noise_scale",
+            1.0,
+        )
+    return s_noise
+
+
+def _dpmpp_2m_sde_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row DPM-Solver++(2M) SDE step (``solver_type='midpoint'``).
+
+    Ports comfy's ``sample_dpmpp_2m_sde`` (sampling.py:821-873): PR3's 2M ``old_denoised`` history
+    carry ∩ PR2's stochastic renoise.  One model eval per interval; per-row ``x0`` via the shared
+    spine.  Per-row ``(denoised_r, h)`` history in ``ctx.state``.  m=1 rows reproduce stock exactly
+    (``sig_row == sigmas[i]``); terminal rows (``sig_row_next == 0``) take the denoising branch;
+    m=0 rows freeze under the outer ``where(never, clean, ·)`` guard.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    eps = 1e-8
+    eta = ctx.kwargs.get("eta", 1.0)
+    carrier = ctx.sigmas[ctx.i]
+    denoised_r = _recover_row_denoised(ctx, carrier)
+
+    si_c = _snr_clamp(ctx.sig_row)
+    sip1_c = _snr_clamp(ctx.sig_row_next)
+    lam_s = _snr_lambda(si_c)
+    lam_t = _snr_lambda(sip1_c)
+    h = lam_t - lam_s
+    h_eta = h * (eta + 1.0)
+    alpha_t = sip1_c * lam_t.exp()
+    neg_em1 = torch.expm1(-h_eta).neg()  # (-h_eta).expm1().neg() = 1 − exp(−h_eta)
+
+    x_new = (sip1_c / si_c) * torch.exp(-h * eta) * ctx.x_prev + alpha_t * neg_em1 * denoised_r
+
+    old = ctx.state.get("dpmpp_2m_sde_old")
+    if old is not None:
+        old_denoised_r, h_last = old
+        r = h_last / h
+        # midpoint solver term (comfy default)
+        x_new = x_new + 0.5 * alpha_t * neg_em1 * (1.0 / r) * (denoised_r - old_denoised_r)
+
+    if eta > 0:
+        s_noise = _sde_s_noise(ctx)
+        ns = _sde_noise_sampler(ctx, extra_args)
+        noise = ns(carrier, ctx.sigmas[ctx.i + 1])
+        renoise = torch.clamp(torch.expm1(-2.0 * h * eta).neg(), min=0.0).sqrt()
+        x_new = x_new + noise * ctx.sig_row_next * renoise * s_noise
+
+    x_new = torch.where(ctx.sig_row_next <= eps, denoised_r, x_new)
+    ctx.state["dpmpp_2m_sde_old"] = (denoised_r, h)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
+def _dpmpp_3m_sde_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row DPM-Solver++(3M) SDE step.
+
+    Ports comfy's ``sample_dpmpp_3m_sde`` (sampling.py:881-941): same leading term + stochastic
+    renoise as :func:`_dpmpp_2m_sde_step`, but a 2-deep history ``(denoised_1, denoised_2, h_1,
+    h_2)`` drives the 3M combiner (with the 2M term as the one-history fallback and no correction on
+    the first step).  One model eval per interval; per-row ``x0`` via the shared spine.  Guarantees
+    mirror :func:`_dpmpp_2m_sde_step`.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    eps = 1e-8
+    eta = ctx.kwargs.get("eta", 1.0)
+    carrier = ctx.sigmas[ctx.i]
+    denoised_r = _recover_row_denoised(ctx, carrier)
+
+    si_c = _snr_clamp(ctx.sig_row)
+    sip1_c = _snr_clamp(ctx.sig_row_next)
+    lam_s = _snr_lambda(si_c)
+    lam_t = _snr_lambda(sip1_c)
+    h = lam_t - lam_s
+    h_eta = h * (eta + 1.0)
+    alpha_t = sip1_c * lam_t.exp()
+    em1 = torch.expm1(-h_eta)  # h_eta.neg().expm1()
+
+    x_new = (sip1_c / si_c) * torch.exp(-h * eta) * ctx.x_prev + alpha_t * em1.neg() * denoised_r
+
+    d1, d2, h_1, h_2 = ctx.state.get("dpmpp_3m_sde_old", (None, None, None, None))
+    if h_2 is not None:
+        r0 = h_1 / h
+        r1 = h_2 / h
+        d1_0 = (denoised_r - d1) / r0
+        d1_1 = (d1 - d2) / r1
+        d1c = d1_0 + (d1_0 - d1_1) * r0 / (r0 + r1)
+        d2c = (d1_0 - d1_1) / (r0 + r1)
+        phi_2 = em1 / h_eta + 1.0
+        phi_3 = phi_2 / h_eta - 0.5
+        x_new = x_new + (alpha_t * phi_2) * d1c - (alpha_t * phi_3) * d2c
+    elif h_1 is not None:
+        r = h_1 / h
+        d = (denoised_r - d1) / r
+        phi_2 = em1 / h_eta + 1.0
+        x_new = x_new + (alpha_t * phi_2) * d
+
+    if eta > 0:
+        s_noise = _sde_s_noise(ctx)
+        ns = _sde_noise_sampler(ctx, extra_args)
+        noise = ns(carrier, ctx.sigmas[ctx.i + 1])
+        renoise = torch.clamp(torch.expm1(-2.0 * h * eta).neg(), min=0.0).sqrt()
+        x_new = x_new + noise * ctx.sig_row_next * renoise * s_noise
+
+    x_new = torch.where(ctx.sig_row_next <= eps, denoised_r, x_new)
+    ctx.state["dpmpp_3m_sde_old"] = (denoised_r, d1, h, h_1)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
+def _dpmpp_sde_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row DPM-Solver++ SDE step (stochastic, TWO model evals, no history).
+
+    Ports comfy's ``sample_dpmpp_sde`` (sampling.py:737-792).  Eval 1 recovers per-row ``x0`` at the
+    global carrier σ (fires the callback).  A per-row midpoint ``σ_row_mid = sigmoid(−(λ_s + r·h))``
+    is formed; eval 2 runs at the GLOBAL midpoint carrier after :func:`publish_labels` republishes
+    ``w_mid = σ_row_mid/σ_mid_g`` so the model returns each row's midpoint velocity, recovered via
+    :func:`_recover_at`.  Ancestral steps run in ``exp(−λ)`` space
+    (:func:`_sde_get_ancestral_step`).
+
+    m=1 rows reproduce stock (``σ_row_mid == σ_mid_g`` → ``w_mid = 1``); terminal rows take the
+    denoising branch; m=0 rows freeze under the outer guard.
+
+    Fractional-row caveat: eval 2's clean-K/V side stream is primed at step ``i``'s ``sig_row`` (not
+    the midpoint) — the task-#73 GPU risk.  CPU/non-observer and audio paths publish ``w_mid``
+    correctly; the fractional VIDEO midpoint refinement is deferred to GPU validation.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    eps = 1e-8
+    eta = ctx.kwargs.get("eta", 1.0)
+    r = ctx.kwargs.get("r", 0.5)
+    fac = 1.0 / (2.0 * r)
+    carrier = ctx.sigmas[ctx.i]
+
+    denoised_r = _recover_row_denoised(ctx, carrier)  # eval 1 (fires callback)
+
+    si_c = _snr_clamp(ctx.sig_row)
+    sip1_c = _snr_clamp(ctx.sig_row_next)
+    lam_s = _snr_lambda(si_c)
+    lam_t = _snr_lambda(sip1_c)
+    h = lam_t - lam_s
+    lam_s_1 = lam_s + r * h
+    sigma_s_1 = _snr_sigma(lam_s_1)  # per-row midpoint sigma
+    alpha_s = si_c * lam_s.exp()
+    alpha_s_1 = sigma_s_1 * lam_s_1.exp()
+    alpha_t = sip1_c * lam_t.exp()
+
+    # Global midpoint carrier (scalar) for the second forward + BrownianTree query interval.
+    sg_c = _snr_clamp(ctx.sig_g)
+    sgn_c = _snr_clamp(ctx.sig_g_next)
+    lam_sg = _snr_lambda(sg_c)
+    lam_tg = _snr_lambda(sgn_c)
+    sigma_s_1_g = _snr_sigma(lam_sg + r * (lam_tg - lam_sg))
+
+    s_noise = _sde_s_noise(ctx)
+    do_noise = eta > 0 and s_noise > 0
+    ns = _sde_noise_sampler(ctx, extra_args) if do_noise else None
+
+    # Step 1: ancestral sub-step to the midpoint (exp(−λ) space).
+    sd1, su1 = _sde_get_ancestral_step(lam_s.neg().exp(), lam_s_1.neg().exp(), eta)
+    h1_ = sd1.log().neg() - lam_s
+    x_2 = (alpha_s_1 / alpha_s) * torch.exp(-h1_) * ctx.x_prev
+    x_2 = x_2 - alpha_s_1 * torch.expm1(-h1_) * denoised_r
+    if do_noise:
+        x_2 = x_2 + alpha_s_1 * ns(carrier, sigma_s_1_g) * s_noise * su1
+
+    # Eval 2 at the global midpoint: republish per-row midpoint labels, recover per-row x0.
+    w_mid = (sigma_s_1 / sigma_s_1_g).clamp(max=1.0)
+    ctx.state["publish_labels"](w_mid)
+    denoised_2_r = _recover_at(ctx, sigma_s_1_g, sigma_s_1, x_2, fire_callback=False)
+
+    # Step 2: ancestral sub-step to the interval end.
+    sd2, su2 = _sde_get_ancestral_step(lam_s.neg().exp(), lam_t.neg().exp(), eta)
+    h2_ = sd2.log().neg() - lam_s
+    denoised_d = (1.0 - fac) * denoised_r + fac * denoised_2_r
+    x_new = (alpha_t / alpha_s) * torch.exp(-h2_) * ctx.x_prev
+    x_new = x_new - alpha_t * torch.expm1(-h2_) * denoised_d
+    if do_noise:
+        x_new = x_new + alpha_t * ns(carrier, ctx.sigmas[ctx.i + 1]) * s_noise * su2
+
+    x_new = torch.where(ctx.sig_row_next <= eps, denoised_r, x_new)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
 _NATIVE_ROW_STEPS: dict[str, StepFn] = {
@@ -671,6 +962,9 @@ _NATIVE_ROW_STEPS: dict[str, StepFn] = {
     "sample_euler_ancestral": _euler_ancestral_rf_step,
     "sample_dpmpp_2m": _dpmpp_2m_step,
     "sample_res_multistep": _res_multistep_step,
+    "sample_dpmpp_sde": _dpmpp_sde_step,
+    "sample_dpmpp_2m_sde": _dpmpp_2m_sde_step,
+    "sample_dpmpp_3m_sde": _dpmpp_3m_sde_step,
 }
 
 
@@ -819,6 +1113,20 @@ def build_per_row_sampler_function(
         step_state["schedule_tail"] = schedule_tail
         step_state["pdev"] = m_packed.device
         step_state["pdtype"] = m_packed.dtype
+
+        def publish_labels(w: torch.Tensor) -> None:
+            """Republish pooled per-row labels mid-step (dpmpp_sde's 2nd, midpoint eval).
+
+            Wraps the loop's ``make_pooled`` → ``schedule_tail["pooled_current"]`` publish so a
+            multi-eval step can relabel the model at ``w_mid`` between its two forwards.  A no-op
+            when ``make_pooled`` is absent (CPU tests, models that ignore conditioning).
+            """
+            if make_pooled is not None:  # pragma: no cover - GPU (real conditioning)
+                schedule_tail["pooled_current"] = make_pooled(
+                    w.to(device=m_packed.device, dtype=m_packed.dtype)
+                )
+
+        step_state["publish_labels"] = publish_labels
 
         def prime_side_stream(i: int) -> None:  # pragma: no cover - GPU
             """Per-step token-ordered side-stream setup: embed ``ratio``, ``t_emb_m``, mod indices.
