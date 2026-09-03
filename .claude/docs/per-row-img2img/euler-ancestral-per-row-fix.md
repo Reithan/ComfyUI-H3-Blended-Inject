@@ -9,6 +9,9 @@
      packed-axis split = minor bookkeeping only (k_d 6–9, ≤6%); fix = CPU probe → excess-leak cancellation (design in mid-m-denoiser-leak.md) -->
 # euler_ancestral per-row fix — index
 
+> SUPERSEDED (2026-09-02): the C2 packed-axis audio correction is abandoned. Audio fades now route
+> through the official mask composite — see [audio-native-composite](audio-native-composite.md).
+
 Design and shipped record for the combined fix that clears both `euler_ancestral` per-row
 artifacts. Neither half alone is sufficient — that is why every prior single-sided attempt failed.
 

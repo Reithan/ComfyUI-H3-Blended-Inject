@@ -86,6 +86,10 @@ same case because ancestral re-noising re-projects the released row onto the man
   and [bugs · Bug B](bugs.md#bug-b)).
 - DD / native inpaint: correct on STOCHASTIC (ancestral), cracks on deterministic.
 
+**Scope note (AUDIO):** the crack/ghost objection is VIDEO-only — it comes from the cond-timestep
+pin on `cleans[0]`. The audio branch of `scale_latent_inpaint` is a plain rescale with NO pin, so
+audio fades CAN use the official composite. See [audio-native-composite](audio-native-composite.md).
+
 Each covers exactly the class the other fails; no SINGLE *native* mechanism covers both on H3.
 Supporting both *via native paths* = two denoise engines selected by sampler type = the
 special-casing smell. ⇒ pick ONE class. Deterministic (our path) is the standard/correct choice
