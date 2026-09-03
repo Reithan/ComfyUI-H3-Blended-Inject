@@ -55,7 +55,7 @@ The blend. Appends one inject (a video clip or single image, and/or audio) with 
 > *Node screenshot coming soon.*
 
 - `inject_at`: latent frame where the inject lands, snapped down to H3's 17-frame grid.
-- `start_fade_in` / `start_keyframes` / `end_keyframes` / `end_fade_out`: the envelope, in the clip's own frame indices. Denoise fades in from `1.0`, holds at `min_denoise` across the keyframe region, then fades back out. Half-open `[start_fade_in, end_fade_out)`. For a single still, set all four equal.
+- `start_fade_in` / `start_keyframes` / `end_keyframes` / `end_fade_out`: the envelope, in the clip's own frame indices. Denoise fades in from `1.0`, holds at `min_denoise` across the keyframe region, then fades back out. Half-open `[start_fade_in, end_fade_out)`. For a single still, set `start_fade_in`/`start_keyframes` to `0` and `end_keyframes`/`end_fade_out` to `1` (the hold region `[0, 1)` is exactly frame 0), with `interpolation_type` set to `none`.
 - `min_denoise`: the denoise floor during the hold. `0` preserves the frame exactly; `1` fully regenerates it; fractional values anchor it while letting the video move around it.
 - `interpolation_type`: `ease_in` / `ease_out` / `ease_in_out` / `linear` / `none` for the fade curves.
 - `audio_mode`: `fade` (audio follows the video denoise envelope), `drop` (no audio inject), or `keep` (audio preserved exactly).
@@ -91,7 +91,7 @@ The sampler. A KSampler-Advanced clone with an `inject_list` input that builds t
 
 1. Load your MiniMax H3 model, video VAE, and audio VAE as usual.
 2. Add an H3 Add Inject node. Connect your clip or image (and audio, if any) plus the matching VAE(s). Set `inject_at` to the latent frame where it should land.
-3. Set the envelope in the clip's own frames: `start_fade_in` → `start_keyframes` → `end_keyframes` → `end_fade_out`. For a single still image, set all four equal.
+3. Set the envelope in the clip's own frames: `start_fade_in` → `start_keyframes` → `end_keyframes` → `end_fade_out`. For a single still image, use `0` / `0` / `1` / `1` with `interpolation_type` set to `none`.
 4. Set `min_denoise`. Start around `0.2` to `0.3` for a strong anchor that still blends into the video. `0.0` locks the frame exactly; higher values regenerate more of it.
 5. Feed the `inject_list` output into H3 Blended Sampler, pick a sampler and step count, and generate.
 
