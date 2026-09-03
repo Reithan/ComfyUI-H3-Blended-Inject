@@ -718,9 +718,13 @@ class TestBuildPerRowSamplerFunction:
         out = fn(object(), torch.randn(1, 2), _decreasing(3))
         assert out.shape == (1, 2)
 
-    def test_audio_rows_get_different_w_than_video_at_same_m(self) -> None:
-        """With video_element_count set and shift_v!=shift_a, audio rows run the shifted
-        schedule → a different per-row w at the same m."""
+    def test_audio_rows_axis_blind_same_w_as_video(self) -> None:
+        """Audio is AXIS-BLIND: even with video_element_count set and shift_v!=shift_a, audio
+        rows ride the video σ_v axis, so at the same m they get the SAME per-row w as video.
+
+        This is the regression guarding the audio-native-composite direction: audio no longer
+        integrates on its own σ_a axis in the per-row engine (its σ_a shift is applied inside the
+        H3 forward, and its fade is delegated to the official composite noise_mask)."""
         base = _RemapBase()
         spy = _PooledSpy()
         # 4 packed rows: 0,1 video / 2,3 audio, all at the same fractional m.
@@ -737,8 +741,8 @@ class TestBuildPerRowSamplerFunction:
         )
         fn(object(), torch.randn(1, 4), _decreasing(3))
         w0 = spy.ws[0]
-        # video row 1 vs audio row 2 at identical m must differ (audio on shifted sigma).
-        assert not torch.allclose(w0[0, 1], w0[0, 2])
+        # video row 1 vs audio row 2 at identical m must MATCH (audio on the σ_v axis).
+        assert torch.allclose(w0[0, 1], w0[0, 2])
 
     def test_audio_disabled_when_video_element_count_none(self) -> None:
         """video_element_count=None disables the audio path (audio_mask None branch)."""

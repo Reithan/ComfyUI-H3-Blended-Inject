@@ -120,19 +120,25 @@ def _run_sampler(  # pragma: no cover
        ``noise_scaling`` produces ``x_global = sigma_max*eps + (1-sigma_max)*clean``.
     2. Build the *fractional per-row denoise mask*
        (:func:`~comfyui_h3_blended_inject.mask.derive_fractional_mask`) and pack it to the
-       sampler's flat layout.  The schedule-tail remap loop publishes the per-step per-row
-       label mask as pooled DiT conditioning via
-       :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`.
+       sampler's flat layout.  This mask carries only the VIDEO per-row schedule; audio is
+       full-generation here.  The schedule-tail remap loop publishes the per-step per-row label
+       mask as pooled DiT conditioning via
+       :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`.  Separately build the
+       AUDIO composite ``noise_mask``
+       (:func:`~comfyui_h3_blended_inject.mask.derive_audio_composite_noise_mask`).
     3. Wrap the base k-diffusion ``sampler_function`` with
        :func:`~comfyui_h3_blended_inject.sampler.build_per_row_sampler_function`, which runs
-       each fractional row over the last ``d``-fraction of the schedule (read from a dense
+       each fractional VIDEO row over the last ``d``-fraction of the schedule (read from a dense
        ``steps²+1`` sigma grid), composites the clean reference once at step 0, and scales each
-       row's per-step delta onto its own compressed tail.  Audio rows use the sigma-shifted
-       audio schedule.  The observer-label K/V split
+       row's per-step delta onto its own compressed tail.  Audio rows are axis-blind (they ride
+       the video σ_v axis at full generation; the σ_a shift is applied inside the H3 forward).
+       The observer-label K/V split
        (:func:`~comfyui_h3_blended_inject.observer_split.install_observer_split`) is installed
-       on top when fractional rows exist.
-    4. Run ``comfy.sample.sample_custom`` with ``noise_mask=None`` (no native compositing → no
-       compounding re-pin ghost), then apply the binary exact-preserve overwrite
+       on top when fractional (video) rows exist.
+    4. Run ``comfy.sample.sample_custom`` with ``noise_mask=audio_noise_mask``: VIDEO is a native
+       composite no-op (its fade is our per-row engine; a native re-pin would compound the ghost),
+       while AUDIO is composited the official way against the clean inject.  Then apply the binary
+       exact-preserve overwrite
        (:func:`~comfyui_h3_blended_inject.composite.post_composite_preserve`) for ``m == 0``
        rows and audio-preserve ticks.
 
@@ -159,7 +165,10 @@ def _run_sampler(  # pragma: no cover
         build_clean_reference,
         post_composite_preserve,
     )
-    from comfyui_h3_blended_inject.mask import derive_fractional_mask
+    from comfyui_h3_blended_inject.mask import (
+        derive_audio_composite_noise_mask,
+        derive_fractional_mask,
+    )
     from comfyui_h3_blended_inject.sampler import (
         _NATIVE_ROW_STEPS,
         build_conditioning_wrapper,
@@ -240,6 +249,22 @@ def _run_sampler(  # pragma: no cover
     # init lerp (lever 1), the DiT labels (lever 2), and the denoised correction
     # (lever 3) on the *identical* per-row m. See sampler.quantize_denoise.
     m_packed = quantize_denoise(m_packed).to(device=clean_packed.device)
+
+    # Audio-fade composite mask (the official path).  Audio does NOT ride our per-row engine:
+    # its conditioning m is full-generation (see derive_fractional_mask), and its fade is applied
+    # by ComfyUI's own KSamplerX0Inpaint composite via ``noise_mask`` — video band all-ones (a
+    # true composite no-op for the video stream), audio band = keep→0 / fade→m_r / drop→1.  This
+    # replaces the σ_a-axis per-row audio-ancestral path (Bug-B static source); see
+    # ``audio-native-composite.md``.  None when the latent has no audio component.
+    audio_noise_mask = None
+    if audio is not None and audio_shape is not None:
+        audio_noise_mask = derive_audio_composite_noise_mask(
+            schedule,
+            target_rows,
+            audio_ticks,
+            video_component_shape=video_shape,
+            audio_component_shape=audio_shape,
+        )
 
     # --- 4. Build the schedule-tail remap config + install the conditioning wrapper. ---
     # Each fractional row runs the LAST d-fraction of the schedule's σ-values stretched over
@@ -385,7 +410,9 @@ def _run_sampler(  # pragma: no cover
                 flush=True,
             )
 
-    # --- 8. Sample with noise_mask=None (no native compositing → no compounding ghost). ---
+    # --- 8. Sample. VIDEO uses no native composite (its fade is our per-row engine, so a native
+    # re-pin would compound the ghost); AUDIO is composited natively via ``audio_noise_mask``
+    # (video band all-ones = video no-op).  See ``audio-native-composite.md``. ---
     # Standard custom-sampler preview callback (same wiring as SamplerCustom): drives the
     # official latent preview + progress; previewer-override nodes patch inside this path.
     import latent_preview
@@ -400,7 +427,7 @@ def _run_sampler(  # pragma: no cover
         positive,
         effective_negative,
         clean_nested,
-        noise_mask=None,
+        noise_mask=audio_noise_mask,
         callback=callback,
         disable_pbar=False,
         seed=noise_seed,

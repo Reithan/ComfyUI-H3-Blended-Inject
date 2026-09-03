@@ -1,10 +1,14 @@
 """Per-row fractional denoise mask construction for the per-row img2img sampler.
 
-The primary export is :func:`derive_fractional_mask`, which builds a nested AV mask
-encoding each video row's fractional denoise value (``m_r``) and each audio tick's
-corresponding ``audio_denoise``.  This mask is consumed by the conditioning wrapper
-via ``model._denoise_mask_values``; ``noise_mask`` is set to ``None`` so no H3
-compositing occurs.
+Two masks are built here:
+
+- :func:`derive_fractional_mask` — the *conditioning* mask, consumed by the conditioning
+  wrapper via ``model._denoise_mask_values``.  It encodes each VIDEO row's fractional denoise
+  value (``m_r``); audio is always full-generation (``1.0``) because audio does not ride the
+  per-row engine.
+- :func:`derive_audio_composite_noise_mask` — the ``noise_mask`` passed to ComfyUI, which drives
+  ``KSamplerX0Inpaint`` to composite the AUDIO fade against the clean inject the official way.
+  Its video band is all ``1.0`` (a composite no-op for the video stream).
 
 Mask convention:
 - ``0`` = exact preserve (row's ``m_r`` is 0.0, audio tick's ``audio_denoise`` is 0.0)
@@ -91,17 +95,16 @@ def derive_fractional_mask(
         Non-nested: dict with fractional ``"video_mask"``/``"audio_mask"``.
         Nested: NestedTensor wrapping the two full-shape fractional mask components.
     """
-    # Per-row video m_r (default 1.0 = generate) and per-tick audio m_r.
+    # Per-row video m_r (default 1.0 = generate).  Audio is ALWAYS full-generation (1.0) in the
+    # conditioning mask: audio carries no in-frame denoise mismatch, so it does not ride our
+    # per-row engine.  Its fade is applied by the official KSamplerX0Inpaint composite via a
+    # separate ``noise_mask`` (see :func:`derive_audio_composite_noise_mask`).
     video_values: list[float] = [1.0] * video_rows
     audio_values: list[float] = [1.0] * audio_ticks
 
     for r in schedule:
         if 0 <= r.row_idx < video_rows:
             video_values[r.row_idx] = r.denoise
-        a = r.audio_denoise
-        for tick in audio_tick_range(r.row_idx, video_rows, audio_ticks):
-            if 0 <= tick < audio_ticks:
-                audio_values[tick] = a
 
     if video_component_shape is None:
         video_mask = torch.tensor(video_values, dtype=torch.float32).unsqueeze(0)
@@ -120,6 +123,59 @@ def derive_fractional_mask(
 
     # audio_component_shape: (B, C, 2, audio_t) — audio_t == audio_ticks.
     # Broadcast per-tick values across all B, C, and the size-2 dim.
+    at = torch.tensor(audio_values, dtype=torch.float32)
+    audio_mask_full = at.view(1, 1, 1, -1).expand(*audio_component_shape).clone()
+
+    factory = nested_factory if nested_factory is not None else _default_nested_factory
+    return factory(video_mask_full, audio_mask_full)
+
+
+def derive_audio_composite_noise_mask(
+    schedule: list[RowSchedule],
+    video_rows: int,
+    audio_ticks: int,
+    video_component_shape: tuple[int, ...] | None = None,
+    audio_component_shape: tuple[int, ...] | None = None,
+    nested_factory: Callable[[torch.Tensor, torch.Tensor], Any] | None = None,
+) -> Any:
+    """Build the ``noise_mask`` that drives the official H3 mask composite for the AUDIO stream.
+
+    Unlike :func:`derive_fractional_mask` (the *conditioning* mask consumed by the DiT), this mask
+    is passed as ComfyUI's ``noise_mask`` so ``KSamplerX0Inpaint`` composites each step against the
+    clean inject.  H3's ``denoise_mask`` convention: ``1`` = generated (kept), ``0`` = held to the
+    clean ``latent_image``, fractional = per-step release.
+
+    - **video**: ``1.0`` everywhere — the composite is a NO-OP for the video stream, which stays on
+      our per-row engine (its fade lives in the conditioning mask + observer splice).
+    - **audio**: tick ``j`` = the owning row's :attr:`RowSchedule.audio_denoise`
+      (keep → ``0.0`` hold clean, fade → ``r.denoise``, drop/none → ``1.0`` generate); ``1.0`` for
+      absent ticks.  This is the same audio schedule the conditioning mask used to carry before
+      audio was moved onto the official composite (see ``audio-native-composite.md``).
+
+    Return structure matches :func:`derive_fractional_mask`: a ``{"video_mask", "audio_mask"}``
+    dict on the non-nested path, or ``nested_factory(video_full, audio_full)`` on the nested path.
+    """
+    video_values: list[float] = [1.0] * video_rows
+    audio_values: list[float] = [1.0] * audio_ticks
+
+    for r in schedule:
+        a = r.audio_denoise
+        for tick in audio_tick_range(r.row_idx, video_rows, audio_ticks):
+            if 0 <= tick < audio_ticks:
+                audio_values[tick] = a
+
+    if video_component_shape is None:
+        video_mask = torch.tensor(video_values, dtype=torch.float32).unsqueeze(0)
+        audio_mask = torch.tensor(audio_values, dtype=torch.float32).unsqueeze(0)
+        return {"video_mask": video_mask, "audio_mask": audio_mask}
+
+    if audio_component_shape is None:
+        raise ValueError(
+            "audio_component_shape must be provided when video_component_shape is given"
+        )
+
+    vt = torch.tensor(video_values, dtype=torch.float32)
+    video_mask_full = vt.view(1, 1, -1, 1, 1).expand(*video_component_shape).clone()
     at = torch.tensor(audio_values, dtype=torch.float32)
     audio_mask_full = at.view(1, 1, 1, -1).expand(*audio_component_shape).clone()
 

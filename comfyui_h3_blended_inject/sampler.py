@@ -20,12 +20,15 @@ stretched over ALL steps:
   each row on its own noise-line at ``σ_row(0)``; it is never re-injected (per-region SDEdit
   on the stretched tail).  A final ``where(never, clean, x_cur)`` guarantees ``m == 0`` preserve.
 
-**Audio.**  The base sampler steps the whole packed (video+audio) latent on the VIDEO sigma
-schedule uniformly.  Audio rows, however, live on the sigma-shifted audio schedule
-(:func:`time_shift_sigma`), so ``row_sigma``, ``sig_g``, ``w`` and ``r`` use audio-shifted
-sigmas for audio rows and raw video sigmas for video rows.  ``k_d`` / ``span`` depend only on
-``m`` and are identical for both modalities.  Audio rows are located by the packed video
-prefix length (the same boundary :func:`scale_packed_audio` uses).
+**Audio is axis-blind.**  Audio does NOT ride this per-row engine.  Its conditioning is
+full-generation (``m == 1``), so ``row_sigma``/``sig_g``/``w``/``r`` run on the VIDEO σ_v axis
+for every row and audio integrates exactly as stock at σ_v (the σ_a shift is applied inside the
+H3 forward, not here).  Audio's fade is applied by the official ``KSamplerX0Inpaint`` composite
+via a ``noise_mask`` built in ``nodes.py``
+(:func:`~comfyui_h3_blended_inject.mask.derive_audio_composite_noise_mask`).  This retires the
+earlier σ_a-axis per-row audio path (the Bug-B static source); see ``audio-native-composite.md``.
+The audio-modality boundary (packed video-prefix length) is still tracked for
+:func:`scale_packed_audio` and the observer plumbing.
 
 **Clean-K/V splice (single-forward, Option II).**  When the observer-split block patches are
 installed and fractional rows exist, the euler step runs ONE forward per interval
@@ -36,8 +39,8 @@ mechanism bit-for-bit.  See ``observer_split.py`` and the wiki ``clean-kv-split.
 
 The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
 ``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
-and ``sample_euler_ancestral`` (H3's RF-ancestral path, kills Bug B) are registered here (PR1 +
-PR2); multistep (PR3) steps plug in via the same ``_StepContext`` protocol.
+and ``sample_euler_ancestral`` (H3's RF-ancestral path) are registered here (PR1 + PR2);
+multistep (PR3) steps plug in via the same ``_StepContext`` protocol.
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
 imports stay lazy so this module loads without a ComfyUI environment.
@@ -410,11 +413,18 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
 
 
 def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
-    """Native per-row RF-ancestral step (kills Bug B for euler_ancestral on H3).
+    """Native per-row RF-ancestral step for euler_ancestral on H3.
 
     Implements one step of ``sample_euler_ancestral_RF`` elementwise over the per-row sigma
     tensors from the schedule-tail remap.  No r-scaling — the per-row sigma integration is
     handled directly by the ancestral math.
+
+    **Audio is axis-blind here.**  ``sig_row``/``sig_g`` run on the video σ_v axis for every row
+    (:func:`row_sigma`), so audio rows integrate exactly as stock ancestral at σ_v (the σ_a shift
+    is applied inside the H3 forward) — no per-row σ_a compression.  Audio's fade is applied by the
+    official ``KSamplerX0Inpaint`` composite via ``noise_mask``, which acts inside ``ctx.model``
+    here.  This retires the earlier σ_a-axis audio-ancestral path (the Bug-B static source); see
+    ``audio-native-composite.md``.
 
     One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered as
     ``denoised_r = x_prev − σ_row·(x_prev − denoised)/σ_carrier`` (the conditioning wrapper
@@ -464,7 +474,18 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
 
     carrier = ctx.sigmas[ctx.i]
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
-    denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
+    # Fractional VIDEO rows must denoise through the clean-K/V observer splice, exactly like
+    # _euler_step — otherwise a fractional row's noisy K/V leak into co-located rows via joint
+    # attention and re-imprint the fade artifact (Bug F).  Audio rows carry no observer stream
+    # (audio conditioning is full-gen m=1; the fade is handled by the official composite), so this
+    # forward stays axis-blind for audio.
+    st = ctx.state
+    obs = st.get("observer")
+    frac = st.get("frac_mask")
+    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
+        denoised = _single_forward_denoised(ctx, carrier, s_in, extra_args)
+    else:
+        denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
     if ctx.callback is not None:
         ctx.callback(
             {
@@ -591,18 +612,21 @@ def build_per_row_sampler_function(
             dense_a = _shift_schedule(dense_v, shift_v, shift_a) if audio_mask is not None else None
 
         def row_sigma(i: int) -> torch.Tensor:
-            """Per-row target sigma, audio rows on the shifted schedule."""
-            sv = _stream_row_sigma(m_dev, i, steps_n, dense_v if has_dense else None, sig_v, n_sig)
-            if audio_mask is None:
-                return sv
-            sa = _stream_row_sigma(m_dev, i, steps_n, dense_a if has_dense else None, sig_a, n_sig)
-            return torch.where(audio_mask, sa, sv)
+            """Per-row target sigma on the video σ_v axis for ALL rows (axis-blind).
+
+            Audio no longer integrates on its own σ_a axis in our per-row engine: audio
+            conditioning is full-generation (``m == 1``) so this returns ``sig_v[i]`` for every
+            audio element, matching the official axis-blind ``sample_euler_ancestral_RF`` (the σ_a
+            shift is applied inside the H3 forward).  The audio fade is delegated to the official
+            KSamplerX0Inpaint composite via ``noise_mask``; see ``audio-native-composite.md``.
+            """
+            return _stream_row_sigma(
+                m_dev, i, steps_n, dense_v if has_dense else None, sig_v, n_sig
+            )
 
         def global_sigma(i: int) -> torch.Tensor:
-            """Per-row global sigma at step ``i``, audio rows on the shifted schedule."""
-            if audio_mask is None:
-                return sig_v[i]
-            return torch.where(audio_mask, sig_a[i], sig_v[i])
+            """Per-row global sigma at step ``i`` — σ_v for all rows (audio axis-blind)."""
+            return sig_v[i]
 
         def _cb(offset: int) -> Any:  # remap per-step callback index to the global step
             if callback is None:
