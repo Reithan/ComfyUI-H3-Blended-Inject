@@ -4,9 +4,9 @@ All functions that detect non-fatal mismatches issue ``warnings.warn`` with a de
 message (warn-and-continue).  Functions that detect fatal mismatches raise ``ValueError``.
 
 Severity contract:
-- **Warns** (continues): ``inject_at`` snap, audio-tick position rounding, AV length
+- Warns (continues): ``inject_at`` snap, audio-tick position rounding, AV length
   trim/silence-pad, foreign ``noise_mask`` replacement (that one lives in mask.py).
-- **Raises** ``ValueError``: image resolution mismatch, envelope index ordering violation.
+- Raises ``ValueError``: image resolution mismatch, envelope index ordering violation.
 
 This module is pure Python / stdlib and must import without ``comfy`` or ``torch`` present.
 Audio and image tensors are typed as ``Any`` to avoid runtime dependencies.
@@ -232,8 +232,8 @@ def warn_audio_tail_alignment(
     # Condition 3: tail is NOT faded through.
     # Masking only applies to fade mode (audio-follows-video): when a fade-out ramp
     # reaches the clip tail, the tail audio weight drops to 0 and the desync is inaudible.
-    # keep mode is audio_frozen everywhere — the video envelope does NOT mask the audio
-    # tail — so keep mode is never treated as faded-through and always warns.
+    # keep mode is audio_frozen everywhere; the video envelope does NOT mask the audio
+    # tail, so keep mode is never treated as faded-through and always warns.
     is_faded_through = (
         audio_mode == "fade" and end_fade_out > end_keyframes and end_fade_out == snapped_length
     )
@@ -277,7 +277,7 @@ def check_resolution(
     2. Width and height must exactly match ``target_width`` and ``target_height``.
 
     Rescaling is deliberately not performed: a rescaled inject silently changes what "original"
-    means for the hold-and-release mechanism, producing wrong results without any visible error.
+    means for the per-row blend, producing wrong results without any visible error.
 
     Parameters
     ----------
@@ -371,7 +371,6 @@ def sanitize_audio(
     waveform = audio["waveform"]
     orig_sr = audio["sample_rate"]
 
-    # Resample first, then compare lengths.
     if orig_sr != target_sample_rate:
         new_len = round(waveform.shape[-1] * target_sample_rate / orig_sr)
         # interpolate expects (N, C, L); waveform is (C, L).

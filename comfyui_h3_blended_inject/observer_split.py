@@ -1,42 +1,42 @@
 """Clean-K/V observer content splice for fractional inject rows.
 
-The H3 DiT applies each row's mask label exactly once per block — an adaLN
-scale/shift of ``norm1(x)`` (``_mod_scale_shift``) — and that single modulated
+The H3 DiT applies each row's mask label exactly once per block: an adaLN
+scale/shift of ``norm1(x)`` (``_mod_scale_shift``); that single modulated
 tensor feeds the fused qkv projection.  A row's K/V (what other rows READ of it,
 AND what the row reads of ITSELF in self-attention) and its Q / residual path
 (what the row COMPUTES for its own velocity) inherit the label at a single seam
 and are separable there.
 
 This module patches every DiT block so a fractional inject row's K and V are
-sourced from GENUINELY CLEANER CONTENT — the static ``clean`` inject re-noised to
-the observed level ``m·σ_g`` — while Q, gates, and the MLP path keep the truthful
+sourced from GENUINELY CLEANER CONTENT (the static ``clean`` inject re-noised to
+the observed level ``m·σ_g``) while Q, gates, and the MLP path keep the truthful
 remapped label ``t_row = 1 − σ_row``.  This lets a fractional row broadcast (and,
 because self-attention reads its own K/V, perceive itself) as its clean anchor at
-``m`` while its own velocity stays truthful — no ghost.
+``m`` while its own velocity stays truthful; no ghost.
 
-It runs as ONE forward per euler step (Option II, exact single-forward):
+It runs as ONE forward per euler step:
 
 - ``mode == "single"``: carry a band-only side stream ``h_m`` (init
-  ``ratio·h_main0 + (1−ratio)·h_clean`` — exact by patch-embed linearity) and,
+  ``ratio·h_main0 + (1−ratio)·h_clean``, exact by patch-embed linearity) and,
   per block, build ONE combined K/V set = the main stream's K/V with the band rows
   overwritten by the side stream's, read by two queries: the main query at ``σ_row``
   (→ ``denoised``) and the band query at observer ``m`` (→ evolves ``h_m``).
 - ``mode == "embed_capture"``: a one-time forward on the static ``clean`` inject
   that snapshots the block-0 band hidden ``h_clean`` for the side-stream init.
 
-This reproduces bit-for-bit the earlier two-forward capture/splice mechanism (a
-capture forward on the clean content that cached each block's band K/V, then a
-splice forward that overwrote the band's K/V before the fused RMSNorm+rope pass).
-That two-forward code was removed on branch single-forward-clean-kv-splice; it is
-preserved in ``c2-rho-fix-paths/observed-level-plant/clean-kv-split.md``.  Both
-SUPERSEDE the old label-only relabel (re-modulated the still-noisy hidden, leaked
-fade-noise) and the second-stream path (lost self-reception); see
+This reproduces bit-for-bit the two-forward capture/splice mechanism (a capture
+forward on the clean content that cached each block's band K/V, then a splice
+forward that overwrote the band's K/V before the fused RMSNorm+rope pass); the
+equivalent mechanism is documented in
+``c2-rho-fix-paths/observed-level-plant/clean-kv-split.md``.  The label-only
+relabel approach (re-modulates the still-noisy hidden, leaks fade-noise) and the
+second-stream path (loses self-reception) are both inadequate alternatives; see
 ``c2-rho-fix-paths/observed-level-plant/second-stream.md`` and
 ``option-ii-single-forward.md``.
 
-The pure helpers — ``observer_call_update``, ``_fractional_rows``,
+The pure helpers (``observer_call_update``, ``_fractional_rows``,
 ``_observer_timestep``, ``_embed_ratio``, ``_blend_hidden``, ``_band_mod_index``,
-``_call_plan`` — are importable and unit-tested on CPU.  The comfy-coupled
+``_call_plan``) are importable and unit-tested on CPU.  The comfy-coupled
 functions (``install_observer_split``, ``_observer_time_embed``,
 ``_norm_rope_query``, ``_dual_attention``, ``_single_plan``, ``_make_block_patch``)
 require a live ComfyUI + H3 model and are exercised only on GPU runs; their
@@ -68,7 +68,7 @@ def _fractional_rows(rows: torch.Tensor) -> dict[str, Any] | None:
     """Index/value bundle for strictly fractional (0<m<1) rows; None if none.
 
     Uses the model's own 1e-3 full-denoise tolerance (model.py:83) on the high
-    side; m==0 rows are excluded — they already get native pin treatment.
+    side; m==0 rows are excluded; they already get native pin treatment.
     """
     frac = (rows > 1e-6) & (rows < 1.0 - 1e-3)
     if not bool(frac.any()):
@@ -86,7 +86,7 @@ def _observer_timestep(m: torch.Tensor, sigma: torch.Tensor, pin: float) -> torc
     ``m`` is the per-row fractional denoise and ``sigma`` the modality's global sigma at this
     step (``sigma_v`` for video, the shifted ``sigma_a`` for audio).  The single forward carries a
     SECOND time-embedding modulated at these observer levels so the side stream can be gated at
-    ``m`` while the main stream stays at ``σ_row`` — the two-forward capture's adaLN table is not
+    ``m`` while the main stream stays at ``σ_row``; the two-forward capture's adaLN table is not
     available in a splice-labeled forward, so we recompute the observer timesteps here and feed
     them back through the model's own time-embedder/curve on GPU.
 
@@ -103,7 +103,7 @@ def _embed_ratio(sig_obs: torch.Tensor, sig_row: torch.Tensor) -> torch.Tensor:
     The observer content is ``x_obs = clean + ratio·(x_prev − clean) = (1−ratio)·clean +
     ratio·x_prev`` with ``ratio = σ_obs/σ_row`` (clean-kv-split.md).  Because the H3 patch-embed is
     affine and row-wise, ``embed(x_obs) = ratio·embed(x_prev) + (1−ratio)·embed(clean)`` EXACTLY
-    when the two weights sum to 1 — so the side stream's block-0 hidden is this same ratio-blend of
+    when the two weights sum to 1, so the side stream's block-0 hidden is this same ratio-blend of
     the main and clean block-0 hiddens, reproducing the two-forward capture's embed bit-for-bit
     without a second patch-embed pass.  Clamped because ``σ_obs = m·σ_g ≤ σ_row`` should hold but
     schedule rounding can nudge the quotient just past 1.
@@ -128,7 +128,7 @@ def _band_mod_index(levels: torch.Tensor, row_obs: torch.Tensor, tag: int) -> to
 
     Mirrors the model's ``rows_to_mod_index`` (model.py:617-622): each row's observer timestep is
     located in ``levels`` (the SORTED-UNIQUE set of observer timesteps carried by ``t_emb_m``) and
-    mapped to ``searchsorted(levels, obs)·3 + tag`` — the AdalnProj expands ``[M, t_dim]`` into
+    mapped to ``searchsorted(levels, obs)·3 + tag``; the AdalnProj expands ``[M, t_dim]`` into
     ``M·3`` mod-rows (3 modalities), so level index ``i`` and modality ``tag`` (video 0, audio 2)
     select row ``i·3 + tag``.  ``levels`` spans BOTH modalities' observer levels so video and audio
     band rows index a single shared table; the tag disambiguates the modality slice.
@@ -192,9 +192,9 @@ def _call_plan(state: dict[str, Any], call: dict[str, Any], segs: list[Any]) -> 
     """Per-forward splice plan: global token positions of the fractional rows.
 
     Locates the per-row video/audio segments in ``mod_segments`` (the only
-    entries with TENSOR mod rows; modality = mod_index % 3 — video tag 0, audio
+    entries with TENSOR mod rows; modality = mod_index % 3, video tag 0 / audio
     tag 2, model.py:615) and maps our fractional-row indices to global token
-    positions.  Cached in ``call`` — all blocks of one forward share segments;
+    positions.  Cached in ``call``; all blocks of one forward share segments;
     the per-forward token bump invalidates the cache each forward.  Used by the
     one-time ``embed_capture`` forward to locate the band's block-0 hidden.
     """
@@ -212,7 +212,7 @@ def _call_plan(state: dict[str, Any], call: dict[str, Any], segs: list[Any]) -> 
             if stream is None or tag != want_tag:
                 continue
             if (b - a) != stream["n"]:
-                continue  # layout mismatch — skip rather than mis-splice
+                continue  # layout mismatch; skip rather than mis-splice
             pos_parts.append(stream["pos"].to(row.device) + a)
     if not pos_parts:
         call["plan"] = None
@@ -250,7 +250,7 @@ def _single_plan(  # pragma: no cover - GPU
             if stream is None or tag != want_tag:
                 continue
             if (b - a) != stream["n"] or "ratio" not in stream or "mod_index" not in stream:
-                continue  # layout mismatch or side stream not primed this step — skip
+                continue  # layout mismatch or side stream not primed this step; skip
             pos_parts.append(stream["pos"].to(row.device) + a)
             ratio_parts.append(stream["ratio"].to(row.device))
             mod_parts.append(stream["mod_index"].to(row.device))
@@ -273,7 +273,7 @@ def _observer_time_embed(  # pragma: no cover - GPU
     """Side stream's ``t_emb_m`` table for the observer timestep ``levels`` (model.py:683-691).
 
     Reuses the model's own adaLN curve (when ``use_adaln_curves``) or ``time_embedder`` so the side
-    stream is modulated at the observer levels ``m`` exactly as the two-forward capture would be —
+    stream is modulated at the observer levels ``m`` exactly as the two-forward capture would be;
     the capture forward's adaLN table is not present in a σ_row-labelled single forward, so we
     rebuild just the band's ``m`` levels here.  Returns an ``[len(levels), t_dim]`` table indexed by
     :func:`_band_mod_index`.
@@ -324,14 +324,14 @@ def _dual_attention(  # pragma: no cover - GPU
     rope_freqs: Any,
     transformer_options: dict[str, Any],
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """One combined K/V set read by two queries — the single-forward core.
+    """One combined K/V set read by two queries: the single-forward core.
 
     Builds the ONE combined K/V set = the main stream's K/V (from ``x_main`` at σ_row) with the
     band rows overwritten by the side stream's raw K/V (from ``x_m`` at observer ``m``), then reads
     it with an extended query ``[q_main ; q_m]``.  ``q_main`` reproduces the splice forward's
     attention (feeds ``denoised``); ``q_m`` reproduces the capture forward's band attention (evolves
     ``h_m``).  Because the band K/V are spliced RAW before the fused norm+rope, they are rotated at
-    their true positions by the full-length pass — exactly as the two-forward splice does.
+    their true positions by the full-length pass, exactly as the two-forward splice does.
     """
     import comfy.model_management
     from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
@@ -386,16 +386,16 @@ def _dual_attention(  # pragma: no cover - GPU
 def _make_block_patch(  # pragma: no cover - GPU
     dm: Any, block: Any, state: dict[str, Any], idx: int
 ) -> Any:
-    """Replace-patch for one DiT block, clean-K/V splice (single-forward, Option II).
+    """Replace-patch for one DiT block, clean-K/V splice (single-forward).
 
     Modes:
     - ``embed_capture`` (one-time, clean inject): snapshot the block-0 band hidden ``h_clean``.
     - ``single``: carry a band-only side stream ``h_m`` (init ``ratio·h_main0 + (1−ratio)·h_clean``)
       alongside the main stream; per block build ONE combined K/V (main K/V, band overwritten by the
-      side stream's) read by two queries — main at σ_row (→ ``denoised``) and band at observer ``m``
-      (→ evolves ``h_m``).  Reproduces bit-for-bit the removed two-forward capture/splice mechanism
-      (preserved in ``c2-rho-fix-paths/observed-level-plant/clean-kv-split.md``) in ~1 forward.  See
-      ``c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md``.
+      side stream's) read by two queries: main at σ_row (→ ``denoised``) and band at observer ``m``
+      (→ evolves ``h_m``).  Reproduces bit-for-bit the two-forward capture/splice mechanism
+      (documented in ``c2-rho-fix-paths/observed-level-plant/clean-kv-split.md``) in ~1 forward.
+      See ``c2-rho-fix-paths/observed-level-plant/option-ii-single-forward.md``.
 
     Falls through to the original block when no observer state is armed.
     """

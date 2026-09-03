@@ -69,7 +69,7 @@ def _encode_ref_audio(audio_vae: Any, audio: Any) -> tuple[Any, int]:  # pragma:
     if sr != vae_sr:
         # Lazy import: torchaudio is only present in the ComfyUI runtime; when the
         # waveform is already at the VAE rate (sanitize_audio resamples upstream)
-        # this path — and the dependency — is skipped entirely.
+        # this path (and the dependency) is skipped entirely.
         import torchaudio  # noqa: PLC0415
 
         waveform = torchaudio.functional.resample(waveform, sr, vae_sr)
@@ -110,11 +110,11 @@ def _run_sampler(  # pragma: no cover
     audio_ticks: int,
     guide_entries: list[tuple[dict[str, Any], float, float]] | None = None,
 ) -> tuple[dict[str, Any]]:
-    """GPU/ComfyUI per-row img2img sampling pipeline — not CPU-testable.
+    """GPU/ComfyUI per-row img2img sampling pipeline; not CPU-testable.
 
     Implements the per-row img2img design (see ``sampler.py`` and ``composite.py``):
 
-    1. Build the *clean reference* — the target latent with all inject video/audio content
+    1. Build the *clean reference*, the target latent with all inject video/audio content
        composited in (:func:`~comfyui_h3_blended_inject.composite.build_clean_reference`).
        This is passed to ``sample_custom`` as the ``latent_image`` so ComfyUI's global
        ``noise_scaling`` produces ``x_global = sigma_max*eps + (1-sigma_max)*clean``.
@@ -144,7 +144,7 @@ def _run_sampler(  # pragma: no cover
 
     Guides (``guide_entries``: pre-built keyframe dicts + per-guide ``start_percent`` /
     ``end_percent``) are appended to the positive conditioning's ``minimax_keyframes`` here
-    (on a COPY — user conds are never mutated), and their step-gated windows are armed on
+    (on a COPY; user conds are never mutated), and their step-gated windows are armed on
     the conditioning wrapper (per-guide start/end step cond; see
     :func:`~comfyui_h3_blended_inject.sampler.build_conditioning_wrapper`).
 
@@ -252,9 +252,9 @@ def _run_sampler(  # pragma: no cover
 
     # Audio-fade composite mask (the official path).  Audio does NOT ride our per-row engine:
     # its conditioning m is full-generation (see derive_fractional_mask), and its fade is applied
-    # by ComfyUI's own KSamplerX0Inpaint composite via ``noise_mask`` — video band all-ones (a
+    # by ComfyUI's own KSamplerX0Inpaint composite via ``noise_mask``: video band all-ones (a
     # true composite no-op for the video stream), audio band = keep→0 / fade→m_r / drop→1.  This
-    # replaces the σ_a-axis per-row audio-ancestral path (Bug-B static source); see
+    # replaces the σ_a-axis per-row audio-ancestral path; see
     # ``audio-native-composite.md``.  None when the latent has no audio component.
     audio_noise_mask = None
     if audio is not None and audio_shape is not None:
@@ -365,7 +365,7 @@ def _run_sampler(  # pragma: no cover
     sigmas = ksampler_obj.sigmas.to(device)
 
     # Exact per-row stretched-tail sigmas: every σ_row(i) sits at position
-    # (k_d·steps + i·(steps−k_d))/steps² of the continuous schedule — an exact grid point of a
+    # (k_d·steps + i·(steps−k_d))/steps² of the continuous schedule, an exact grid point of a
     # steps²-step run of the SAME scheduler.  Pre-generate that dense grid (schedule math only,
     # no model eval) so the sampler indexes real scheduler values instead of lerping the coarse
     # steps-point grid (inaccurate under shift-12 curvature).
@@ -381,7 +381,7 @@ def _run_sampler(  # pragma: no cover
     schedule_tail_cfg["sigmas_dense"] = dense_ks.sigmas.to(device)
 
     # Arm per-guide step-gated cond now the step count is known.
-    # start_percent=0 / end_percent=1 guides need no entries (always active — official behavior).
+    # start_percent=0 / end_percent=1 guides need no entries (always active; official behavior).
     # Matching is by keyframe-dict object identity, so official-node / fl2va keyframes riding
     # the same conditioning are never caught.
     if guide_entries:
@@ -457,7 +457,7 @@ class H3AddInject:
     ``inject_list`` input of the next.  The order of the list determines last-in-wins
     priority during schedule merge.
 
-    Overlap policy (important for tooltip): a later inject in the chain overwrites earlier
+    Overlap policy: a later inject in the chain overwrites earlier
     injects on every row it claims.  Overlapping injects produce a hard edge at the boundary,
     not a crossfade.  Crossfade between injects is explicitly out of scope.
 
@@ -478,7 +478,6 @@ class H3AddInject:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:  # noqa: N802
-        """Return the full ComfyUI input schema for H3AddInject."""
         return {
             "required": {
                 "inject_at": (
@@ -492,7 +491,7 @@ class H3AddInject:
                             "Latent FRAME index in the target latent where this inject begins. "
                             "Snapped down to the nearest multiple of 17 frames. "
                             "The fade indices (start_fade_in, start_keyframes, end_keyframes, "
-                            "end_fade_out) are CLIP frame indices — positions within the "
+                            "end_fade_out) are CLIP frame indices: positions within the "
                             "injected clip's own content, not in the target latent. "
                             "Positions that are not multiples of 51 incur an audio-tick "
                             "rounding error of up to ~12.5 ms (a warning is issued)."
@@ -598,8 +597,8 @@ class H3AddInject:
                         "tooltip": (
                             "Video VAE for pre-encoding inject images into the H3 video latent "
                             "space. From a VAELoader node. When provided, the encoded latent is "
-                            "stored on the Inject and passed to the sampler's hold-and-release "
-                            "mechanism, avoiding re-encoding at sample time."
+                            "stored on the Inject and used during sampling, avoiding "
+                            "re-encoding at sample time."
                         ),
                     },
                 ),
@@ -722,7 +721,7 @@ class H3AddInject:
             )
 
         # b2. Content without a matching VAE would be SILENTLY dropped downstream
-        #     (build_clean_reference skips injects whose latents are None) — error early.
+        #     (build_clean_reference skips injects whose latents are None); error early.
         if images is not None and vae is None:
             raise ValueError(
                 "images were provided but no vae is wired; the inject content cannot be "
@@ -746,7 +745,7 @@ class H3AddInject:
                 images = images[:source_length]  # trim trailing frames from image batch
             resolution = (int(images.shape[2]), int(images.shape[1]))  # (width, height)
 
-            # Single-frame (F=1) keyframe guards — must use the ORIGINAL inject_at (the
+            # Single-frame (F=1) keyframe guards: must use the ORIGINAL inject_at (the
             # user-requested value), NOT the post-snap value, so that a non-chunk-boundary
             # request is clearly rejected rather than silently rewritten.
             if source_length == 1:
@@ -840,27 +839,26 @@ class H3AddGuide:
     at node time, it appends a :class:`~comfyui_h3_blended_inject.schedule.Guide` to the
     same chain ``H3AddInject`` uses.  ``H3InjectSampler`` partitions the chain and appends
     the native keyframe cond dicts to the positive conditioning at sample time (when the
-    target latent — and therefore frame count, resolution, and audio length — is known).
+    target latent (and therefore frame count, resolution, and audio length) is known).
 
     Differences from the official node (deliberate):
 
-    - **No in-node resize**: the guide resolution must match the target latent exactly;
+    - No in-node resize: the guide resolution must match the target latent exactly;
       a mismatch raises at sample time.  Resize upstream (e.g. kjnodes "Resize Image v2").
-    - **Per-guide ``start_percent`` / ``end_percent``**: the guide's cond row is active only
+    - Per-guide ``start_percent`` / ``end_percent``: the guide's cond row is active only
       within the half-open step window ``[start_percent, end_percent)``.  At the defaults
       (0.0 / 1.0) the guide behaves exactly like the official node.  Setting ``end_percent``
       below 1.0 releases the cond row partway through sampling so a co-located fractional
       ``H3AddInject`` keyframe can finish its own denoise without the cond-token attractor
       re-pulling it toward the source.  Official-node and fl2va keyframes are never
-      affected — the filter matches only entries this chain appended, by object identity.
+      affected; the filter matches only entries this chain appended, by object identity.
 
-    ``inject_at`` uses pixel-frame semantics (negative = from the end) —
-    NOT the latent-frame/17-snap semantics of ``H3AddInject.inject_at``.
+    ``inject_at`` uses pixel-frame semantics (negative = from the end),
+    not the latent-frame/17-snap semantics of ``H3AddInject.inject_at``.
     """
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:  # noqa: N802
-        """Return the full ComfyUI input schema for H3AddGuide."""
         return {
             "required": {
                 "inject_at": (
@@ -873,7 +871,7 @@ class H3AddGuide:
                             "PIXEL-frame index to anchor the image (or the clip's first "
                             "frame) at. Negative values count from the end of the video. "
                             "NOTE: these are pixel-frame indices like the official Add Guide "
-                            "node — NOT H3AddInject's inject_at, which is a latent-frame "
+                            "node: not H3AddInject's inject_at, which is a latent-frame "
                             "index snapped to the 17-frame grid."
                         ),
                     },
@@ -932,7 +930,7 @@ class H3AddGuide:
                             "anchored as a clip and snapped down to the model's valid "
                             "clip lengths: 5, 22, 39... (17k + 5) frames; batches "
                             "shorter than 5 frames use only the first image. Resolution "
-                            "must match the target latent exactly (no in-node resize — "
+                            "must match the target latent exactly (no in-node resize; "
                             "resize upstream); a mismatch raises at sample time."
                         ),
                     },
@@ -1010,7 +1008,7 @@ class H3AddGuide:
             resolution = (int(image.shape[2]), int(image.shape[1]))  # (width, height)
             video_latent = vae.encode(image)
         audio_latent = (
-            _encode_ref_audio(audio_vae, audio)[0]  # pragma: no cover — needs real VAE
+            _encode_ref_audio(audio_vae, audio)[0]  # pragma: no cover; needs real VAE
             if audio is not None
             else None
         )
@@ -1036,7 +1034,7 @@ class H3InjectSampler:
 
     Mirrors the core KSampler surface (model, seed, steps, cfg, sampler, scheduler, latent,
     conditioning) and adds an ``inject_list`` input.  The KSampler-Advanced chaining widgets
-    (add_noise / start-end step / leftover noise) are deliberately hidden — per-row
+    (add_noise / start-end step / leftover noise) are deliberately hidden; per-row
     compression makes partial runs per-row-incorrect (see the INPUT_TYPES note).
 
     Responsibilities:
@@ -1047,7 +1045,7 @@ class H3InjectSampler:
     3. Build the *clean reference* (target + composited inject content) and the *fractional
        per-row denoise mask*, then run a **custom sampler** that lerps each row's initial noise
        toward the clean reference and feeds the fractional schedule to the DiT as conditioning
-       (see :func:`_run_sampler`).  ``noise_mask=None`` — no native compositing — so there is
+       (see :func:`_run_sampler`).  ``noise_mask=None`` (no native compositing), so there is
        no compounding re-pin ghost; exact ``m == 0`` rows are restored by a post-sampling
        composite.
     4. Compatible with all samplers: deterministic ones (res_multistep, dpmpp_2m, euler) need
@@ -1056,9 +1054,7 @@ class H3InjectSampler:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:  # noqa: N802
-        """Return the full ComfyUI input schema for H3InjectSampler.
-
-        Sampler and scheduler lists are sourced from ``comfy.samplers`` lazily.  Falls back to
+        """Sampler and scheduler lists are sourced from ``comfy.samplers`` lazily; falls back to
         empty lists if comfy is not available (test context).
         """
         try:
@@ -1102,13 +1098,12 @@ class H3InjectSampler:
                     "FLOAT",
                     {"default": 7.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01},
                 ),
-                # NOTE (prototype): the KSampler-Advanced chaining surface (add_noise,
+                # NOTE: the KSampler-Advanced chaining surface (add_noise,
                 # start_at_step, end_at_step, return_with_leftover_noise) is HIDDEN, not
                 # supported: per-row compressed schedules make partial runs / leftover
                 # noise per-row-incorrect (fractional rows end at m*sigma_end, but the
                 # sampler's final inverse_noise_scaling divides all rows by (1-sigma_end)).
                 # Internally hardcoded to add_noise=enable / full step range / no leftover.
-                # Revisit post-prototype: see wiki status-and-open-paths.
                 "noise_seed": (
                     "INT",
                     {
@@ -1128,7 +1123,7 @@ class H3InjectSampler:
                             "Optional chain of H3AddInject / H3AddGuide entries. Leave "
                             "unconnected (or connect a chain whose nodes are all bypassed, "
                             "so it resolves to nothing) to sample the latent with no "
-                            "injects — a plain passthrough: all rows free, m=1, native "
+                            "injects; plain passthrough: all rows free, m=1, native "
                             "sampling, no per-row denoise compression."
                         ),
                     },
@@ -1137,7 +1132,7 @@ class H3InjectSampler:
                     "CONDITIONING",
                     {
                         "tooltip": (
-                            "Optional. H3 is CFG-distilled and runs with no uncond by default — "
+                            "Optional. H3 is CFG-distilled and runs with no uncond by default; "
                             "leave unconnected for standard H3 sampling. Connect a negative "
                             "conditioning to enable CFG / NRS-style guidance."
                         ),
@@ -1187,10 +1182,10 @@ class H3InjectSampler:
         inject_list:
             Optional ordered chain of :class:`~comfyui_h3_blended_inject.schedule.Inject`
             and :class:`~comfyui_h3_blended_inject.schedule.Guide` instances (partitioned
-            by type here).  ``None`` or an empty list means "no injects" — the node runs as
+            by type here).  ``None`` or an empty list means "no injects"; the node runs as
             a plain passthrough (empty schedule, no guides, native sampling of the latent).
         negative:
-            Optional negative conditioning.  ``None`` (the default) means "no uncond" —
+            Optional negative conditioning.  ``None`` (the default) means "no uncond";
             the H3 CFG-distilled default.  When provided, it is forwarded verbatim to the
             sampler for CFG / NRS-style guidance.
 
@@ -1237,7 +1232,7 @@ class H3InjectSampler:
 
         # 2. Partition the chain: Inject entries feed the per-row img2img schedule;
         #    Guide entries feed the native keyframe cond path (appended at sample time).
-        #    ``inject_list`` is optional: None / empty means "no injects" — partition
+        #    ``inject_list`` is optional: None / empty means "no injects"; partition
         #    yields empty lists, the schedule is empty, and sampling runs as a plain
         #    passthrough (all rows free, m=1, native sampling, no per-row compression).
         injects, guide_list = guides.partition_inject_list(inject_list or [])
@@ -1269,7 +1264,7 @@ class H3InjectSampler:
 
         # 6. Resolve guides against the target: exact-match resolution check, pixel
         #    frame-index resolution + bounds check, audio crop, keyframe dict build.
-        #    The keyframe dicts' OBJECT IDENTITY is the timed-removal tracking key —
+        #    The keyframe dicts' OBJECT IDENTITY is the timed-removal tracking key;
         #    built once here, threaded through _run_sampler untouched.
         guide_entries: list[tuple[dict[str, Any], float, float]] = []
         if guide_list:

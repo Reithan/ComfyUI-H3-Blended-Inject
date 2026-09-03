@@ -40,19 +40,19 @@ def resolve_guidance(
 
     Three branches, in priority order:
 
-    1. **negative is not None** (wired, even a zeroed ConditioningZeroOut):
+    1. negative is not None (wired, even a zeroed ConditioningZeroOut):
        Returns the negative unchanged, cfg unchanged, and a *new* model_options
        dict with ``disable_cfg1_optimization=True`` so the uncond pass runs
        even at cfg==1.0 (required for cfg-independent hooks like NRS).
        The input ``model_options`` dict is never mutated.
 
-    2. **negative is None AND ``"sampler_cfg_function" in model_options``**
-       (custom guidance patched but no negative supplied — user error):
+    2. negative is None AND ``"sampler_cfg_function" in model_options``
+       (custom guidance patched but no negative supplied; user error):
        Emits a UserWarning and returns ``([], cfg, model_options)`` unchanged.
-       The hook is NOT stripped; cfg is NOT overridden — the hook runs as-is
+       The hook is NOT stripped; cfg is NOT overridden; the hook runs as-is
        but without a real uncond pass (user's accepted risk).
 
-    3. **negative is None AND no hook** (official CFG-distilled cond-only path):
+    3. negative is None AND no hook (official CFG-distilled cond-only path):
        Forces ``effective_cfg=1.0`` to avoid the silent ``cond*cfg`` gain.
        Emits a UserWarning if the input cfg was not already 1.0.
        Returns ``([], 1.0, model_options)`` with model_options unchanged.
@@ -73,13 +73,13 @@ def resolve_guidance(
         ``(effective_negative, effective_cfg, effective_model_options)``
     """
     if negative is not None:
-        # Branch 1: wired negative — enable uncond pass even at cfg==1.0 so
+        # Branch 1: wired negative; enable uncond pass even at cfg==1.0 so
         # cfg-independent hooks (NRS, etc.) receive a real uncond prediction.
         new_options = {**model_options, "disable_cfg1_optimization": True}
         return negative, cfg, new_options
 
     if "sampler_cfg_function" in model_options:
-        # Branch 2: custom guidance hook present but no negative — user error.
+        # Branch 2: custom guidance hook present but no negative; user error.
         warnings.warn(
             "A custom sampler_cfg_function is patched on the model but no negative "
             "conditioning is connected.  The guidance hook will run without an "
@@ -92,7 +92,7 @@ def resolve_guidance(
         )
         return [], cfg, model_options
 
-    # Branch 3: no negative, no hook — official H3 CFG-distilled cond-only path.
+    # Branch 3: no negative, no hook; official H3 CFG-distilled cond-only path.
     if not math.isclose(cfg, 1.0):
         warnings.warn(
             f"No negative conditioning is connected (cfg={cfg!r}).  The node runs "
