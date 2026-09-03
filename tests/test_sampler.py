@@ -1590,3 +1590,341 @@ class TestMultistepStepEquivalence:
             _local_sample_dpmpp_2m, m, x, clean, _decreasing(5), model, video_element_count=2
         )
         assert torch.isfinite(out).all()
+
+
+# ---------------------------------------------------------------------------
+# DPM++ SDE family (PR4) local scalar references (CONST/RF logit form, matching
+# the native per-row steps' clamps so all-m=1 reproduces them bit-for-bit).
+# ---------------------------------------------------------------------------
+
+_SDE_EPS = 1e-8
+_SDE_HI = 1.0 - 1e-4  # matches sampler._SNR_SIGMA_HI (comfy offset_first_sigma_for_snr)
+
+
+def _snr_clamp(sigma: torch.Tensor) -> torch.Tensor:
+    return sigma.clamp(_SDE_EPS, _SDE_HI)
+
+
+def _lam(sigma: torch.Tensor) -> torch.Tensor:
+    """Half-log-SNR λ = log((1−σ)/σ) for CONST/RF (clamped, matching the native step)."""
+    return _snr_clamp(sigma).logit().neg()
+
+
+def _sig(lam: torch.Tensor) -> torch.Tensor:
+    return (-lam).sigmoid()
+
+
+def _anc(sigma_from: torch.Tensor, sigma_to: torch.Tensor, eta: float) -> Any:
+    """Scalar ``get_ancestral_step`` in exp(−λ) space (mirrors _sde_get_ancestral_step)."""
+    inner = torch.clamp(sigma_to**2 * (sigma_from**2 - sigma_to**2) / sigma_from**2, min=0.0)
+    su = torch.minimum(sigma_to, eta * torch.sqrt(inner))
+    sd = torch.sqrt(torch.clamp(sigma_to**2 - su**2, min=0.0))
+    return sd, su
+
+
+def _local_sample_dpmpp_2m_sde(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    noise_sampler: Any = None,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+    **_kw: Any,
+) -> torch.Tensor:
+    """Local reference for comfy ``sample_dpmpp_2m_sde`` (midpoint) in CONST/RF logit form."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    old_denoised = None
+    h_last = None
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigmas[i + 1] == 0:
+            x = denoised
+        else:
+            si_c = _snr_clamp(sigmas[i])
+            sip1_c = _snr_clamp(sigmas[i + 1])
+            lam_s, lam_t = _lam(sigmas[i]), _lam(sigmas[i + 1])
+            h = lam_t - lam_s
+            h_eta = h * (eta + 1.0)
+            alpha_t = sip1_c * lam_t.exp()
+            neg_em1 = torch.expm1(-h_eta).neg()
+            x = (sip1_c / si_c) * torch.exp(-h * eta) * x + alpha_t * neg_em1 * denoised
+            if old_denoised is not None:
+                r = h_last / h
+                x = x + 0.5 * alpha_t * neg_em1 * (1.0 / r) * (denoised - old_denoised)
+            if eta > 0:
+                noise = noise_sampler(sigmas[i], sigmas[i + 1])
+                renoise = torch.clamp(torch.expm1(-2.0 * h * eta).neg(), min=0.0).sqrt()
+                x = x + noise * sigmas[i + 1] * renoise * s_noise
+            old_denoised = denoised
+            h_last = h
+    return x
+
+
+def _local_sample_dpmpp_3m_sde(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    noise_sampler: Any = None,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+    **_kw: Any,
+) -> torch.Tensor:
+    """Local reference for comfy ``sample_dpmpp_3m_sde`` in CONST/RF logit form."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    denoised_1 = denoised_2 = None
+    h_1 = h_2 = None
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigmas[i + 1] == 0:
+            x = denoised
+        else:
+            si_c = _snr_clamp(sigmas[i])
+            sip1_c = _snr_clamp(sigmas[i + 1])
+            lam_s, lam_t = _lam(sigmas[i]), _lam(sigmas[i + 1])
+            h = lam_t - lam_s
+            h_eta = h * (eta + 1.0)
+            alpha_t = sip1_c * lam_t.exp()
+            em1 = torch.expm1(-h_eta)
+            x = (sip1_c / si_c) * torch.exp(-h * eta) * x + alpha_t * em1.neg() * denoised
+            if h_2 is not None:
+                r0, r1 = h_1 / h, h_2 / h
+                d1_0 = (denoised - denoised_1) / r0
+                d1_1 = (denoised_1 - denoised_2) / r1
+                d1 = d1_0 + (d1_0 - d1_1) * r0 / (r0 + r1)
+                d2 = (d1_0 - d1_1) / (r0 + r1)
+                phi_2 = em1 / h_eta + 1.0
+                phi_3 = phi_2 / h_eta - 0.5
+                x = x + (alpha_t * phi_2) * d1 - (alpha_t * phi_3) * d2
+            elif h_1 is not None:
+                r = h_1 / h
+                d = (denoised - denoised_1) / r
+                phi_2 = em1 / h_eta + 1.0
+                x = x + (alpha_t * phi_2) * d
+            if eta > 0:
+                noise = noise_sampler(sigmas[i], sigmas[i + 1])
+                renoise = torch.clamp(torch.expm1(-2.0 * h * eta).neg(), min=0.0).sqrt()
+                x = x + noise * sigmas[i + 1] * renoise * s_noise
+            denoised_1, denoised_2 = denoised, denoised_1
+            h_1, h_2 = h, h_1
+    return x
+
+
+def _local_sample_dpmpp_sde(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    noise_sampler: Any = None,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+    r: float = 0.5,
+    **_kw: Any,
+) -> torch.Tensor:
+    """Local reference for comfy ``sample_dpmpp_sde`` (2-eval) in CONST/RF logit form."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    fac = 1.0 / (2.0 * r)
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigmas[i + 1] == 0:
+            x = denoised
+        else:
+            si_c = _snr_clamp(sigmas[i])
+            sip1_c = _snr_clamp(sigmas[i + 1])
+            lam_s, lam_t = _lam(sigmas[i]), _lam(sigmas[i + 1])
+            h = lam_t - lam_s
+            lam_s_1 = lam_s + r * h
+            sigma_s_1 = _sig(lam_s_1)
+            alpha_s = si_c * lam_s.exp()
+            alpha_s_1 = sigma_s_1 * lam_s_1.exp()
+            alpha_t = sip1_c * lam_t.exp()
+            sd, su = _anc(lam_s.neg().exp(), lam_s_1.neg().exp(), eta)
+            h_ = sd.log().neg() - lam_s
+            x_2 = (alpha_s_1 / alpha_s) * torch.exp(-h_) * x
+            x_2 = x_2 - alpha_s_1 * torch.expm1(-h_) * denoised
+            if eta > 0 and s_noise > 0:
+                x_2 = x_2 + alpha_s_1 * noise_sampler(sigmas[i], sigma_s_1) * s_noise * su
+            denoised_2 = model(x_2, sigma_s_1 * s_in, **extra_args)
+            sd, su = _anc(lam_s.neg().exp(), lam_t.neg().exp(), eta)
+            h_ = sd.log().neg() - lam_s
+            denoised_d = (1.0 - fac) * denoised + fac * denoised_2
+            x = (alpha_t / alpha_s) * torch.exp(-h_) * x
+            x = x - alpha_t * torch.expm1(-h_) * denoised_d
+            if eta > 0 and s_noise > 0:
+                x = x + alpha_t * noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * su
+    return x
+
+
+_local_sample_dpmpp_2m_sde.__name__ = "sample_dpmpp_2m_sde"
+_local_sample_dpmpp_3m_sde.__name__ = "sample_dpmpp_3m_sde"
+_local_sample_dpmpp_sde.__name__ = "sample_dpmpp_sde"
+
+
+class TestSDEStepEquivalence:
+    """Native per-row DPM++ SDE steps reproduce their stock scalars exactly for all-m=1."""
+
+    def _run_native(
+        self,
+        base_fn: Any,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        noise_sampler: Any,
+        *,
+        eta: float = 1.0,
+        video_element_count: int | None = None,
+    ) -> torch.Tensor:
+        fn = build_per_row_sampler_function(
+            base_fn, m, clean, _sched(), video_element_count=video_element_count
+        )
+        return fn(model, x.clone(), sigmas, noise_sampler=noise_sampler, eta=eta)
+
+    def _m1_matches(self, base_fn: Any, scale: float) -> None:
+        model = _ScaleModel(scale)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)  # steps_n=4: first-order + multistep + terminal
+        fixed = torch.randn(1, 3)
+        stock = base_fn(model, x.clone(), sigmas, noise_sampler=_FixedNoiseSampler(fixed))
+        out = self._run_native(
+            base_fn, m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed)
+        )
+        assert torch.allclose(out, stock, atol=1e-6), (
+            f"{base_fn.__name__} m=1 native must match stock; "
+            f"max diff={float((out - stock).abs().max())}"
+        )
+
+    def test_dpmpp_2m_sde_m1_equals_stock(self) -> None:
+        self._m1_matches(_local_sample_dpmpp_2m_sde, 0.9)
+
+    def test_dpmpp_3m_sde_m1_equals_stock(self) -> None:
+        self._m1_matches(_local_sample_dpmpp_3m_sde, 0.85)
+
+    def test_dpmpp_sde_m1_equals_stock(self) -> None:
+        self._m1_matches(_local_sample_dpmpp_sde, 0.8)
+
+    def test_sde_eta_zero_equals_stock(self) -> None:
+        """eta=0 (deterministic limit) also matches stock for all three SDE steps."""
+        for base_fn in (
+            _local_sample_dpmpp_2m_sde,
+            _local_sample_dpmpp_3m_sde,
+            _local_sample_dpmpp_sde,
+        ):
+            model = _ScaleModel(0.88)
+            x = torch.randn(1, 2)
+            sigmas = _decreasing(4)
+
+            def null_ns(sigma: Any, sigma_next: Any, _x: torch.Tensor = x) -> torch.Tensor:
+                return torch.zeros_like(_x)
+
+            stock = base_fn(model, x.clone(), sigmas, noise_sampler=null_ns, eta=0.0)
+            out = self._run_native(
+                base_fn,
+                torch.ones(1, 2),
+                x,
+                torch.zeros(1, 2),
+                sigmas,
+                model,
+                noise_sampler=null_ns,
+                eta=0.0,
+            )
+            assert torch.allclose(out, stock, atol=1e-6), f"{base_fn.__name__} eta=0 mismatch"
+
+    def test_sde_m0_exact_preserve(self) -> None:
+        """m=0 rows come out exactly clean under the outer where(never, clean, x) guard."""
+        for base_fn in (
+            _local_sample_dpmpp_2m_sde,
+            _local_sample_dpmpp_3m_sde,
+            _local_sample_dpmpp_sde,
+        ):
+            model = _ScaleModel(0.5)
+            clean = torch.full((1, 3), 7.0)
+            out = self._run_native(
+                base_fn,
+                torch.zeros(1, 3),
+                torch.randn(1, 3),
+                clean,
+                _decreasing(5),
+                model,
+                noise_sampler=_FixedNoiseSampler(torch.randn(1, 3)),
+            )
+            assert torch.allclose(out, clean, atol=1e-6), f"{base_fn.__name__} m=0 not preserved"
+
+    def test_sde_fractional_finite_and_preserves_m0(self) -> None:
+        """Fractional rows stay finite (no NaN/inf from logit clamps); m=0 column preserved."""
+        for base_fn in (
+            _local_sample_dpmpp_2m_sde,
+            _local_sample_dpmpp_3m_sde,
+            _local_sample_dpmpp_sde,
+        ):
+            model = _ScaleModel(0.8)
+            m = torch.tensor([[0.0, 0.5, 1.0]])
+            clean = torch.full((1, 3), 3.0)
+            out = self._run_native(
+                base_fn,
+                m,
+                torch.randn(1, 3),
+                clean,
+                _decreasing(5),
+                model,
+                noise_sampler=_FixedNoiseSampler(torch.zeros(1, 3)),
+            )
+            assert torch.isfinite(out).all(), f"{base_fn.__name__} produced non-finite output"
+            assert torch.allclose(out[0, 0], clean[0, 0], atol=1e-6)
+
+    def test_sde_registered_and_flagged_stochastic(self) -> None:
+        """All three SDE names are in the registry AND detected stochastic (eta default > 0)."""
+        for name, fn in (
+            ("sample_dpmpp_2m_sde", _local_sample_dpmpp_2m_sde),
+            ("sample_dpmpp_3m_sde", _local_sample_dpmpp_3m_sde),
+            ("sample_dpmpp_sde", _local_sample_dpmpp_sde),
+        ):
+            assert name in _NATIVE_ROW_STEPS
+            assert sampler_is_stochastic(fn) is True
+            # Registered → the nodes.py warning condition is suppressed.
+            assert not (sampler_is_stochastic(fn) and name not in _NATIVE_ROW_STEPS)
+
+    def test_dpmpp_sde_callback_once_per_step(self) -> None:
+        """The 2-eval dpmpp_sde step fires the callback only on its first eval, index remapped."""
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(
+            _local_sample_dpmpp_sde, torch.ones(1, 2), torch.zeros(1, 2), _sched()
+        )
+        fn(
+            model,
+            torch.randn(1, 2),
+            _decreasing(4),
+            callback=cb,
+            noise_sampler=_FixedNoiseSampler(torch.zeros(1, 2)),
+        )
+        assert [d["i"] for d in seen] == [0, 1, 2]
