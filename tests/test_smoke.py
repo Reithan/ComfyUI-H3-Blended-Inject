@@ -1,7 +1,6 @@
 """Smoke tests for the package scaffold.
 
 These verify the repo imports and exposes the ComfyUI registration surface.
-Replace/extend as real nodes and logic modules land (see plan Test plan).
 """
 
 import comfyui_h3_blended_inject

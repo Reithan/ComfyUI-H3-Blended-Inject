@@ -3,8 +3,8 @@
 Behavior contract is taken from the module and function docstrings, and from the
 "H3 Add Inject" and "Test plan" sections of .claude/plans/plan.md.
 
-After the frame-space coordinate rework, evaluate_envelope returns
-list[tuple[int, float]] where each pair is (absolute_latent_row_idx, denoise).
+evaluate_envelope returns list[tuple[int, float]] where each pair is
+(absolute_latent_row_idx, denoise).
 All fade indices are CLIP frame indices; inject_at is a LATENT FRAME index.
 """
 
@@ -366,7 +366,7 @@ def _reference_evaluate_envelope(
             break
         centers_latent = row_center_times(r)
         clip_centers = [c - inject_at for c in centers_latent]
-        # New inclusion rule: center >= anchor (sfi - 1).
+        # Inclusion rule: center >= anchor (sfi - 1).
         if not any((start_fade_in - 1) <= cc <= end_fade_out for cc in clip_centers):
             continue
         values = [
@@ -791,18 +791,11 @@ class TestHalfOpenEnvelopeAnchorRegression:
     start_fade_in is the FIRST frame below 1.0; the 1.0 anchor lives at
     start_fade_in - 1.  end_fade_out is the EXCLUSIVE upper bound (denoise
     returns to 1.0 here).
-
-    Every test in this class FAILS with the old closed-interval model and
-    PASSES after the anchor fix.
     """
 
     def test_denoise_at_start_fade_in_is_below_one_not_one(self):
-        """At t = start_fade_in exactly, the new anchor shifts the ramp so denoise < 1.0.
-
-        OLD: anchor at sfi → fade_t = (sfi - sfi) / (skf - sfi) = 0 → denoise = 1.0
-        NEW: anchor at sfi-1 → fade_t = 1 / (skf - sfi + 1) > 0 → denoise < 1.0
-
-        FAILS before fix: old returns exactly 1.0.
+        """At t = start_fade_in exactly, denoise < 1.0; the anchor at sfi-1 places the
+        full-denoise point one frame before sfi, so fade_t = 1/(skf-sfi+1) > 0.
         """
         sfi, skf, ekf, efo = 3, 7, 10, 14
         d = _denoise_at_frame_time(
@@ -811,13 +804,10 @@ class TestHalfOpenEnvelopeAnchorRegression:
         assert d < 1.0, f"Expected denoise < 1.0 at t=sfi under new anchor, got {d}"
 
     def test_evaluate_envelope_pulls_in_row_with_center_before_sfi(self):
-        """Row whose center falls in [sfi-1, sfi) is excluded by old model but included by new.
+        """Row whose center falls in [sfi-1, sfi) must be included.
 
         With sfi=1, inject_at=0: row 0 has a single center at 0.5.
-        OLD: row_start = frame_to_row(inject_at + sfi) = 1 → row 0 absent.
-        NEW: anchor=0; row_start = frame_to_row(0) = 0; inclusion 0 <= 0.5 → row 0 present.
-
-        FAILS before fix: 0 not in result.
+        anchor=0; row_start = frame_to_row(0) = 0; inclusion: 0 <= 0.5 → row 0 present.
         """
         result = evaluate_envelope(
             start_fade_in=1,
@@ -835,12 +825,9 @@ class TestHalfOpenEnvelopeAnchorRegression:
         assert row_map[0] < 1.0, f"Row 0 denoise should be < 1.0, got {row_map[0]}"
 
     def test_one_frame_fade_in_ramps_not_instant_min_at_anchor_row(self):
-        """With sfi=skf (zero-length fade-in under old model), the anchor row gets a ramp value.
+        """With sfi=skf (zero-length fade-in), the anchor row gets a ramp value.
 
-        OLD: row 0 center 0.5 < sfi=1 → excluded entirely.
-        NEW: anchor=0; 0 <= 0.5 → included; fade_t = 0.5 → denoise strictly between 1.0 and min.
-
-        FAILS before fix: row 0 absent from result.
+        Row 0 center 0.5 >= anchor=0; fade_t = 0.5 → denoise strictly between 1.0 and min.
         """
         min_d = 0.3
         result = evaluate_envelope(
@@ -860,10 +847,9 @@ class TestHalfOpenEnvelopeAnchorRegression:
         assert row_map[0] < 1.0, f"Row 0 should be below 1.0, got {row_map[0]}"
 
     def test_whole_clip_sfi_zero_efo_source_length_all_rows_below_one(self):
-        """sfi=0, efo=source_length (valid after COMMIT 1) → all rows claimed with denoise < 1.0.
+        """sfi=0, efo=source_length → all rows claimed with denoise < 1.0.
 
         The anchor at -1 ensures even row 0 (center 0.5) is in the fade-in ramp.
-        This test is a sanity confirmation; it may also pass with the old model for sfi=0.
         """
         result = evaluate_envelope(
             start_fade_in=0,
@@ -890,16 +876,12 @@ class TestExclusiveEndKeyframesRegression:
 
     Hold region = [start_keyframes, end_keyframes).  end_keyframes is the FIRST fade-out
     frame; the last held frame is end_keyframes - 1.
-
-    Every test in this class FAILS with the old inclusive end_keyframes and PASSES after
-    the COMMIT 3 fix.
     """
 
     def test_denoise_at_end_keyframes_is_above_min(self):
-        """At t = end_keyframes exactly, denoise must be > min_denoise (fade-out has started).
+        """At t = end_keyframes exactly, denoise > min_denoise (fade-out has started).
 
-        OLD: hold branch `t <= ekf` fires → min_denoise.  FAILS assertion `> min_denoise`.
-        NEW: hold branch `t <= ekf-1` does not fire → fade-out → denoise > min_denoise.
+        The hold branch fires only for t <= ekf-1; t = ekf is already in the fade-out ramp.
         """
         sfi, skf, ekf, efo = 0, 3, 8, 12
         min_d = 0.3
@@ -922,9 +904,6 @@ class TestExclusiveEndKeyframesRegression:
           t=0 -> fade_t=1/3 -> 2/3     t=16 -> fade_t=2/3 -> 2/3  (equal)
           t=1 -> fade_t=2/3 -> 1/3     t=15 -> fade_t=1/3 -> 1/3  (equal)
           t=2..14 -> 0.0
-
-        OLD (inclusive ekf=15): t=15 in hold (15<=15) → 0.0 ≠ t=1 → 0.5 (sfi-anchor-less model).
-        FAILS before: frame 1 ≠ frame 15.
         """
         sfi, skf, ekf, efo = 0, 2, 15, 17
 
@@ -937,11 +916,10 @@ class TestExclusiveEndKeyframesRegression:
             assert d(float(t)) == pytest.approx(0.0), f"frame {t} should be 0.0, got {d(float(t))}"
 
     def test_is_row_exactly_zero_false_when_max_center_equals_end_keyframes_minus_half(self):
-        """A row whose highest center is ekf - 0.5 is NOT exactly zero under the new model.
+        """A row whose highest center is ekf - 0.5 must not be exactly zero.
 
-        Row 1, skf=1, ekf=5: centers (1.5, 2.5, 3.5, 4.5).  Highest center = 4.5 = ekf - 0.5.
-        OLD: all <= ekf=5 → is_row_exactly_zero=True (with min_denoise=0).  FAILS assertion.
-        NEW: 4.5 > ekf-1=4 → not all in hold → is_row_exactly_zero=False.  PASSES.
+        Row 1, skf=1, ekf=5: centers (1.5, 2.5, 3.5, 4.5).  Highest center 4.5 > ekf-1=4,
+        so not all centers are in the hold span → is_row_exactly_zero=False.
         """
         result = is_row_exactly_zero(
             row_idx=1,
@@ -957,7 +935,6 @@ class TestExclusiveEndKeyframesRegression:
 
 # ---------------------------------------------------------------------------
 # classify_row_region — region classifier tests
-# FAIL before classify_row_region is added to envelope.py; PASS after.
 # ---------------------------------------------------------------------------
 
 
@@ -1005,14 +982,13 @@ class TestClassifyRowRegion:
         assert result == "hold", f"Expected 'hold', got {result!r}"
 
     # --- fade-in ramp ---
-    # Updated (E1): ramp rows now return 'hold' by default (crossfade=False).
-    # The parked prediction-blend path is only active when crossfade=True.
+    # Ramp rows return 'hold' by default (crossfade=False).
+    # The prediction-blend path is only active when crossfade=True.
 
     def test_fade_in_ramp_row_classified_as_hold_by_default(self) -> None:
         """Row 1 centers (1.5–4.5) all in fade-in span [1, 5) → 'hold' (default, crossfade=False).
 
-        E1 change: ramp rows use fractional hold-and-release by default; staggered
-        per-row release IS the fade. The old assertion was 'fade'; updated to 'hold'.
+        Ramp rows use fractional hold-and-release by default; staggered per-row release IS the fade.
         """
         result = classify_row_region(
             row_idx=1,
@@ -1046,9 +1022,8 @@ class TestClassifyRowRegion:
     def test_fade_in_ramp_row_min_denoise_zero_classified_as_hold_by_default(self) -> None:
         """Fade-in ramp row with min_denoise=0 → 'hold' by default (not 'preserve', not 'fade').
 
-        E1 change: ramp rows with min_denoise=0 used to return 'fade'; now return 'hold'
-        by default because classification uses integer clip-frame membership (ramp span),
-        not min_denoise. min_denoise=0 only yields 'preserve' inside the hold span.
+        Classification uses integer clip-frame membership (ramp span), not min_denoise.
+        min_denoise=0 only yields 'preserve' inside the hold span.
         """
         result = classify_row_region(
             row_idx=1,
@@ -1085,7 +1060,7 @@ class TestClassifyRowRegion:
     def test_fade_out_ramp_row_classified_as_hold_by_default(self) -> None:
         """Row 3 centers (9.5–12.5) in fade-out span [9, 14) → 'hold' (default, crossfade=False).
 
-        E1 change: ramp rows now return 'hold' by default; old assertion was 'fade'.
+        Ramp rows use fractional hold-and-release; 'fade' requires crossfade=True.
         """
         result = classify_row_region(
             row_idx=3,
@@ -1131,13 +1106,11 @@ class TestClassifyRowRegion:
         assert result == "free", f"Expected 'free' (row outside envelope), got {result!r}"
 
     # --- boundary: row spanning hold+fade ---
-    # Updated (E1): these rows are now 'hold' by default; 'fade' only when crossfade=True.
+    # These rows are 'hold' by default; 'fade' only when crossfade=True.
 
     def test_boundary_row_spanning_hold_and_fade_in_classified_as_hold_by_default(self) -> None:
         """Row 1 centers (1.5–4.5): 1.5 and 2.5 in fade-in [1,3), 3.5 and 4.5 in hold [3,10).
         Not ALL in hold → ramp row. Default (crossfade=False) → 'hold'.
-
-        E1 change: boundary ramp rows now return 'hold' by default; old assertion was 'fade'.
         """
         result = classify_row_region(
             row_idx=1,
@@ -1174,8 +1147,6 @@ class TestClassifyRowRegion:
     def test_boundary_row_spanning_hold_and_fade_out_classified_as_hold_by_default(self) -> None:
         """Row 2 centers (5.5–8.5): some in hold [5,8), some in fade-out [8,14).
         Not ALL in hold → ramp row. Default (crossfade=False) → 'hold'.
-
-        E1 change: boundary ramp rows now return 'hold' by default; old assertion was 'fade'.
         """
         result = classify_row_region(
             row_idx=2,
@@ -1240,9 +1211,8 @@ class TestClassifyRowRegion:
         assert result == "preserve", f"Expected 'preserve' with inject_at=17 offset, got {result!r}"
 
     def test_inject_at_offset_ramp_row_hold_by_default(self) -> None:
-        """Row 6 (inject_at=17) clip centers in fade-in [1,5) → 'hold' by default (crossfade=False).
-
-        E1 change: ramp rows return 'hold' by default; old assertion was 'fade'.
+        """Row 6 (inject_at=17) clip centers in fade-in [1,5), so 'hold' by default
+        (crossfade=False).
         """
         result = classify_row_region(
             row_idx=6,
@@ -1324,9 +1294,9 @@ class TestClassifyRowRegion:
         ensuring all non-negative clip centers are fully inside [0, ekf).
         """
         skf = 0  # hold starts at clip frame 0; anchor at -1
-        ekf = ekf_gap  # exclusive end
-        efo = ekf  # no fade-out
-        sfi = skf  # no fade-in
+        ekf = ekf_gap
+        efo = ekf
+        sfi = skf
 
         # Find a row whose ALL clip centers are in [0, ekf) after subtracting inject_at.
         # Row at frame_to_row(inject_at) has center inject_at + 0.5; clip center = 0.5.

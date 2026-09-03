@@ -261,7 +261,7 @@ class TestFractionalMaskNestedPath:
 
 
 # ---------------------------------------------------------------------------
-# Regression: audio_component_shape required on nested path (Task #55)
+# Regression: audio_component_shape required on nested path
 # ---------------------------------------------------------------------------
 
 
@@ -269,13 +269,8 @@ class TestMissingAudioComponentShapeRaisesValueError:
     """derive_fractional_mask must raise ValueError (not assert) when
     video_component_shape is given but audio_component_shape is omitted.
 
-    Before the fix, this was guarded by ``assert audio_component_shape is not None``,
-    which is stripped silently under ``python -O`` — producing undefined behavior instead
-    of a clear error.  The fix uses ``raise ValueError``, which is never stripped.
-
-    Fail-then-pass: with the old assert code a ``pytest.raises(ValueError)`` block
-    catches nothing (assert raises AssertionError, not ValueError) and the test fails.
-    With the fix it passes.
+    Guarding with ``assert audio_component_shape is not None`` is silently stripped under
+    ``python -O``, producing undefined behavior. ``raise ValueError`` is never stripped.
     """
 
     def test_raises_value_error_when_audio_shape_missing(self) -> None:

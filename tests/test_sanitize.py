@@ -1,10 +1,4 @@
-"""Tests for comfyui_h3_blended_inject.sanitize.
-
-All functions currently raise NotImplementedError; every test here is expected
-to fail (error) until the implementations land.  The test bodies encode the
-documented contract so that a correct implementation makes them pass without
-modification.
-"""
+"""Tests for comfyui_h3_blended_inject.sanitize."""
 
 from __future__ import annotations
 
@@ -517,7 +511,6 @@ class TestValidateEnvelopeIndices:
 
     def test_end_fade_out_equals_source_length_allowed(self):
         # Under the half-open [sfi, efo) model, efo == source_length is valid.
-        # FAILS before the guardrail fix (old code raises), PASSES after.
         assert validate_envelope_indices(0, 5, 10, 20, 20, 30, 0) is None
 
     def test_end_fade_out_gt_source_length_raises(self):
@@ -538,7 +531,7 @@ class TestValidateEnvelopeIndices:
     # -- Error message includes the values that violated the constraint ---------
 
     def test_bounds_violation_message_includes_values(self):
-        # efo=25 > source_length=20: must still raise under the >= fix.
+        # efo=25 > source_length=20: raises; message includes the offending values.
         with pytest.raises(ValueError) as exc_info:
             validate_envelope_indices(0, 5, 10, 25, 20, 30, 0)
         msg = str(exc_info.value)
@@ -590,7 +583,9 @@ class TestValidateEnvelopeIndices:
 
 
 class TestSnapLengthDown:
-    """snap_length_down(n) → largest 17k+5 <= n; warn on snap; ValueError when n < 5."""
+    """snap_length_down(n) → largest 17k+5 <= n; warn on snap; n=1 returns 1;
+    ValueError for n in {2,3,4} or n < 1.
+    """
 
     # -- Snap-down cases: warn and return snapped value -------------------------
 
@@ -682,8 +677,6 @@ class TestSnapLengthDown:
 
         Valid set is {1} ∪ {17n+5}; the H3 VAE single-frame path produces exactly
         1 latent row, so length 1 is a first-class valid inject length.
-        FAIL-THEN-PASS: Before this change, snap_length_down(1) raises ValueError
-        (caught by the old 'source_length < 5' guard); after it returns 1.
         """
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -695,11 +688,7 @@ class TestSnapLengthDown:
     # -- Lengths 2, 3, 4 are explicitly invalid --------------------------------
 
     def test_error_2_raises(self):
-        """source_length=2 → ValueError: not 1 frame and not >= 5 (17n+5).
-
-        FAIL-THEN-PASS: Before this change the error message doesn't mention '1 frame';
-        the test matches the new guidance message.
-        """
+        """source_length=2 → ValueError: not 1 frame and not a valid 17n+5 length."""
         with pytest.raises(ValueError, match="1 frame"):
             snap_length_down(2)
 
@@ -709,17 +698,14 @@ class TestSnapLengthDown:
             snap_length_down(3)
 
     def test_error_4_raises_with_guidance(self):
-        """source_length=4 → ValueError with guidance about valid lengths.
-
-        FAIL-THEN-PASS: The new error message mentions '1 frame'; the old message does not.
-        """
+        """source_length=4 → ValueError; message must mention '1 frame' and valid lengths."""
         with pytest.raises(ValueError, match="1 frame"):
             snap_length_down(4)
 
     # -- ValueError when source_length < 1 -------------------------------------
 
     def test_error_4(self):
-        """4 is now in the 'invalid 2-4' set → still ValueError."""
+        """4 is in the invalid set {2,3,4} → ValueError."""
         with pytest.raises(ValueError):
             snap_length_down(4)
 
@@ -790,7 +776,6 @@ class TestWarnAudioTailAlignment:
         """keep-mode + non-aligned length (56 = 5+17*3) → UserWarning.
 
         ceil(56/17)=4, 4%3=1 → not audio-aligned.
-        FAIL-THEN-PASS: Without the emit logic, no warning is produced.
         """
         with pytest.warns(UserWarning, match="audio-sync-aligned"):
             warn_audio_tail_alignment(
@@ -838,14 +823,10 @@ class TestWarnAudioTailAlignment:
             )
 
     def test_warn_keep_mode_with_video_fadeout_reaching_tail(self):
-        """Regression: keep-mode + video fade-out reaching tail → MUST warn.
+        """Regression: keep-mode + video fade-out reaching tail must warn (not be suppressed).
 
-        Bug (pre-fix): is_faded_through checked ALL modes; end_fade_out=56 ==
-        snapped_length=56 AND end_fade_out > end_keyframes → suppressed warning
-        even in keep mode.  Fix: gate is_faded_through on audio_mode == "fade".
-
-        FAIL-THEN-PASS: Against the unfixed code this test fails with
-        "Failed: DID NOT WARN".  After the one-line fix it passes.
+        Constraint: is_faded_through is gated on audio_mode == "fade"; checking all modes
+        suppresses the keep-mode warning when end_fade_out == snapped_length.
         """
         with pytest.warns(UserWarning, match="audio-sync-aligned"):
             warn_audio_tail_alignment(
