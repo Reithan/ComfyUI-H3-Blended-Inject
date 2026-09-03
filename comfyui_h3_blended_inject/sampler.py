@@ -416,6 +416,27 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     return ctx.x_prev + r * (x_base - ctx.x_prev)
 
 
+def _default_row_noise_sampler(ctx: _StepContext, extra_args: dict[str, Any]) -> Any:
+    """Build (once) or fetch the seeded ``default_noise_sampler`` for RF-ancestral steps.
+
+    Shared by :func:`_euler_ancestral_rf_step` and :func:`_dpmpp_2s_ancestral_step` (both use
+    comfy's plain per-interval Gaussian noise, not the SDE BrownianTree).  Tests inject a
+    deterministic sampler via ``ctx.kwargs["noise_sampler"]``; the GPU path imports comfy's
+    ``default_noise_sampler``.  Persisted across steps via ``ctx.state`` so the generator advances
+    once per interval, matching stock's single pre-loop build.
+    """
+    if "noise_sampler" not in ctx.state:
+        ns = ctx.kwargs.get("noise_sampler")
+        if ns is None:
+            from comfy.k_diffusion.sampling import default_noise_sampler  # pragma: no cover
+
+            ns = default_noise_sampler(  # pragma: no cover
+                ctx.x_prev, seed=extra_args.get("seed")
+            )
+        ctx.state["noise_sampler"] = ns
+    return ctx.state["noise_sampler"]
+
+
 def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row RF-ancestral step for euler_ancestral on H3.
 
@@ -465,16 +486,7 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
         )
 
     # Build or retrieve the seeded noise sampler (persists across steps via ctx.state).
-    if "noise_sampler" not in ctx.state:
-        ns = ctx.kwargs.get("noise_sampler")
-        if ns is None:
-            from comfy.k_diffusion.sampling import default_noise_sampler  # pragma: no cover
-
-            ns = default_noise_sampler(  # pragma: no cover
-                ctx.x_prev, seed=extra_args.get("seed")
-            )
-        ctx.state["noise_sampler"] = ns
-    noise_sampler = ctx.state["noise_sampler"]
+    noise_sampler = _default_row_noise_sampler(ctx, extra_args)
 
     carrier = ctx.sigmas[ctx.i]
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
@@ -955,6 +967,79 @@ def _dpmpp_sde_step(ctx: _StepContext) -> torch.Tensor:
     return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
 
 
+def _dpmpp_2s_ancestral_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row DPM-Solver++(2S) ancestral step (stochastic, TWO model evals, no history).
+
+    Ports comfy's ``sample_dpmpp_2s_ancestral_RF`` (sampling.py:686-734): PR2's exact RF-ancestral
+    renoise algebra (``downstep_ratio`` → ``sigma_down``, ``alpha_ip1/alpha_down``,
+    ``renoise_coeff``, ``default_noise_sampler``) wrapped around a second-order midpoint refine
+    (the DPM++(2S) inner solve), shaped like :func:`_dpmpp_sde_step`'s 2-eval structure with a
+    :func:`publish_labels` refresh — but the midpoint is deterministic (no ancestral noise on the
+    inner ``u``) and the noise draw is comfy's plain per-interval Gaussian, not the SDE Brownian
+    tree.
+
+    Eval 1 recovers per-row ``x0`` at the global carrier σ (fires the callback).  The per-row
+    midpoint ``σ_s = sigmoid(−(λ_i + r·(λ_down − λ_i)))`` sits in half-log-SNR space between the
+    row's σ and its ancestral-reduced ``sigma_down`` (r=½).  Eval 2 runs at the GLOBAL midpoint
+    carrier after :func:`publish_labels` republishes ``w_mid = σ_s/σ_s_g`` so the model returns each
+    row's midpoint velocity, recovered via :func:`_recover_at`.  The final ancestral renoise is
+    identical to :func:`_euler_ancestral_rf_step`.
+
+    m=1 rows reproduce stock (``σ_s == σ_s_g`` → ``w_mid = 1``, identical noise draw); terminal rows
+    (``sig_row_next == 0``) take the denoising branch (matching stock's Euler terminal → denoised);
+    m=0 rows freeze under the outer guard.  Fractional-row caveat matches :func:`_dpmpp_sde_step`:
+    eval 2's clean-K/V side stream is primed at step ``i``'s ``sig_row`` (the task-#73 GPU risk).
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    eps = 1e-8
+    eta = ctx.kwargs.get("eta", 1.0)
+    r = 0.5
+    carrier = ctx.sigmas[ctx.i]
+
+    denoised_r = _recover_row_denoised(ctx, carrier)  # eval 1 (fires callback)
+
+    # Per-row ancestral geometry (elementwise, same algebra as _euler_ancestral_rf_step).
+    si_div = ctx.sig_row.clamp(min=eps)
+    sip1 = ctx.sig_row_next
+    sigma_down = sip1 * (1.0 + (sip1 / si_div - 1.0) * eta)
+    alpha_ip1 = 1.0 - sip1
+    alpha_down = 1.0 - sigma_down
+    renoise_coeff = torch.sqrt(
+        torch.clamp(sip1**2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2, min=0.0)
+    )
+
+    # Per-row midpoint σ_s in half-log-SNR space, from the row's σ to its sigma_down.
+    lam_i = _snr_lambda(_snr_clamp(ctx.sig_row))
+    lam_down = _snr_lambda(_snr_clamp(sigma_down))
+    sigma_s = _snr_sigma(lam_i + r * (lam_down - lam_i))
+
+    # Global midpoint carrier (scalar) for eval 2, formed the same way from the global schedule.
+    sg_down = ctx.sig_g_next * (1.0 + (ctx.sig_g_next / _snr_clamp(ctx.sig_g) - 1.0) * eta)
+    lam_ig = _snr_lambda(_snr_clamp(ctx.sig_g))
+    lam_downg = _snr_lambda(_snr_clamp(sg_down))
+    sigma_s_g = _snr_sigma(lam_ig + r * (lam_downg - lam_ig))
+
+    # Inner DPM++(2S) solve: deterministic midpoint point u, then eval 2 at the global midpoint.
+    u_ratio = sigma_s / si_div
+    u = u_ratio * ctx.x_prev + (1.0 - u_ratio) * denoised_r
+    w_mid = (sigma_s / sigma_s_g).clamp(max=1.0)
+    ctx.state["publish_labels"](w_mid)
+    d_i_r = _recover_at(ctx, sigma_s_g, sigma_s, u, fire_callback=False)
+
+    down_ratio = sigma_down / si_div
+    x_new = down_ratio * ctx.x_prev + (1.0 - down_ratio) * d_i_r
+
+    # Final ancestral renoise (comfy's plain per-interval Gaussian, PR2 algebra).
+    if eta > 0:
+        s_noise = _sde_s_noise(ctx)
+        noise_sampler = _default_row_noise_sampler(ctx, extra_args)
+        noise = noise_sampler(carrier, ctx.sigmas[ctx.i + 1])
+        x_new = (alpha_ip1 / alpha_down) * x_new + noise * s_noise * renoise_coeff
+
+    x_new = torch.where(ctx.sig_row_next <= eps, denoised_r, x_new)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
 _NATIVE_ROW_STEPS: dict[str, StepFn] = {
@@ -965,6 +1050,7 @@ _NATIVE_ROW_STEPS: dict[str, StepFn] = {
     "sample_dpmpp_sde": _dpmpp_sde_step,
     "sample_dpmpp_2m_sde": _dpmpp_2m_sde_step,
     "sample_dpmpp_3m_sde": _dpmpp_3m_sde_step,
+    "sample_dpmpp_2s_ancestral": _dpmpp_2s_ancestral_step,
 }
 
 
