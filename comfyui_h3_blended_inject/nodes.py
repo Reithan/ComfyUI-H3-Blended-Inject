@@ -563,7 +563,8 @@ class H3AddInject:
                             "this is the single frame's denoise value. "
                             "Follows img2img convention on H3's shift-12 schedule: "
                             "d <= 0.3 retains most content; d >= 0.7 is heavy redraw. "
-                            "Values below ~1/steps never release due to step quantization."
+                            "Values below ~1/steps round down to zero denoise steps and leave "
+                            "the frame untouched."
                         ),
                     },
                 ),
