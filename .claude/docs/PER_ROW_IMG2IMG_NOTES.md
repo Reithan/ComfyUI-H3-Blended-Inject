@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `add-per-row-dpmpp-sde-steps`) — PR4 per-row DPM++ SDE family (dpmpp_sde/2m_sde/3m_sde) BUILDING, source-confirmed @b78cec87; in sampler-class-support.md + its children (delivery-plan.md, native-step-design.md).
+Last updated: 2026-09-02 (branch `add-per-row-dpmpp-sde-steps`) — PR4 per-row DPM++ SDE (dpmpp_sde/2m_sde/3m_sde) BUILT + GPU-CONFIRMED (user local, all three good), PR #36 open; dpmpp_2s_ancestral flagged as PR5 candidate. See sampler-class-support.md + delivery-plan.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
