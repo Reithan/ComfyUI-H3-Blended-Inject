@@ -1,5 +1,5 @@
-<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep; PR1 refactor pending; PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three, PR #36 open) -->
-<!-- verified: 2026-09-02 · PR4 SDE BUILT + GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 open; user local all three good: 2m_sde/3m_sde/sde); PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local both good, CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33; PR5 2s_ancestral candidate flagged -->
+<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep; PR1 refactor pending; PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three, PR #36 open; PR5 dpmpp_2s_ancestral BUILT + CPU-tested, GPU pending) -->
+<!-- verified: 2026-09-02 · PR4 SDE BUILT + GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 open; user local all three good: 2m_sde/3m_sde/sde); PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local both good, CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33; PR5 dpmpp_2s_ancestral BUILT + CPU-tested (same PR #36 branch), GPU pending in task #73 -->
 # Delivery plan (4 PRs, tasks #66–#73)
 
 Child of [sampler-class-support.md](../sampler-class-support.md) — detailed per-PR specs
@@ -101,10 +101,23 @@ SNR mapping, not the clean RF alpha identity) → user reran the label→timeste
 min_denoise 0.2–0.3, ALL THREE samplers). User local quality check 2026-09-02: all three good, no
 leak — gate cleared. PR #36 open; mark completed only after it merges to `main`.
 
-**PR5 candidate (IDENTIFIED, NOT user-committed): `dpmpp_2s_ancestral`.** Comfy
-`sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734) is NOT yet natively supported — it routes
-through `_fallback_step` (wrap+r-scale), the Bug-B-prone path for a stochastic ancestral sampler.
-Structurally it is the intersection of PR2's `_euler_ancestral_rf_step` (identical `alpha_ip1`/
-`alpha_down` + `renoise_coeff` ancestral renoise, `default_noise_sampler` not BrownianTree) and
-PR4's `_dpmpp_sde_step` (2-eval midpoint + `publish_labels` refresh, σ=1→0.9999 guard). Flagged as
-an identified-but-unbuilt candidate; direction not yet user-confirmed.
+**PR5 `dpmpp_2s_ancestral` — BUILT (folded into the PR #36 branch `add-per-row-dpmpp-sde-steps`;
+user asked to keep it here, NOT a separate PR) + CPU-tested, GPU PENDING.** New
+`_dpmpp_2s_ancestral_step` registered under `sample_dpmpp_2s_ancestral` in `_NATIVE_ROW_STEPS`.
+Ports comfy `sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734): PR2's exact RF-ancestral renoise
+algebra (`downstep_ratio`→`sigma_down`, `alpha_ip1`/`alpha_down`, `renoise_coeff`,
+`default_noise_sampler` — NOT the SDE BrownianTree) wrapped around a 2-eval DPM++(2S) midpoint
+refine shaped like `_dpmpp_sde_step` (per-row + global midpoint via the half-log-SNR identity,
+`publish_labels(w_mid)` refresh between the two evals). Difference vs `dpmpp_sde`: the inner
+midpoint point `u` is DETERMINISTIC (no ancestral noise on the inner solve); noise is added only in
+the final per-interval renoise. Shared `_default_row_noise_sampler(ctx, extra_args)` helper
+EXTRACTED, now used by BOTH `_euler_ancestral_rf_step` and `_dpmpp_2s_ancestral_step` (the
+euler_ancestral change is a behavior-identical refactor). 2 evals/step, no history; terminal rows
+(`sig_row_next==0`) → denoised_r (matches stock's Euler terminal); m=0 rows freeze; same
+fractional-row caveat as `dpmpp_sde` (eval-2 side stream primed at step σ, not midpoint — the
+task-#73 GPU risk). Tests (`tests/test_sampler.py::TestSDEStepEquivalence`):
+`_local_sample_dpmpp_2s_ancestral` CONST/RF logit reference (`__name__`-routed), m1-equals-stock,
+folded into the eta=0/m0-preserve/fractional/registered-stochastic loops + a callback-once-per-step
+test. Full suite 665 passed, sampler.py diff coverage 100%. GPU PENDING: user must add
+`dpmpp_2s_ancestral` to the task-#73 GPU spike (all-samplers leak test); the SDE trio
+(2m_sde/3m_sde/sde) is GPU-confirmed, 2s_ancestral is NOT yet GPU-run.

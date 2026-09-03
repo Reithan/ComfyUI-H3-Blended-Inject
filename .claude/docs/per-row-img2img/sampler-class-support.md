@@ -1,7 +1,7 @@
 <!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral VIDEO 2026-08-27;
      Finding 1 FIXED by PR3 2026-09-02, GPU-CONFIRMED (user local test dpmpp_2m + res_multistep both good);
-     audio AXIS-BLIND post-#33 (no σ_a projection); PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three, PR #36 open) -->
-<!-- verified: 2026-09-02 · PR4 SDE BUILT + GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 open; user local all three good: 2m_sde/3m_sde/sde); PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local dpmpp_2m + res_multistep both good; CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; PR5 2s_ancestral candidate flagged -->
+     audio AXIS-BLIND post-#33 (no σ_a projection); PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three, PR #36 open; PR5 dpmpp_2s_ancestral BUILT + CPU-tested, GPU pending) -->
+<!-- verified: 2026-09-02 · PR4 SDE BUILT + GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 open; user local all three good: 2m_sde/3m_sde/sde); PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local dpmpp_2m + res_multistep both good; CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; PR5 dpmpp_2s_ancestral BUILT + CPU-tested (same PR #36 branch), GPU pending in task #73 -->
 <!-- source: comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde,
      796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
@@ -10,8 +10,8 @@
 (branch `add-per-row-multistep-steps` @6a5e786, durable + CPU tests, Finding 1 FIXED, user local
 GPU test 2026-09-02 dpmpp_2m + res_multistep both good); PR1 refactor pending; PR4 (SDE family)
 BUILT + GPU-CONFIRMED (branch `add-per-row-dpmpp-sde-steps`, PR #36 open; user local quality check
-2026-09-02, all three good: dpmpp_2m_sde/dpmpp_3m_sde/dpmpp_sde). PR5 `dpmpp_2s_ancestral` flagged
-as an identified-but-unbuilt candidate (not user-committed).**
+2026-09-02, all three good: dpmpp_2m_sde/dpmpp_3m_sde/dpmpp_sde). PR5 `dpmpp_2s_ancestral` BUILT +
+CPU-tested on the same PR #36 branch (folded in, not a separate PR), GPU still owed in task #73.**
 See also: [bugs.md Bug B](bugs.md#bug-b) · [stochastic-recovery-theory.md](stochastic-recovery-theory.md)
 · [audio-carry-identity.md](audio-carry-identity.md) · [PER_ROW_IMG2IMG_NOTES.md](../PER_ROW_IMG2IMG_NOTES.md)
 
@@ -81,11 +81,13 @@ per-row multistep, dispatch/whitelist, and deferred multi-eval samplers — in t
   larger than PR2's — the task-#73 GPU gate is now CLEARED: user local quality check 2026-09-02, all
   three (dpmpp_2m_sde/dpmpp_3m_sde/dpmpp_sde) ran clean, no leak on the 39f fade / min_denoise
   0.2–0.3 surrogate; PR #36 open.
-- **PR5 candidate (`dpmpp_2s_ancestral`, identified, NOT built):** comfy
-  `sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734) still routes through `_fallback_step`
-  (wrap+r-scale), the Bug-B-prone path for a stochastic ancestral sampler → a leak risk until
-  natively ported. It is structurally PR2's ancestral renoise ∩ PR4's 2-eval midpoint; direction
-  not yet user-confirmed.
+- **PR5 (`dpmpp_2s_ancestral`, BUILT + CPU-tested, GPU pending):** native
+  `_dpmpp_2s_ancestral_step` is now registered in `_NATIVE_ROW_STEPS` (folded into the PR #36 branch
+  `add-per-row-dpmpp-sde-steps`), so it no longer routes through the Bug-B-prone `_fallback_step`.
+  Structurally it is PR2's ancestral renoise (shared `_default_row_noise_sampler`, DETERMINISTIC
+  inner midpoint) ∩ PR4's `_dpmpp_sde_step` 2-eval midpoint + `publish_labels`. CPU tests pass (665
+  suite, 100% diff coverage); GPU still owed — user must add it to the task-#73 all-samplers leak
+  spike (the SDE trio is GPU-confirmed, 2s_ancestral is NOT yet GPU-run).
 - **Audio (AXIS-BLIND post-#33):** the shipped architecture returns the VIDEO σ_v for EVERY row
   (`sampler.py::row_sigma`/`global_sigma`), and audio's fade rides the official KSamplerX0Inpaint
   noise_mask composite ([audio-native-composite.md](audio-native-composite.md)). There is NO σ_a/σ_v
@@ -119,6 +121,7 @@ before investing in multistep work. The full per-PR specs live in the child doc
   SNR helpers), `dpmpp_sde` 2-eval + `publish_labels` refresh, axis-blind (σ_v every row, σ_a
   machinery dropped). Task-#73 GPU gate CLEARED: all three ran clean on H3 (dpmpp_2m_sde good,
   dpmpp_3m_sde good, dpmpp_sde good). Full SDE spine spec + source-line map in the child doc.
-- **PR5 `dpmpp_2s_ancestral` (candidate, NOT user-committed)** — comfy
-  `sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734) is still on the `_fallback_step` wrap+r-scale
-  (Bug-B-prone); native port = PR2 ancestral renoise ∩ PR4 2-eval midpoint. Detail in the child doc.
+- **PR5 `dpmpp_2s_ancestral` — BUILT + CPU-tested, GPU pending (folded into the PR #36 branch).**
+  Native `_dpmpp_2s_ancestral_step` in `_NATIVE_ROW_STEPS` = PR2 ancestral renoise (shared
+  `_default_row_noise_sampler`, deterministic inner midpoint) ∩ PR4 2-eval midpoint; GPU owed in
+  task #73. Detail in the child doc.
