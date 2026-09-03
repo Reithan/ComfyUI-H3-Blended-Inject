@@ -1,12 +1,48 @@
 <!-- provenance: bug+proof (Fix A VALIDATED free audio; H2 FALSIFIED as fade-length confound 2026-08-28;
      short-fade whistle RESOLVED = C2 ρ ancestral-amplified, GPU 0/0/49/73 2026-08-29 — canonical in audio-carry-identity.md;
-     primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid) -->
+     primary open bug = long-fade video interference, RCA in progress; σ_a-LABEL proof valid;
+     PR #31 σ_v RE-EXTRACT UNMERGED (being closed) — designed + unit-tested on branches #26/#31; NOT shipped to main;
+     σ_v axis is NECESSARY BUT INSUFFICIENT ALONE — superseded by the combined fix on branch fix-euler-ancestral-per-row-renoise) -->
 <!-- verified: 2026-08-28 · Fix A: no-fractional-injects GPU A/B VALIDATED; H2 falsified by late fade-length GPU data (same date);
      euler-discriminator collapsed (tests differed in fade length, not sampler); σ_a-label proof from comfy-ref @b78cec87 -->
 # Audio ancestral axis mismatch — Fix A VALIDATED for free audio; H2 FALSIFIED; primary long-fade video bug open
 
 Consequence 3 of the [audio carry identity](audio-carry-identity.md).
 Read when debugging `_euler_ancestral_rf_step`, Fix A, or fractional-region audio ([bugs.md](bugs.md)).
+
+## PR #31 σ_v RE-EXTRACT — UNMERGED; NECESSARY BUT INSUFFICIENT ALONE (GPU 2026-09-01) — read first
+
+⚠ **Merge-state correction (2026-09-01):** PR #31 was NEVER shipped to `main` and is being closed.
+The σ_v-axis re-extraction was **designed + unit-tested on unmerged branches (#26, #31)** only;
+`main` carries no σ_v-axis change. It is **superseded by the combined fix** on branch
+`fix-euler-ancestral-per-row-renoise` — see [euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md).
+
+PR #31 (`reextract-audio-ancestral-sigma-v-axis`) re-extracts the ancestral integration onto the
+σ_v axis in `_euler_ancestral_rf_step` via new `sig_row_v`/`sig_row_v_next` (per-row x0 from the
+global-carrier velocity projected onto σ_v). Real, unit-verified change — σ_a vs σ_v per-row
+schedules genuinely differ (max diff ~0.32) — but a **no-op for every VIDEO row**
+(`sig_row_v == sig_row`); it perturbs ONLY audio rows.
+
+GPU (user, 2026-09-01; single-frame fractional injects): on the σ_v branch alone the audible audio
+noise **PERSISTS** under `euler_ancestral`. So the σ_v axis is **NECESSARY BUT INSUFFICIENT ALONE** —
+NOT the wrong cause. The earlier "chased the wrong cause / FALSIFIED as the audio cause" framing is
+**corrected**: PR #31 failed on FRACTIONAL audio only because the clean-K/V splice bypass (Bug F)
+still fed the ancestral step a contaminated denoised. Both halves are required together.
+
+**Decisive discriminator (same branch/prompt, only sampler changed):** `euler` produces NEITHER the
+audio noise NOR the video ghost; `euler_ancestral` produces BOTH. The two symptoms share the
+`euler_ancestral` renoise path but need distinct fixes, combined in one change:
+
+- Audio noise = σ_v-axis integration (Bug C, half 2) fed a CLEAN denoised (Bug F clean-K/V wiring,
+  half 1). Neither half alone clears it — that is why the σ_v-only PR #31 branch still had noise.
+  The stochastic-renoise reading ([bugs.md](bugs.md) Bug B) alone was too narrow; the axis IS
+  load-bearing once the denoised is clean.
+- Video ghost = the same clean-K/V wiring gap (clean-K/V not routed under euler_ancestral) —
+  see [bugs.md](bugs.md) Bug F.
+- Deterministic `euler` already routes through the clean-K/V splice and runs no renoise → clean.
+
+Fix A below is unaffected (it fixed the m=1 free-audio renoise mis-scale, GPU-validated
+2026-08-28); this note concerns the fractional-inject audio artifact only.
 
 ## VALIDATED for free audio (controlled GPU 2026-08-28) — read this first
 
@@ -41,11 +77,12 @@ renoise was injected every step → accumulating tinny/reverb noise. `euler` run
 was clean both ways (main and branch). Fix A puts the renoise integration back on the σ_v axis the
 packed audio really follows. **FIXED by Fix A.**
 
-**Shipped form (2026-08-29):** Fix A is extracted standalone on branch
+**Branch form (2026-08-29; UNMERGED):** Fix A is extracted standalone on branch
 `fix-audio-ancestral-sigma-v-axis` (σ_v-axis ancestral integration only, via a new `row_sigma_v(i)`
 helper + `sig_row_v` on `_StepContext`). The σ̃/`sig_row_c` carry-consistent layer (H2) was
-DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the
-mergeable branch is Fix-A-only. 620 passed, ruff clean.
+DELIBERATELY DROPPED — its justifying discriminator is falsified (see H2 section) — so the branch is
+Fix-A-only. 620 passed, ruff clean. NOT on `main`; folded into the combined fix
+([euler-ancestral-per-row-fix.md](euler-ancestral-per-row-fix.md)).
 
 **Scope: the σ_v axis applies to ALL per-row integration, not just `_euler_ancestral_rf_step`.** The
 per-row multistep steps (PR3 `add-per-row-multistep-steps`) and the future DPM++ SDE spine (PR4)
@@ -101,34 +138,27 @@ both terms independently necessary. See
 
 ## σ_a is load-bearing for the LABEL — proof STILL VALID (independent of everything above)
 
-This model-contract proof is independent of the axis fix and remains valid.
+Carved out to [audio-axis-verdict/sigma-a-label-proof.md](audio-axis-verdict/sigma-a-label-proof.md)
+(char/line budget). Short: **σ_a is removable for the ancestral INTEGRATION but LOAD-BEARING for the
+model LABEL** — Fix B (σ_v for BOTH label and integration) stays REJECTED by model-contract proof.
+σ_a is load-bearing in three sites (per-row label denominator, observer-label K/V split,
+deterministic r-scaling). See the child for the full source proof and provenance.
 
-**VERDICT: σ_a is removable for the ancestral INTEGRATION but LOAD-BEARING for the LABEL.**
-Fix B (full-unification: σ_v for BOTH label AND integration) remains **REJECTED — by
-model-contract proof, not assumption.**
+## Co-location verdict — Bug C is TIMELINE-WIDE (not the co-located cause) (2026-09-01)
 
-**PROOF (independently verified from source + model, not circular):** our sampler passes the model
-a fraction `w = sig_row/sig_g` (sampler.py:755,758); the model computes `t_row = 1 − w·σ_g`
-(comment sampler.py:754; model `_forward` comfy model.py:604-605 `rows_t = 1 − m·σ_a`). For
-audio, `sig_g = sig_a[i]` which EQUALS the model's own internally-derived σ_a (both from
-time_shift_sigma(σ_v)). So current `w = sig_row_a/sig_a[i]` → model yields `1 − sig_row_a`
-(truthful label). If the σ_v fraction were passed instead (`w = sig_row_v/sig_v[i]`), the model
-still multiplies by ITS σ_a → `1 − sig_row_v·(σ_a/σ_v)`. Since time_shift_sigma is nonlinear
-(σ_a/σ_v ≈ 0.27→1.0 across the schedule,
-[dit-forward.md](native-h3-mechanism/dit-forward.md)), this MISLABELS audio, worst at
-early/high-σ steps. The σ_a denominator is required for a truthful label.
+Bug C (audio σ_a integration mis-scale on `euler_ancestral`) is TIMELINE-WIDE: in drop mode every
+audio row has `audio_denoise=1.0` (m=1); `sig_a ≠ carrier` applies to ALL audio rows uniformly.
+It CANNOT localize to a single inject. "Single-frame drop-mode audio noise = Bug C" was a
+mis-attribution.
 
-**σ_a IS LOAD-BEARING IN THREE SITES** (only the ancestral integration axis was ever questioned;
-Fix A moves ONLY that integration, not the label):
+The inject-local co-located audio noise was Bug F (video→audio joint-attention coupling):
+pre-#32 the ancestral path bypassed the clean-K/V splice → fractional VIDEO band denoised was
+ghost-contaminated → H3's shared A/V attention imprinted it on co-located audio. ATTRIBUTED
+(consistent with Bug E audio-tracks-visual GPU precedent). NOT isolated by a dedicated A/B —
+post-#32 both symptoms gone (retrodiction).
 
-1. Per-row label denominator `w = sig_row/sig_g` (sampler.py:557,755) — proven above.
-2. Observer-label K/V split — observer labels `t_obs = 1−m·σ` use shifted σ_a for audio
-   ([label-ratio-and-observer-split.md](schedule-tail-late-delta/label-ratio-and-observer-split.md):95).
-3. Deterministic r-scaling `r = (sig_row−sig_row_next)/(sig_g−sig_g_next)` in `_euler_step`
-   (:305) and `_fallback_step` (:272) — unifying to σ_v would perturb a path with zero benefit.
+Fade-band hiss: GPU PARTIAL 2026-09-01 — mid-m ring narrowed; euler UNCHANGED; residual stochastic-only.
+Leading next step: C2 durable port (PR #32, GPU pending) — [c2-durable-port.md](euler-ancestral-per-row-fix/c2-durable-port.md).
 
-**PROVENANCE — deliberate design:** σ_a axis was intentional, introduced in commit 41c488d
-("Ship schedule-tail remap + observer-label K/V split": "complete the audio port: audio rows run
-the remap on the sigma-shifted audio schedule via time_shift_sigma"). The schedule-tail remap idx
-(`k_d`, `_stream_row_sigma` sampler.py:496-499) is axis-INDEPENDENT; the 17n+5 A/V tail join
-controls layout, not sigma axis — so σ_a affects only sigma VALUES, not tail alignment.
+Bug C fix (σ_v-axis integration) is REAL and part of PR #32 — it is just timeline-wide, not the
+co-located injector-local cause.
