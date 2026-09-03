@@ -1777,9 +1777,55 @@ def _local_sample_dpmpp_sde(
     return x
 
 
+def _local_sample_dpmpp_2s_ancestral(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    noise_sampler: Any = None,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+    **_kw: Any,
+) -> torch.Tensor:
+    """Local reference for comfy ``sample_dpmpp_2s_ancestral_RF`` (2-eval), CONST/RF logit form."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    r = 0.5
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        downstep_ratio = 1.0 + (sigmas[i + 1] / sigmas[i] - 1.0) * eta
+        sigma_down = sigmas[i + 1] * downstep_ratio
+        alpha_ip1 = 1.0 - sigmas[i + 1]
+        alpha_down = 1.0 - sigma_down
+        renoise_coeff = torch.sqrt(
+            torch.clamp(sigmas[i + 1] ** 2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2, min=0.0)
+        )
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigmas[i + 1] == 0:
+            x = denoised
+        else:
+            lam_i, lam_down = _lam(sigmas[i]), _lam(sigma_down)
+            sigma_s = _sig(lam_i + r * (lam_down - lam_i))
+            u_ratio = sigma_s / sigmas[i]
+            u = u_ratio * x + (1.0 - u_ratio) * denoised
+            d_i = model(u, sigma_s * s_in, **extra_args)
+            down_ratio = sigma_down / sigmas[i]
+            x = down_ratio * x + (1.0 - down_ratio) * d_i
+        if sigmas[i + 1] > 0 and eta > 0:
+            noise = noise_sampler(sigmas[i], sigmas[i + 1])
+            x = (alpha_ip1 / alpha_down) * x + noise * s_noise * renoise_coeff
+    return x
+
+
 _local_sample_dpmpp_2m_sde.__name__ = "sample_dpmpp_2m_sde"
 _local_sample_dpmpp_3m_sde.__name__ = "sample_dpmpp_3m_sde"
 _local_sample_dpmpp_sde.__name__ = "sample_dpmpp_sde"
+_local_sample_dpmpp_2s_ancestral.__name__ = "sample_dpmpp_2s_ancestral"
 
 
 class TestSDEStepEquivalence:
@@ -1828,12 +1874,16 @@ class TestSDEStepEquivalence:
     def test_dpmpp_sde_m1_equals_stock(self) -> None:
         self._m1_matches(_local_sample_dpmpp_sde, 0.8)
 
+    def test_dpmpp_2s_ancestral_m1_equals_stock(self) -> None:
+        self._m1_matches(_local_sample_dpmpp_2s_ancestral, 0.75)
+
     def test_sde_eta_zero_equals_stock(self) -> None:
         """eta=0 (deterministic limit) also matches stock for all three SDE steps."""
         for base_fn in (
             _local_sample_dpmpp_2m_sde,
             _local_sample_dpmpp_3m_sde,
             _local_sample_dpmpp_sde,
+            _local_sample_dpmpp_2s_ancestral,
         ):
             model = _ScaleModel(0.88)
             x = torch.randn(1, 2)
@@ -1861,6 +1911,7 @@ class TestSDEStepEquivalence:
             _local_sample_dpmpp_2m_sde,
             _local_sample_dpmpp_3m_sde,
             _local_sample_dpmpp_sde,
+            _local_sample_dpmpp_2s_ancestral,
         ):
             model = _ScaleModel(0.5)
             clean = torch.full((1, 3), 7.0)
@@ -1881,6 +1932,7 @@ class TestSDEStepEquivalence:
             _local_sample_dpmpp_2m_sde,
             _local_sample_dpmpp_3m_sde,
             _local_sample_dpmpp_sde,
+            _local_sample_dpmpp_2s_ancestral,
         ):
             model = _ScaleModel(0.8)
             m = torch.tensor([[0.0, 0.5, 1.0]])
@@ -1903,6 +1955,7 @@ class TestSDEStepEquivalence:
             ("sample_dpmpp_2m_sde", _local_sample_dpmpp_2m_sde),
             ("sample_dpmpp_3m_sde", _local_sample_dpmpp_3m_sde),
             ("sample_dpmpp_sde", _local_sample_dpmpp_sde),
+            ("sample_dpmpp_2s_ancestral", _local_sample_dpmpp_2s_ancestral),
         ):
             assert name in _NATIVE_ROW_STEPS
             assert sampler_is_stochastic(fn) is True
@@ -1919,6 +1972,26 @@ class TestSDEStepEquivalence:
         model = _ScaleModel(0.9)
         fn = build_per_row_sampler_function(
             _local_sample_dpmpp_sde, torch.ones(1, 2), torch.zeros(1, 2), _sched()
+        )
+        fn(
+            model,
+            torch.randn(1, 2),
+            _decreasing(4),
+            callback=cb,
+            noise_sampler=_FixedNoiseSampler(torch.zeros(1, 2)),
+        )
+        assert [d["i"] for d in seen] == [0, 1, 2]
+
+    def test_dpmpp_2s_ancestral_callback_once_per_step(self) -> None:
+        """The 2-eval dpmpp_2s_ancestral step fires the callback only on its first eval."""
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(
+            _local_sample_dpmpp_2s_ancestral, torch.ones(1, 2), torch.zeros(1, 2), _sched()
         )
         fn(
             model,
