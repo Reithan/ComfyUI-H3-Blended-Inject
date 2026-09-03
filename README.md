@@ -2,13 +2,13 @@
 
 # ComfyUI-H3-Blended-Inject
 
-Write keyframes, clips, and audio into a MiniMax H3 audio/video generation and blend the rest of the video into them with an intuitive, img2img-style per-row denoise: a smooth, ghost-free anchor that ComfyUI's native keyframe injection can't hold at partial strength.
+Write keyframes, clips, and audio into a MiniMax H3 audio/video generation and blend the rest of the video into them with an intuitive, img2img-style per-row denoise. You get a smooth anchor with no ghosting, the faint double-image that ComfyUI's native keyframe injection leaves when you hold a frame at partial strength.
 
 #### TL;DR
 
-1. Native H3 keyframe injection ghosts at any partial denoise; its strength knob is also semantically broken (it drags the frame back to the original every step).
+1. Native H3 keyframe injection leaves that ghosting at any partial denoise, and its strength knob is semantically broken (it drags the frame back to the original on every step).
 2. H3-Blended-Inject gives every latent row its own img2img denoise: `0` locks the content exactly, `1` regenerates it freely, and fractional values redraw that fraction.
-3. Anchor a clip or still at the strength you want, and the rest of the video blends into it cleanly: no ghost, no pop.
+3. Anchor a clip or still at the strength you want, and the rest of the video blends into it cleanly, with no ghosting and no visible jump where the anchor meets the generated frames.
 
 > [!NOTE]
 > **Pre-release.** The nodes work and the author validates them on GPU runs, but the pack is not yet published to the [Comfy Registry](https://registry.comfy.org/); install manually (see [Installation](#installation)).
@@ -33,9 +33,9 @@ The pack composites an injected clip or still into a clean reference latent, the
 
 1. The sampler lerps each row's initial noise toward the clean reference in proportion to `1 − d`.
 2. The noise schedule is remapped per row: a fractional row samples only the tail of the schedule that matches its `d`, so it starts partway down the denoise curve as img2img would.
-3. The wrapper feeds the model truthful per-row denoise labels, so the model treats each row at its own strength instead of the whole latent at one.
+3. The wrapper feeds the model accurate per-row denoise labels, so the model treats each row at its own strength instead of the whole latent at one.
 
-The sampler runs with `noise_mask = None`, so there is no per-step re-compositing. Native keyframe injection re-pins the frame to the source on every step, which produces the compounding ghost at partial denoise; skipping it keeps the blend clean. A single post-sampling composite restores exact `d = 0` rows.
+The sampler runs with `noise_mask = None`, so there is no per-step re-compositing. Native keyframe injection re-pins the frame to the source on every step; at partial denoise those repeated re-pins pile a faint copy of the source onto the result, which is the ghosting. Skipping them keeps the blend clean. A single post-sampling composite restores exact `d = 0` rows.
 
 The full derivation, sampler-class analysis, and H3 internals live in the developer wiki under [`.claude/docs/`](.claude/docs/PER_ROW_IMG2IMG_NOTES.md).
 </details>
@@ -69,7 +69,7 @@ Native H3 keyframe conditioning, in the same clean workflow. A monadic clone of 
 > *Node screenshot coming soon.*
 
 - `inject_at`: pixel-frame index to anchor the guide (negative counts from the end), matching the official node.
-- `start_percent` / `end_percent`: the step window `[start_percent, end_percent)` during which this guide's cond row is active. At the defaults (`0.0` / `1.0`) it matches the official node; lowering `end_percent` releases the cond attractor partway through sampling, so a co-located fractional `H3 Add Inject` keyframe can finish its own denoise without being re-pulled toward the source.
+- `start_percent` / `end_percent`: the step window `[start_percent, end_percent)` during which this guide's cond row is active. At the defaults (`0.0` / `1.0`) it matches the official node; lowering `end_percent` drops the guide's conditioning partway through sampling, so a co-located fractional `H3 Add Inject` keyframe can finish its own denoise without the guide pulling it back toward the source.
 - Optional inputs: `image`, `audio`, `vae`, `audio_vae`, and `inject_list`.
 
 > [!NOTE]
@@ -85,7 +85,7 @@ The sampler. A KSampler-Advanced clone with an `inject_list` input that builds t
 - Mirrors the core KSampler surface: `model`, `latent_image`, `positive`, `sampler_name`, `scheduler`, `steps`, `cfg`, `noise_seed`.
 - `inject_list` (optional): the chain from `H3 Add Inject` / `H3 Add Guide`. Leave it unconnected to sample the latent normally (all rows free, `d = 1`).
 - `negative` (optional): H3 is CFG-distilled and runs with no uncond by default; connect a negative conditioning to enable CFG / NRS-style guidance.
-- The KSampler-Advanced chaining widgets (add-noise, start/end step, leftover noise) are hidden on purpose: per-row compression makes partial runs per-row-incorrect.
+- The KSampler-Advanced chaining widgets (add-noise, start/end step, leftover noise) are hidden on purpose: per-row compression would make each row's denoise math wrong on a partial run.
 
 ## Beginner how-to
 
@@ -96,7 +96,7 @@ The sampler. A KSampler-Advanced clone with an `inject_list` input that builds t
 5. Feed the `inject_list` output into H3 Blended Sampler, pick a sampler and step count, and generate.
 
 > [!TIP]
-> `min_denoise` follows the usual img2img feel on H3's schedule: `d ≤ 0.3` retains most of the original, `d ≥ 0.7` is a heavy redraw. Values below ~`1/steps` round down to zero denoise steps and leave the frame untouched, so keep at least a few hundredths if you want it to move at all.
+> `min_denoise` follows the usual img2img feel on H3's schedule: `d ≤ 0.3` retains most of the original, `d ≥ 0.7` is a heavy redraw. Very small values (roughly `d ≲ 0.5/steps`) round to exact preserve, so keep at least a few hundredths if you want the frame to move at all.
 
 ## Sampler compatibility
 
