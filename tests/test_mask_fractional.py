@@ -6,8 +6,13 @@ row's ``audio_denoise``.  Unlike derive_mask (which is binary 0/1 for the exact-
 composite path), this mask carries the full per-row schedule so the DiT compresses each
 row's timestep schedule.
 
-Value semantics:
+Value semantics (conditioning mask — ``derive_fractional_mask``):
   - video[row] = r.denoise for scheduled rows; 1.0 for absent rows (full generation)
+  - audio[tick] = ALWAYS 1.0 (full generation) — audio does not ride the per-row engine; its
+    fade is applied by the official composite ``noise_mask`` instead.
+
+Value semantics (composite noise_mask — ``derive_audio_composite_noise_mask``):
+  - video[row] = ALWAYS 1.0 (composite no-op; video stays on the per-row engine)
   - audio[tick] = r.audio_denoise for the owning scheduled row; 1.0 for absent ticks
     (keep → 0.0, fade → r.denoise, drop/none → 1.0)
 
@@ -20,7 +25,10 @@ from __future__ import annotations
 import torch
 
 from comfyui_h3_blended_inject.grid import audio_tick_range, video_row_to_audio_tick
-from comfyui_h3_blended_inject.mask import derive_fractional_mask
+from comfyui_h3_blended_inject.mask import (
+    derive_audio_composite_noise_mask,
+    derive_fractional_mask,
+)
 from comfyui_h3_blended_inject.schedule import Inject, RowSchedule
 
 
@@ -100,17 +108,22 @@ class TestFractionalMaskVideoValues:
 
 
 class TestFractionalMaskAudioValues:
-    def test_keep_mode_tick_is_zero(self) -> None:
+    """The conditioning mask's audio band is ALWAYS full-generation (1.0), whatever the audio
+    mode: audio no longer rides the per-row engine, so its fade lives in the composite
+    noise_mask (:class:`TestAudioCompositeNoiseMask`), not here.  See ``audio-native-composite``.
+    """
+
+    def test_keep_mode_tick_is_one(self) -> None:
         schedule = [fade_row(0, 0.6, audio_mode="keep")]
         result = derive_fractional_mask(schedule, video_rows=5, audio_ticks=8)
         tick = video_row_to_audio_tick(0)
-        assert result["audio_mask"][0, tick].item() == 0.0
+        assert result["audio_mask"][0, tick].item() == 1.0
 
-    def test_fade_mode_tick_follows_denoise(self) -> None:
+    def test_fade_mode_tick_is_one(self) -> None:
         schedule = [fade_row(0, 0.4, audio_mode="fade")]
         result = derive_fractional_mask(schedule, video_rows=5, audio_ticks=8)
         for tick in audio_tick_range(0, 5, 8):
-            assert abs(result["audio_mask"][0, tick].item() - 0.4) < 1e-6
+            assert result["audio_mask"][0, tick].item() == 1.0
 
     def test_drop_mode_tick_is_one(self) -> None:
         schedule = [fade_row(0, 0.0, audio_mode="drop")]
@@ -118,13 +131,71 @@ class TestFractionalMaskAudioValues:
         for tick in audio_tick_range(0, 5, 8):
             assert result["audio_mask"][0, tick].item() == 1.0
 
-    def test_absent_ticks_are_one(self) -> None:
+    def test_all_ticks_are_one_regardless_of_mode(self) -> None:
         schedule = [fade_row(0, 0.4, audio_mode="fade")]
         result = derive_fractional_mask(schedule, video_rows=5, audio_ticks=16)
+        assert torch.all(result["audio_mask"] == 1.0)
+
+
+class TestAudioCompositeNoiseMask:
+    """``derive_audio_composite_noise_mask``: video band is a composite no-op (all 1.0); the audio
+    band carries the fade (keep → 0.0, fade → r.denoise, drop → 1.0)."""
+
+    def test_video_band_all_ones(self) -> None:
+        schedule = [row(1, 0.35), fade_row(0, 0.4, audio_mode="fade")]
+        result = derive_audio_composite_noise_mask(schedule, video_rows=5, audio_ticks=8)
+        assert torch.all(result["video_mask"] == 1.0)
+
+    def test_keep_mode_tick_is_zero(self) -> None:
+        schedule = [fade_row(0, 0.6, audio_mode="keep")]
+        result = derive_audio_composite_noise_mask(schedule, video_rows=5, audio_ticks=8)
+        tick = video_row_to_audio_tick(0)
+        assert result["audio_mask"][0, tick].item() == 0.0
+
+    def test_fade_mode_tick_follows_denoise(self) -> None:
+        schedule = [fade_row(0, 0.4, audio_mode="fade")]
+        result = derive_audio_composite_noise_mask(schedule, video_rows=5, audio_ticks=8)
+        for tick in audio_tick_range(0, 5, 8):
+            assert abs(result["audio_mask"][0, tick].item() - 0.4) < 1e-6
+
+    def test_drop_mode_tick_is_one(self) -> None:
+        schedule = [fade_row(0, 0.0, audio_mode="drop")]
+        result = derive_audio_composite_noise_mask(schedule, video_rows=5, audio_ticks=8)
+        for tick in audio_tick_range(0, 5, 8):
+            assert result["audio_mask"][0, tick].item() == 1.0
+
+    def test_absent_ticks_are_one(self) -> None:
+        schedule = [fade_row(0, 0.4, audio_mode="fade")]
+        result = derive_audio_composite_noise_mask(schedule, video_rows=5, audio_ticks=16)
         owned = set(audio_tick_range(0, 5, 16))
         for tick in range(16):
             if tick not in owned:
                 assert result["audio_mask"][0, tick].item() == 1.0
+
+    def test_nested_fade_audio_tick_expanded(self) -> None:
+        result = derive_audio_composite_noise_mask(
+            [fade_row(0, 0.4, audio_mode="fade")],
+            video_rows=_V_SHAPE[2],
+            audio_ticks=_A_SHAPE[3],
+            video_component_shape=_V_SHAPE,
+            audio_component_shape=_A_SHAPE,
+            nested_factory=_fake_factory,
+        )
+        assert torch.all(result.tensors[0] == 1.0)  # video composite no-op
+        for tick in audio_tick_range(0, _V_SHAPE[2], _A_SHAPE[3]):
+            a_slice = result.tensors[1][:, :, :, tick]
+            assert torch.allclose(a_slice, torch.full_like(a_slice, 0.4))
+
+    def test_missing_audio_shape_raises_value_error(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="audio_component_shape"):
+            derive_audio_composite_noise_mask(
+                [],
+                video_rows=_V_SHAPE[2],
+                audio_ticks=_A_SHAPE[3],
+                video_component_shape=_V_SHAPE,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +253,11 @@ class TestFractionalMaskNestedPath:
             if t != 2:
                 assert torch.all(vm[:, :, t, :, :] == 1.0)
 
-    def test_fade_audio_tick_expanded(self) -> None:
+    def test_audio_band_all_ones_regardless_of_mode(self) -> None:
+        """Conditioning mask audio is full-generation (1.0) even for a fade row — the fade is
+        carried by the composite noise_mask, not the conditioning mask."""
         result = self._run([fade_row(0, 0.4, audio_mode="fade")])
-        for tick in audio_tick_range(0, _V_SHAPE[2], _A_SHAPE[3]):
-            a_slice = result.tensors[1][:, :, :, tick]
-            assert torch.allclose(a_slice, torch.full_like(a_slice, 0.4))
+        assert torch.all(result.tensors[1] == 1.0)
 
 
 # ---------------------------------------------------------------------------

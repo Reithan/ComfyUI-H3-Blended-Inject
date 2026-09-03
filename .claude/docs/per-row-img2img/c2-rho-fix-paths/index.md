@@ -1,7 +1,7 @@
 <!-- provenance: status (C2 ρ fix paths — INDEX; input-side @63b291e falsified; v3 σ_c÷ρ_true @f06a84a
      + v4 exact-residual @12ea3b6 GPU-CONFIRMED = CURRENT BEST; v5 init-composite @7436165 GPU-FALSIFIED
      + REVERTED @8c8cb90; v6 m=0 audio-context heat @02fee22 IMPLEMENTED, GPU-pending, native-confirmed,
-     NOT video-byte-identical) -->
+     NOT video-byte-identical; DURABLE PORT DECIDED 2026-09-01 PR #32) -->
 <!-- verified: 2026-08-29 · split from c2-rho-fix-paths.md (over budget). Children hold history/falsifications and the current fix chain. -->
 # Consequence-2 (ρ) fix paths — index
 
@@ -58,3 +58,14 @@ real/present in `denoised_r` yet only *audible* under ancestral amplification, s
 
 Native precedent for a wrapper-side variant: `scale_latent_inpaint` pre-divides injected clean audio
 by `(σ_v/σ_a)/S` for the same reason.
+
+## Durable port (2026-09-01)
+
+GPU PARTIAL result on content-axis A/B (PR #32 commits 4644fcf/e4a9940) revealed residual is
+the C2 carry-compression error (Fable round-5). User decided to port the exact generalized
+correction into the durable `_euler_ancestral_rf_step`, folded into PR #32. This reverses the
+"C2/ancestral experiments stay proto-only" policy from the durable-base cut. Full spec:
+[../euler-ancestral-per-row-fix/c2-durable-port.md](../euler-ancestral-per-row-fix/c2-durable-port.md).
+C2 durable port GPU CONFIRMED (commits e3e167f+parent). Residual localized to low-m band (round 8);
+anchor fix implemented fe0343a+91078cc, GPU pending:
+[../euler-ancestral-per-row-fix/audio-anchor-scale.md](../euler-ancestral-per-row-fix/audio-anchor-scale.md).
