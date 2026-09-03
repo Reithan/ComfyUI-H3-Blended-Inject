@@ -76,6 +76,30 @@ def _c2_enabled() -> bool:
     return os.environ.get(C2_DISABLE_ENV, "0") != "1"
 
 
+#: PROTOTYPE pooled leak-removal toggle (euler-ancestral mid-m audio-static fix, 2026-09-02).
+#: ``H3BI_C2_POOL_LEAK`` unset/"0" → OFF.  When ON, the C2 update subtracts a CONTENT-BLIND,
+#: σ_c-neighborhood-POOLED estimate of the denoiser's own-noise leak (``ĉ ≈ γ·C + λ·σ_c·εc``)
+#: from the clean estimate ``ĉ`` before recomposition.  Per-row projection is content-biased at
+#: the real N=64 audio row (CPU-confirmed, mid_m_pooled_probe.py); pooling ⟨ĉ,εc⟩ across all
+#: fractional-audio elements in a σ_c bin averages the content cross-term to zero (1/√(N·R)) and
+#: recovers the euler floor.  A numeric value sets the kernel resolution (bandwidth = σ_c-range /
+#: value; smaller ⇒ wider ⇒ more pooling; default 32).  The retained,
+#: fresh, and η terms are untouched, so the stochastic term is preserved and m=1 stays bit-exact.
+C2_POOL_ENV = "H3BI_C2_POOL_LEAK"
+
+
+def _c2_pool_bins() -> int | None:  # pragma: no cover - prototype toggle, GPU-verified
+    """σ_c-bin count for pooled leak removal, or ``None`` when the prototype fix is OFF."""
+    val = os.environ.get(C2_POOL_ENV)
+    if not val or val == "0":
+        return None
+    try:
+        n = int(val)
+    except ValueError:
+        return 32
+    return max(4, n) if n > 1 else 32
+
+
 #: Diagnostic δ-leak logger (round-10 Option 3).  ``H3BI_C2_DEBUG`` unset → off; ``"1"`` → default
 #: temp CSV; any other value is used verbatim as the CSV path.  Dumps, per (step, k_d bin) over the
 #: fractional-AUDIO rows, the RMS of the C2 update's retained term ``r_ret·ε̂`` (carries the δ leak),
@@ -747,6 +771,7 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
                 clean_raw=ctx.state.get("clean"),
                 w_plant=w_plant,
                 carry_out=carry_out,
+                pool_mask=frac_audio,
             )
             x = torch.where(frac_audio, x_c2, x)
             eps_next = carry_out.get("eps_next")
@@ -771,6 +796,43 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     return x
 
 
+def _pooled_leak_lambda(
+    c_hat: torch.Tensor,
+    eps_c: torch.Tensor,
+    sig_c: torch.Tensor,
+    mask: torch.Tensor,
+    nbins: int,
+) -> torch.Tensor:  # pragma: no cover - prototype, GPU-verified
+    """Content-blind, σ_c-neighborhood-pooled estimate of the denoiser noise-leak coeff λ.
+
+    The packed clean estimate carries the row's own under-removed noise: ``ĉ ≈ γ·C + λ·σ_c·εc``.
+    A single audio row is only ``N=64`` elements, so the per-row projection ``⟨ĉ,εc⟩/(σ_c‖εc‖²)``
+    is swamped by the content cross-term ``⟨γC,εc⟩`` (CPU-confirmed unusable).  Instead we POOL
+    across all fractional-audio elements by GAUSSIAN kernel regression in ``σ_c`` space: for each
+    distinct ``σ_c`` present (≈ one per k_d bin, so only a handful), λ̂ is the ``σ_c``-weighted
+    ratio ``Σ K·⟨ĉ,εc⟩ / Σ K·σ_c‖εc‖²`` with bandwidth ``h = range(σ_c)/nbins``.  Neighbouring
+    ``σ_c`` (adjacent k_d) share weight, so a sparse σ_c (the worst-static bin k_d=13 holds a
+    single tick) borrows from its neighbours; the content cross-term averages to zero as
+    ``1/√(N·R)`` while the common λ survives.  Smaller ``nbins`` ⇒ wider bandwidth ⇒ more pooling.
+    Returns a per-element λ̂ (zero outside ``mask``).
+    """
+    out = torch.zeros_like(sig_c)
+    sc = sig_c[mask]
+    if sc.numel() == 0:
+        return out
+    ce = c_hat[mask] * eps_c[mask]  # per-element ⟨ĉ,εc⟩ contribution
+    se = sc * eps_c[mask] * eps_c[mask]  # per-element σ_c‖εc‖² contribution
+    uniq = torch.unique(sc)  # distinct σ_c (≈ #k_d, small)
+    h = ((uniq.max() - uniq.min()) / nbins).clamp(min=1e-6)
+    # kernel weights between each distinct σ_c (rows) and every pooled element (cols): [U, M]
+    kw = torch.exp(-0.5 * ((uniq[:, None] - sc[None, :]) / h) ** 2)
+    lam_u = (kw * ce[None, :]).sum(dim=1) / (kw * se[None, :]).sum(dim=1).clamp(min=1e-8)
+    # map each pooled element back to its distinct-σ_c λ̂ (uniq is sorted; sc values lie in it)
+    pos = torch.searchsorted(uniq, sc).clamp(max=uniq.numel() - 1)
+    out[mask] = lam_u[pos]
+    return out
+
+
 def _c2_audio_ancestral_update(
     y: torch.Tensor,
     v: torch.Tensor,
@@ -789,6 +851,7 @@ def _c2_audio_ancestral_update(
     clean_raw: torch.Tensor | None = None,
     w_plant: torch.Tensor | None = None,
     carry_out: dict[str, torch.Tensor] | None = None,
+    pool_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Exact RF-ancestral update for a fractional audio row on its true packed axis (C2 port).
 
@@ -845,6 +908,15 @@ def _c2_audio_ancestral_update(
         eps_c = (y - (1.0 - w_plant) * clean_raw) / sig_c
     else:  # fallback (no carry/plant info): pre-fix inversion — leaks content when Ĉ shrinks
         eps_c = (y - a * c_hat) / sig_c
+    # PROTOTYPE pooled leak-removal: strip the content-blind, σ_c-neighborhood-pooled estimate of
+    # the denoiser's own-noise leak from ĉ BEFORE recomposition, so ancestral's fresh draw cannot
+    # commit the decorrelated share as permanent broadband static.  Only ĉ (the clean channel) is
+    # touched — the carried eps_c, retained term, fresh term and η are all unchanged.
+    if pool_mask is not None:
+        nbins = _c2_pool_bins()
+        if nbins is not None:  # pragma: no cover - prototype, GPU-verified
+            lam_hat = _pooled_leak_lambda(c_hat, eps_c, sig_c, pool_mask, nbins)
+            c_hat = c_hat - lam_hat * sig_c * eps_c
     sd = sig_c_next * (1.0 + (sig_c_next / sig_c - 1.0) * eta)
     r_ret = sd * (1.0 - sig_c_next) / (1.0 - sd).clamp(min=eps)
     clean_term = a_next * c_hat
