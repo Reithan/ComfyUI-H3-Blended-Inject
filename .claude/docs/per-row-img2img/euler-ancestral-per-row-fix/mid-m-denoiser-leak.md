@@ -126,6 +126,25 @@ and confirm:
 
 **CPU-probe RESULT (2026-09-02):** run — per-row projection is DEAD (content-biased,
 stuck at ~0.30); the POOLED (group-averaged) content-blind projection recovers the euler
-floor and is the landing fix. Full numbers, real bin occupancy, fix form, and the
-build decision live in
+floor and removed the most static IN-PROBE. Full numbers, real bin occupancy, fix form, and
+the build decision live in
 [mid-m-denoiser-leak/cpu-probe-results.md](mid-m-denoiser-leak/cpu-probe-results.md).
+**SUPERSEDED — see the REVISION below:** this probe optimized ONLY for static-removal, so its
+"full removal is the landing fix" conclusion missed the content-preservation constraint.
+
+**FIRST GPU RESULT (2026-09-02):** pooled FULL-removal run — static amplitude down, injected
+voice emerges (correct first word "My"), but the dialogue is GARBLED. See
+[pooled-fix-gpu-result.md](pooled-fix-gpu-result.md).
+
+---
+
+## REVISION (2026-09-02, GPU-driven): full removal is too aggressive
+
+The earlier "FULL leak-removal is the correct lever" conclusion is now REFINED. The GPU
+listen-test shows full-strength pooled removal is the FIRST run to GARBLE the voice: the
+coherent part of the εc-leak is the substrate the net naturalizes into speech, and full
+removal strips it. The principled target is to remove ONLY the fresh-decorrelated share —
+the euler-invariant REPLACED-SHARE form (Fix B above) × (1 − r_ret/σ_c′), resurrecting
+Fable's replaced-share proposal. Full listen-test comparison, reinterpretation, and
+CPU-probe correction:
+[mid-m-denoiser-leak/replaced-share-revision.md](mid-m-denoiser-leak/replaced-share-revision.md).

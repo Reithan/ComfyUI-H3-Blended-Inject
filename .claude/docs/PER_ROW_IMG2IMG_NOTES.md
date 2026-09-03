@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — CPU probes de-scope the mid-m leak fix to content-blind POOLED removal with sparse-bin σ_c-neighborhood pooling; see mid-m-denoiser-leak/cpu-probe-results.md.
+Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — full-removal GPU GARBLES the voice → coherent leak is voice substrate → replaced-share/strength knob, sweep pending; see mid-m-denoiser-leak/replaced-share-revision.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +

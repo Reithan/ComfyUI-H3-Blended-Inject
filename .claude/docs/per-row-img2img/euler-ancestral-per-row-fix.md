@@ -1,7 +1,12 @@
 <!-- provenance: bug (Bug F: ATTRIBUTED; plant-axis: SHIPPED+FALSIFIED; content-axis: GPU PARTIAL;
      C2 durable port: GPU CONFIRMED; anchor fix: FALSIFIED round 9; PLANT_AXIS revert: GPU CONFIRMED round 10 — muffling fixed, static persists;
-     δ-reinjection: δ-residual CONFIRMED Branch 1; noise-carry fix IMPLEMENTED commit a28a62b, CPU-verified; AWAITING GPU) -->
-<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · noise-carry fix IMPLEMENTED (commit a28a62b): CPU 117 tests pass; GPU cross-check pre-registered -->
+     δ-reinjection: δ-residual CONFIRMED Branch 1; noise-carry fix GPU CONFIRMED PARTIAL round 11 — low-m δ leak gone;
+     mid-m ANCESTRAL-SPECIFIC (Round-11b falsifies residual-accounting PRIMARY); mechanism = denoiser noise-leak committed by ancestral replacement;
+     packed-axis clamp = minor bookkeeping wart (k_d 6–9, ≤6%); CPU-probe-gated fix candidates pending — see mid-m-denoiser-leak.md) -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · round-11 GPU CONFIRMED PARTIAL + Round-11b euler-deterministic control:
+     low-m δ leak gone; mid-m = ANCESTRAL-SPECIFIC (residual-accounting PRIMARY FALSIFIED);
+     mechanism = denoiser noise-leak (λσ_c·εc in ĉ; ancestral commits it; euler re-denoises it);
+     packed-axis split = minor bookkeeping only (k_d 6–9, ≤6%); fix = CPU probe → excess-leak cancellation (design in mid-m-denoiser-leak.md) -->
 # euler_ancestral per-row fix — index
 
 Design and shipped record for the combined fix that clears both `euler_ancestral` per-row
@@ -51,7 +56,7 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 | Anchor fix fe0343a+91078cc (audio-anchor-scale.md) | FALSIFIED for peak (round 9 GPU) — introduces muffling; retained as model-scale-correct K/V fix |
 | C2 carry-compression durable port (c2-durable-port.md) | GPU CONFIRMED; residual localized low-m band; anchor falsified — root cause = PLANT_AXIS |
 | Plant-over-noise (PLANT_AXIS revert to "row") | GPU CONFIRMED 2026-09-02 — muffling fixed; static persists 0.25–1.5 s band |
-| δ re-injection noise-carry fix (commit a28a62b) | IMPLEMENTED + CPU-verified (117 tests pass, |corr|<0.05 at low m); root cause = denoiser-shrinkage content leak into re-inverted ε̂; fix = persist true-noise carry; AWAITING GPU |
+| δ re-injection noise-carry fix (commit a28a62b) | GPU CONFIRMED PARTIAL — low-m corr collapsed; mid-m ANCESTRAL-SPECIFIC; mechanism = denoiser noise-leak; see [mid-m-denoiser-leak.md](euler-ancestral-per-row-fix/mid-m-denoiser-leak.md) |
 
 ## Child docs
 
@@ -61,6 +66,8 @@ Do NOT apply the `/sig_g` velocity change from the #76 thread (σ_a-coherent, ab
 - [audio-anchor-scale.md](euler-ancestral-per-row-fix/audio-anchor-scale.md) — round-8: hot audio band anchor theory, impl (fe0343a+91078cc); FALSIFIED for peak (round 9)
 - [plant-over-noise.md](euler-ancestral-per-row-fix/plant-over-noise.md) — round-9: PLANT_AXIS "v" untruthful under C2; root cause of 0.75–1.0 s peak; fix = revert to "row"; GPU CONFIRMED (muffling fixed, static persists)
 - [delta-reinjection.md](euler-ancestral-per-row-fix/delta-reinjection.md) — round-10: δ-as-RESIDUAL CONFIRMED (Branch 1, ε̂ under-cancellation + 1/σ_c); noise-carry fix IMPLEMENTED commit a28a62b (CPU-verified, GPU pending)
+- [noise-carry-gpu-result.md](euler-ancestral-per-row-fix/noise-carry-gpu-result.md) — round-11: low-m δ leak CONFIRMED FIXED; Round-11b: mid-m ANCESTRAL-SPECIFIC; mechanism in mid-m-denoiser-leak.md
+- [mid-m-denoiser-leak.md](euler-ancestral-per-row-fix/mid-m-denoiser-leak.md) — CSV-reconciled mid-m static mechanism + fix candidates; clamp RETRACTED (minor, k_d 6–9); cause = denoiser noise-leak; CPU-probe gate
 
 ## Co-location verdict (resolves earlier mis-attribution)
 

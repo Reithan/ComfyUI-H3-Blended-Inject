@@ -1,5 +1,5 @@
-<!-- provenance: confirmed (CPU) / UNVERIFIED (GPU) — δ-residual CONFIRMED Branch 1 (ret_clean_corr); noise-carry fix IMPLEMENTED commit a28a62b; GPU cross-check pre-registered -->
-<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · CPU: 117 tests pass, noise-carry init |corr|<0.05 at low m; GPU pre-registered (ret_clean_corr low-m must drop from +0.94→~0) -->
+<!-- provenance: confirmed (GPU) — δ-residual CONFIRMED Branch 1; noise-carry fix GPU CONFIRMED PARTIAL (round 11): low-m corr collapsed; mid-m residual open -->
+<!-- verified: 2026-09-02 (branch fix-euler-ancestral-per-row-renoise) · CPU: 117 tests pass; GPU: h3bi_c2_debug-normal-3, low-m corr collapsed (+0.94→+0.15..+0.33); see noise-carry-gpu-result.md -->
 # δ re-injection — round-10 record + noise-carry fix
 
 Parent: [euler-ancestral-per-row-fix.md](../euler-ancestral-per-row-fix.md).
@@ -77,11 +77,13 @@ Stochastic noise (`c_fresh·noise`) fully preserved — does NOT disable stochas
 
 Full suite: 117 pass, ruff clean, 99% sampler coverage.
 
-### GPU cross-check (pre-registered)
+### GPU cross-check — CONFIRMED PARTIAL (round 11)
 
-Rerun with `H3BI_C2_DEBUG` logging → `ret_clean_corr` at low m (high k_d) must drop from ~+0.94 toward ~0.
-Ear test: mid-fade audio static/hiss (0.25–1.5 s band) should be gone.
-High-m rows unchanged (corr already≈0 → no regression expected there).
+Pre-registered: low-m `ret_clean_corr` must drop from ~+0.94 toward ~0.
+**CONFIRMED:** k_d 17–19 (m ≈ 0.05–0.14) dropped to +0.33 / +0.22 / +0.15; coherent leak energy at k_d 18,19 = 0.000.
+Ear: static quieter and dissolves more smoothly than pre-fix; NOT fully gone (0.3–2 s band persists).
+Mid-m residual emerged (k_d 6–14, peak corr +0.58–+0.73, accumulates mid-trajectory) — new primary open item.
+See full GPU data and per-row table: [noise-carry-gpu-result.md](noise-carry-gpu-result.md).
 
 ## Competing explanation
 
