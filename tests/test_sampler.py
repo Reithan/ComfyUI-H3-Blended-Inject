@@ -1350,3 +1350,243 @@ class TestRFAncestralDispatch:
         assert sampler_is_stochastic(fn) is True
         assert fn.__name__ not in _NATIVE_ROW_STEPS
         assert sampler_is_stochastic(fn) and fn.__name__ not in _NATIVE_ROW_STEPS
+
+
+# ---------------------------------------------------------------------------
+# Multistep native steps (PR3): local scalar references
+# ---------------------------------------------------------------------------
+
+
+def _local_sample_dpmpp_2m(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    **_kwargs: Any,
+) -> torch.Tensor:
+    """Local scalar reference for comfy ``sample_dpmpp_2m`` (k_diffusion/sampling.py:796-818)."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()  # noqa: E731
+    t_fn = lambda sigma: sigma.log().neg()  # noqa: E731
+    old_denoised = None
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+        h = t_next - t
+        if old_denoised is None or sigmas[i + 1] == 0:
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised
+        else:
+            h_last = t - t_fn(sigmas[i - 1])
+            r = h_last / h
+            denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
+        old_denoised = denoised
+    return x
+
+
+def _local_sample_res_multistep(
+    model: Any,
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    extra_args: dict[str, Any] | None = None,
+    callback: Any = None,
+    disable: Any = None,
+    **_kwargs: Any,
+) -> torch.Tensor:
+    """Local scalar reference for comfy ``res_multistep`` at eta=0 (sampling.py:1417-1456)."""
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()  # noqa: E731
+    t_fn = lambda sigma: sigma.log().neg()  # noqa: E731
+    phi1_fn = lambda t: torch.expm1(t) / t  # noqa: E731
+    phi2_fn = lambda t: (phi1_fn(t) - 1.0) / t  # noqa: E731
+    old_sigma_down = None
+    old_denoised = None
+    for i in range(len(sigmas) - 1):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_down = sigmas[i + 1]  # eta=0 → sigma_down == sigmas[i+1], sigma_up == 0
+        if callback is not None:
+            callback(
+                {"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised}
+            )
+        if sigma_down == 0 or old_denoised is None:
+            d = (x - denoised) / sigmas[i]
+            x = x + d * (sigma_down - sigmas[i])
+        else:
+            t, t_old, t_next, t_prev = (
+                t_fn(sigmas[i]),
+                t_fn(old_sigma_down),
+                t_fn(sigma_down),
+                t_fn(sigmas[i - 1]),
+            )
+            h = t_next - t
+            c2 = (t_prev - t_old) / h
+            phi1_val, phi2_val = phi1_fn(-h), phi2_fn(-h)
+            b1 = torch.nan_to_num(phi1_val - phi2_val / c2, nan=0.0)
+            b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
+            x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+        old_denoised = denoised
+        old_sigma_down = sigma_down
+    return x
+
+
+# Patch __name__ so the dispatch registry routes to the native multistep steps.
+_local_sample_dpmpp_2m.__name__ = "sample_dpmpp_2m"
+_local_sample_res_multistep.__name__ = "sample_res_multistep"
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: native multistep step == stock scalar for m=1 (2nd order preserved)
+# ---------------------------------------------------------------------------
+
+
+class TestMultistepStepEquivalence:
+    """Native dpmpp_2m / res_multistep reproduce stock scalars exactly for all-m=1 latents.
+
+    This is the Finding-1 regression: the fallback (base_fn on a 2-sigma slice) resets
+    old_denoised every step and silently runs first-order.  The native steps carry per-row
+    history across the outer loop, so all-m=1 must match the true 2nd-order stock trajectory.
+    """
+
+    def _run_native(
+        self,
+        base_fn: Any,
+        m: torch.Tensor,
+        x: torch.Tensor,
+        clean: torch.Tensor,
+        sigmas: torch.Tensor,
+        model: Any,
+        *,
+        video_element_count: int | None = None,
+    ) -> torch.Tensor:
+        fn = build_per_row_sampler_function(
+            base_fn, m, clean, _sched(), video_element_count=video_element_count
+        )
+        return fn(model, x.clone(), sigmas)
+
+    def test_dpmpp_2m_m1_equals_stock(self) -> None:
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)  # steps_n=4: exercises 1st-order step0 + multistep steps
+        stock = _local_sample_dpmpp_2m(model, x.clone(), sigmas)
+        out = self._run_native(_local_sample_dpmpp_2m, m, x, clean, sigmas, model)
+        assert torch.allclose(out, stock, atol=1e-6), (
+            f"dpmpp_2m m=1 native must match stock; max diff={float((out - stock).abs().max())}"
+        )
+
+    def test_res_multistep_m1_equals_stock(self) -> None:
+        model = _ScaleModel(0.85)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)
+        stock = _local_sample_res_multistep(model, x.clone(), sigmas)
+        out = self._run_native(_local_sample_res_multistep, m, x, clean, sigmas, model)
+        assert torch.allclose(out, stock, atol=1e-6), (
+            f"res_multistep m=1 native must match stock; "
+            f"max diff={float((out - stock).abs().max())}"
+        )
+
+    def test_dpmpp_2m_not_first_order(self) -> None:
+        """Guard against silent first-order degradation: 2nd-order output must DIFFER from the
+        fallback path (which resets old_denoised each interval → first order)."""
+        model = _ScaleModel(0.9)
+        m = torch.ones(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.zeros(1, 3)
+        sigmas = _decreasing(5)
+
+        def not_native(  # noqa: ANN202
+            mod: Any,
+            xin: torch.Tensor,
+            sig: torch.Tensor,
+            extra_args: Any = None,
+            callback: Any = None,
+            disable: Any = None,
+            **kw: Any,
+        ) -> torch.Tensor:
+            return _local_sample_dpmpp_2m(mod, xin, sig, extra_args, callback, disable, **kw)
+
+        native = self._run_native(_local_sample_dpmpp_2m, m, x, clean, sigmas, model)
+        fallback = self._run_native(not_native, m, x, clean, sigmas, model)
+        assert not torch.allclose(native, fallback, atol=1e-5), (
+            "native multistep must restore 2nd order (differ from first-order fallback)"
+        )
+
+    def test_dpmpp_2m_m0_exact_preserve(self) -> None:
+        """m=0 rows come out exactly clean (frozen + where(never, clean, x) guard)."""
+        model = _ScaleModel(0.5)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.ones(1, 3) * 7.0
+        out = self._run_native(_local_sample_dpmpp_2m, m, x, clean, _decreasing(5), model)
+        assert torch.allclose(out, clean, atol=1e-6)
+
+    def test_res_multistep_m0_exact_preserve(self) -> None:
+        model = _ScaleModel(0.5)
+        m = torch.zeros(1, 3)
+        x = torch.randn(1, 3)
+        clean = torch.ones(1, 3) * 7.0
+        out = self._run_native(_local_sample_res_multistep, m, x, clean, _decreasing(5), model)
+        assert torch.allclose(out, clean, atol=1e-6)
+
+    def test_dpmpp_2m_fractional_finite(self) -> None:
+        """Fractional rows produce finite output (no NaN/inf from log clamps) and preserve m=0."""
+        model = _ScaleModel(0.8)
+        m = torch.tensor([[0.0, 0.5, 1.0]])
+        x = torch.randn(1, 3)
+        clean = torch.ones(1, 3) * 3.0
+        out = self._run_native(_local_sample_dpmpp_2m, m, x, clean, _decreasing(5), model)
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out[0, 0], clean[0, 0], atol=1e-6)  # m=0 column preserved
+
+    def test_res_multistep_fractional_finite(self) -> None:
+        model = _ScaleModel(0.8)
+        m = torch.tensor([[0.0, 0.5, 1.0]])
+        x = torch.randn(1, 3)
+        clean = torch.ones(1, 3) * 3.0
+        out = self._run_native(_local_sample_res_multistep, m, x, clean, _decreasing(5), model)
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out[0, 0], clean[0, 0], atol=1e-6)
+
+    def test_multistep_registered_and_not_stochastic(self) -> None:
+        """Both multistep names are in the registry and are NOT flagged stochastic (eta=0)."""
+        assert "sample_dpmpp_2m" in _NATIVE_ROW_STEPS
+        assert "sample_res_multistep" in _NATIVE_ROW_STEPS
+        assert sampler_is_stochastic(_local_sample_dpmpp_2m) is False
+        assert sampler_is_stochastic(_local_sample_res_multistep) is False
+
+    def test_multistep_callback_fires_each_step(self) -> None:
+        """The native multistep step fires the callback once per step (index remapped global)."""
+        seen: list[dict[str, Any]] = []
+
+        def cb(d: dict[str, Any]) -> None:
+            seen.append(dict(d))
+
+        model = _ScaleModel(0.9)
+        fn = build_per_row_sampler_function(
+            _local_sample_dpmpp_2m, torch.ones(1, 2), torch.zeros(1, 2), _sched()
+        )
+        fn(model, torch.randn(1, 2), _decreasing(4), callback=cb)  # steps_n == 3
+        assert [d["i"] for d in seen] == [0, 1, 2]
+        assert all("denoised" in d for d in seen)
+
+    def test_multistep_with_audio_finite(self) -> None:
+        """Audio rows (axis-blind) integrate without NaN under the multistep steps."""
+        model = _ScaleModel(0.85)
+        m = torch.full((1, 4), 0.5)
+        x = torch.randn(1, 4)
+        clean = torch.zeros(1, 4)
+        out = self._run_native(
+            _local_sample_dpmpp_2m, m, x, clean, _decreasing(5), model, video_element_count=2
+        )
+        assert torch.isfinite(out).all()
