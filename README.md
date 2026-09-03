@@ -11,6 +11,8 @@ Write keyframes, clips, and audio into a MiniMax H3 audio/video generation and b
 > [!NOTE]
 > **Pre-release.** The nodes work and are validated on the author's GPU runs, but the pack is not yet published to the [Comfy Registry](https://registry.comfy.org/) — install manually (see [Installation](#installation)).
 
+**Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
 > [!TIP]
 > Skip to the [Beginner How-To](#beginner-how-to) if you just want to get started.
 
@@ -111,17 +113,10 @@ git clone https://github.com/Reithan/ComfyUI-H3-Blended-Inject.git
 
 Restart ComfyUI. This pack targets MiniMax H3 and relies on ComfyUI's bundled `torch`; no extra runtime dependencies are required.
 
-## Development
-Tooling is managed with [uv](https://docs.astral.sh/uv/). The dev group installs `torch`, `numpy`, and `hypothesis` so the pure-logic modules (envelope, schedule, sanitization, derived mask) can be tested CPU-side without a running ComfyUI.
-
-```bash
-uv sync --group dev        # create the environment and install dev tools
-uv run pre-commit install  # install the git hooks (run once per clone)
-uv run pytest              # run the test suite
-uv run ruff check .        # lint
-```
-
-CI enforces **≥ 90% branch coverage on changed code** via [diff-cover](https://github.com/Bachmann1234/diff_cover). See [`RELEASING.md`](RELEASING.md) for the Comfy Registry publishing checklist.
+## Contributing
+Development setup, the git workflow, the coverage gate, and code style live in
+[CONTRIBUTING.md](CONTRIBUTING.md). See [`RELEASING.md`](RELEASING.md) for the Comfy Registry
+publishing checklist.
 
 ## License
 [GPL-3.0](LICENSE).
