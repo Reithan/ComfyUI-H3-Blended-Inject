@@ -1,5 +1,5 @@
-<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep; PR1 refactor pending; PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three, PR #36 open; PR5 dpmpp_2s_ancestral BUILT + CPU-tested, GPU pending) -->
-<!-- verified: 2026-09-02 · PR4 SDE BUILT + GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 open; user local all three good: 2m_sde/3m_sde/sde); PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local both good, CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33; PR5 dpmpp_2s_ancestral BUILT + CPU-tested (same PR #36 branch), GPU pending in task #73 -->
+<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep; PR1 refactor pending; PR4 SDE BUILT + GPU-CONFIRMED user local 2026-09-02 all three; PR5 dpmpp_2s_ancestral BUILT + GPU-CONFIRMED user local 2026-09-03; ALL FOUR PR4-branch samplers GPU-CONFIRMED, PR #36 ready to merge, task-#73 gate CLEARED) -->
+<!-- verified: 2026-09-03 · ALL FOUR PR4-branch samplers GPU-CONFIRMED (add-per-row-dpmpp-sde-steps, PR #36 ready to merge): sde/2m_sde/3m_sde user local 2026-09-02, dpmpp_2s_ancestral user local 2026-09-03; task-#73 gate FULLY CLEARED; PR3 multistep BUILT + GPU-CONFIRMED (@6a5e786, user local both good, CPU m=1 tests); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33 -->
 # Delivery plan (4 PRs, tasks #66–#73)
 
 Child of [sampler-class-support.md](../sampler-class-support.md) — detailed per-PR specs
@@ -96,13 +96,15 @@ plumbing is DROPPED; PR4 runs axis-blind (`w_mid` on σ_v). Task #76 is closed; 
 eval on fractional rows needs its own side-stream priming at the midpoint σ — the one genuinely NEW
 fractional-row path and the main GPU risk.
 
-**Merge gate CLEARED (USER GPU spike, task #73):** leak surface LARGER than PR2's (these lean on the
-SNR mapping, not the clean RF alpha identity) → user reran the label→timestep leak test (39f fade,
-min_denoise 0.2–0.3, ALL THREE samplers). User local quality check 2026-09-02: all three good, no
-leak — gate cleared. PR #36 open; mark completed only after it merges to `main`.
+**Merge gate FULLY CLEARED (USER GPU spike, task #73):** leak surface LARGER than PR2's (these lean
+on the SNR mapping, not the clean RF alpha identity) → user reran the label→timestep leak test (39f
+fade, min_denoise 0.2–0.3) across ALL FOUR PR4-branch samplers. SDE trio (sde/2m_sde/3m_sde) user
+local 2026-09-02; dpmpp_2s_ancestral user local 2026-09-03 ("good"). All four good, no leak — gate
+FULLY CLEARED. PR #36 ready to merge; mark completed only after it merges to `main`.
 
 **PR5 `dpmpp_2s_ancestral` — BUILT (folded into the PR #36 branch `add-per-row-dpmpp-sde-steps`;
-user asked to keep it here, NOT a separate PR) + CPU-tested, GPU PENDING.** New
+user asked to keep it here, NOT a separate PR) + GPU-CONFIRMED (user local quality check 2026-09-03:
+"good").** New
 `_dpmpp_2s_ancestral_step` registered under `sample_dpmpp_2s_ancestral` in `_NATIVE_ROW_STEPS`.
 Ports comfy `sample_dpmpp_2s_ancestral_RF` (sampling.py:686-734): PR2's exact RF-ancestral renoise
 algebra (`downstep_ratio`→`sigma_down`, `alpha_ip1`/`alpha_down`, `renoise_coeff`,
@@ -118,6 +120,6 @@ fractional-row caveat as `dpmpp_sde` (eval-2 side stream primed at step σ, not 
 task-#73 GPU risk). Tests (`tests/test_sampler.py::TestSDEStepEquivalence`):
 `_local_sample_dpmpp_2s_ancestral` CONST/RF logit reference (`__name__`-routed), m1-equals-stock,
 folded into the eta=0/m0-preserve/fractional/registered-stochastic loops + a callback-once-per-step
-test. Full suite 665 passed, sampler.py diff coverage 100%. GPU PENDING: user must add
-`dpmpp_2s_ancestral` to the task-#73 GPU spike (all-samplers leak test); the SDE trio
-(2m_sde/3m_sde/sde) is GPU-confirmed, 2s_ancestral is NOT yet GPU-run.
+test. Full suite 665 passed, sampler.py diff coverage 100%. GPU-CONFIRMED: user local quality check
+2026-09-03 ("good") on the task-#73 all-samplers leak spike — clears the LAST item, so all four
+PR4-branch samplers (sde/2m_sde/3m_sde/2s_ancestral) are now GPU-confirmed and PR #36 is ready to merge.
