@@ -1,12 +1,12 @@
 <!-- provenance: status (top-level index & direction; child docs carry their own tags) -->
-<!-- verified: 2026-08-27 · HOLD-27 GPU result recorded -->
+<!-- verified: 2026-09-02 · PR3 native per-row multistep BUILT + GPU-CONFIRMED (Finding 1 fixed); pointer refreshed -->
 # Per-Row img2img for H3: Index & Direction
 
 **Purpose:** the durable, token-lean map of this effort. Read this file first every session;
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `fix-notes-index-c2-supersession`) — reworded the bugs.md/euler-ancestral index bullets to mark the C2/σ_a audio path SUPERSEDED by #33's native mask composite; see per-row-img2img/audio-native-composite.md.
+Last updated: 2026-09-02 (branch `add-per-row-multistep-steps` @6a5e786) — native per-row multistep dpmpp_2m/res_multistep BUILT + GPU-CONFIRMED (Finding 1 fixed; axis-blind supersedes σ_v warning); in sampler-class-support.md + its children.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -71,7 +71,8 @@ per-row ancestral step. See
   per-row `r`-scaling replaces the denoised correction.
   [our-architecture.md](per-row-img2img/our-architecture.md) now describes the retired path only.
 - **Deterministic-only** still holds: deterministic correct; stochastic warns (RF renoise not
-  scale-invariant, gate deferred; multistep first-order under remap).
+  scale-invariant, gate deferred). Multistep dpmpp_2m/res_multistep now run TRUE 2nd order per row
+  (PR3 @6a5e786 BUILT + GPU-CONFIRMED, user local 2026-09-02 both good; Finding 1 fixed).
   [sampler-class-support.md](per-row-img2img/sampler-class-support.md).
 - **GPU-VERIFIED (2026-08-23, full user checklist @06c6bda):** fractional audio clean after ×S fix,
   keyframe `min_denoise` 0.2–0.3 good, keep-mode audio good, preview working. HEADLINE: at
@@ -109,9 +110,10 @@ per-row ancestral step. See
 - [stochastic-recovery-theory.md](per-row-img2img/stochastic-recovery-theory.md): **THEORY
   (unverified):** recover stochastic samplers via a per-row ancestral step. *Read when revisiting
   the stochastic gate.*
-- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **THEORY + 1 confirmed:**
-  multistep degrades to first-order under remap; step-function design for stochastic + 2nd-order.
-  *Read when revisiting sampler support.*
+- [sampler-class-support.md](per-row-img2img/sampler-class-support.md): **CONFIRMED + BUILT:**
+  native per-row multistep dpmpp_2m/res_multistep BUILT + GPU-CONFIRMED (PR3 @6a5e786, Finding 1
+  FIXED, CPU bit-for-bit tests, user local GPU 2026-09-02 both good); axis-blind (σ_v every row, no
+  σ_a projection); PR4 SDE still design-stage. *Read when revisiting sampler support.*
 - [motion-context-comparison.md](per-row-img2img/motion-context-comparison.md): how Motion Context
   works (composite-blend; ghost diagnosis), why it's stochastic-robust, and the 3 design points.
   *Read when comparing to MC or deciding the fractional-vs-stochastic tradeoff.*
