@@ -1,28 +1,37 @@
 <!-- provenance: theory + confirmed (Finding 2 GPU-CONFIRMED for euler_ancestral VIDEO 2026-08-27;
-     Finding 1 SOURCE-CONFIRMED; audio euler_a hiss = σ_a-axis renoise bug, FIXED by Fix A
-     GPU-validated 2026-08-28; /sig_g divisor fix GPU-FALSIFIED 2026-08-27; PR3/PR4 design UNVERIFIED) -->
-<!-- verified: 2026-08-28 · PR2 GPU pass task #68 @ede2d8c; Fix A validated free audio (audio-axis-verdict.md); /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
+     Finding 1 FIXED by PR3 2026-09-02, GPU-CONFIRMED (user local test dpmpp_2m + res_multistep both good);
+     audio AXIS-BLIND post-#33 (no σ_a projection); PR4 SDE design UNVERIFIED) -->
+<!-- verified: 2026-09-02 · PR3 multistep BUILT + GPU-CONFIRMED (add-per-row-multistep-steps @6a5e786, user local test dpmpp_2m + res_multistep both good; CPU bit-for-bit m=1 tests; Finding 1 FIXED); PR2 GPU pass task #68 @ede2d8c -->
 <!-- source: comfy-ref k_diffusion/sampling.py @b78cec87: 240-266 euler_ancestral_RF, 738-792 dpmpp_sde,
      796-818 dpmpp_2m, 822-873 dpmpp_2m_sde, 68-176 helpers, 1394+ res_multistep; repo sampler.py, observer_split.py -->
 # Sampler-class support under the schedule-tail remap (stochastic + multi-step)
 
-**Status: PR2 shipped + GPU-CONFIRMED (task #68, 2026-08-27); PR1 refactor pending; PR3/PR4 design stage.**
+**Status: PR2 shipped + GPU-CONFIRMED (task #68, 2026-08-27); PR3 multistep BUILT + GPU-CONFIRMED
+(branch `add-per-row-multistep-steps` @6a5e786, durable + CPU tests, Finding 1 FIXED, user local
+GPU test 2026-09-02 dpmpp_2m + res_multistep both good); PR1 refactor pending; PR4 (SDE) design stage.**
 See also: [bugs.md Bug B](bugs.md#bug-b) · [stochastic-recovery-theory.md](stochastic-recovery-theory.md)
 · [audio-carry-identity.md](audio-carry-identity.md) · [PER_ROW_IMG2IMG_NOTES.md](../PER_ROW_IMG2IMG_NOTES.md)
 
-## Finding 1 (SOURCE-CONFIRMED, 2026-08-27): multistep samplers silently degrade to first order
+## Finding 1 (SOURCE-CONFIRMED, 2026-08-27 → FIXED 2026-09-02 by PR3): multistep degraded to first order
 
-The shipped remap loop (`sampler.py::build_per_row_sampler_function`) calls
+The old remap loop (`sampler.py::build_per_row_sampler_function`) called
 `base_fn(model, x, sigmas[i:i+2], ...)` one global interval at a time.
 History-based samplers re-initialize `old_denoised = None` at function entry —
-`dpmpp_2m` (sampling.py:796-818) and `res_multistep` (1394+) both follow this pattern —
-so with a 2-sigma slice they take their first-order fallback branch on **every step**.
+`dpmpp_2m` (sampling.py:796-818) and `res_multistep` (1417-1456) both follow this pattern —
+so with a 2-sigma slice they took their first-order fallback branch on **every step**.
 
-Under the remap, dpmpp_2m and res_multistep therefore run as first-order (euler/DDIM-like)
-**everywhere**, including free m=1 rows. Not a correctness bug — outputs are valid first-order
-trajectories, and this was true for all GPU validation runs of the shipped mechanism. But
-"supported: dpmpp_2m/res_multistep" currently means "runs as first-order," an accuracy
-regression vs the retired three-lever path where `base_fn` ran the full schedule once.
+Under that remap, dpmpp_2m and res_multistep ran as first-order (euler/DDIM-like) **everywhere**,
+including free m=1 rows. Not a correctness bug — outputs were valid first-order trajectories, true
+for all GPU validation runs of the shipped mechanism. But "supported: dpmpp_2m/res_multistep" then
+meant "runs as first-order," an accuracy regression vs the retired three-lever path.
+
+**FIXED (PR3, branch `add-per-row-multistep-steps` @6a5e786):** native per-row step functions
+`_dpmpp_2m_step` / `_res_multistep_step` now live in the `_NATIVE_ROW_STEPS` registry. Both carry
+per-row `old_denoised` history (res_multistep also `old_sigma_down`/`old_sig_row`) across the outer
+loop via `ctx.state`, restoring true 2nd order per row. CPU tests reproduce the stock samplers
+BIT-FOR-BIT for all-m=1 (atol=1e-6), and a `test_dpmpp_2m_not_first_order` guard proves the native
+path DIFFERS from the first-order fallback. GPU-CONFIRMED: user local quality check 2026-09-02 —
+both dpmpp_2m and res_multistep look good.
 
 ## Finding 2 (GPU-CONFIRMED 2026-08-27): Bug B killed for euler_ancestral VIDEO; audio hiss OPEN
 
@@ -49,7 +58,7 @@ VIDEO (single-eval RF-ancestral); audio stochastic and multistep/DPM++ not verif
 LOUDER) → `/carrier` (σ_v) load-bearing, corroborating Fix A; abandon PR #20. Detail:
 [audio-carry-identity.md](audio-carry-identity.md) Consequence 3.
 
-## Design (UNVERIFIED): per-row step functions replace the black-box base_fn → [native-step-design.md](sampler-class-support/native-step-design.md)
+## Design (RF-ancestral + multistep now BUILT): per-row step functions replace the black-box base_fn → [native-step-design.md](sampler-class-support/native-step-design.md)
 
 Replace the per-interval `base_fn` call with in-house step functions written elementwise over the
 loop's exact per-row sigma tensors (`sig_row`, `sig_row_next`); r-scaling then applies only to a
@@ -63,11 +72,16 @@ per-row multistep, dispatch/whitelist, and deferred multi-eval samplers — in t
 
 - **Leak risk (GPU-CONFIRMED clear for the euler_ancestral VIDEO stream, task #68):** no hidden
   σ-dependence detected beyond the label channel for the single-eval RF-ancestral VIDEO path.
-  The AUDIO stochastic path has an OBSERVED residual-noise defect (task #76) — NOT clear.
-  PR3 (multistep) and PR4 (DPM++ SDE) reuse the same recovery identity but add multistep
-  history / a second in-step eval — their leak surface is larger and they remain UNVERIFIED.
-- **Audio:** free-audio euler_a hiss = σ_a-axis renoise bug, FIXED on σ_v by Fix A (see Finding 2 /
-  [bugs.md](bugs.md#bug-c) Bug C). **PR3/PR4 inherit the same axis dependency — see PR3 note below.**
+  PR3 (multistep, BUILT) reuses the same recovery identity but adds multistep history — CPU tests
+  pass and its GPU quality check is CONFIRMED (user local 2026-09-02, dpmpp_2m + res_multistep both
+  good). PR4 (DPM++ SDE) adds a second in-step eval and stays UNVERIFIED / design-stage.
+- **Audio (AXIS-BLIND post-#33):** the shipped architecture returns the VIDEO σ_v for EVERY row
+  (`sampler.py::row_sigma`/`global_sigma`), and audio's fade rides the official KSamplerX0Inpaint
+  noise_mask composite ([audio-native-composite.md](audio-native-composite.md)). There is NO σ_a/σ_v
+  projection hazard for PR3: audio integrates on σ_v exactly as stock, and audio m=1 rows reproduce
+  stock (row σ == carrier σ). PR4's own axis handling should be re-checked against this axis-blind
+  design when it is built. The old euler_a σ_a-axis hiss (Fix A / [bugs.md](bugs.md#bug-c) Bug C) was
+  superseded by #33; the custom σ_a audio path (task #76) was dropped, so PR3 is NOT blocked on it.
 - **Maintenance:** each native step is a small reimpl that can drift from comfy upstream.
 - **Status:** discussion-stage design; nothing built; direction not yet user-confirmed.
 
@@ -81,12 +95,13 @@ before investing in multistep work. The full per-PR specs live in the child doc
   step-function protocol + dispatch by sampler name. No GPU gate.
 - **PR2 `add-per-row-rf-ancestral-step` (#67) — SHIPPED (ede2d8c) + GPU-VALIDATED (#68).**
   Elementwise `sample_euler_ancestral_RF` over tensor σ_row; whitelisted euler_ancestral.
-- **PR3 `add-per-row-multistep-steps` (#69)** — per-row dpmpp_2m + res_multistep, deterministic
-  (eta=0), per-row `old_denoised` history (fixes Finding 1). Introduces the shared DPM++ spine
-  helpers reused by PR4. ⚠ **σ_v-axis coherence dependency on Fix A (decision 2026-08-29):** the
-  spine's `_recover_row_denoised` must project audio onto `sig_row_v`, not the σ_a-shifted
-  `sig_row`; the "m=1 reproduces stock bit-for-bit" guarantee holds for VIDEO rows only. Full
-  detail (3 consequences, spine seeding PR4) in the child doc's PR3 note.
+- **PR3 `add-per-row-multistep-steps` (#69) — BUILT (@6a5e786) + GPU-CONFIRMED (user local
+  2026-09-02, dpmpp_2m + res_multistep both good), CPU tests pass.** Per-row dpmpp_2m +
+  res_multistep, deterministic (eta=0), per-row `old_denoised`
+  history via `ctx.state` (fixes Finding 1). Shares the `_recover_row_denoised(ctx, carrier)` spine
+  (one model eval at the global carrier σ; `denoised_r = x_prev − sig_row·v`). Axis-blind post-#33:
+  NO σ_a projection hazard, audio m=1 reproduces stock, NOT blocked on task #76. Full detail in the
+  child doc's PR3 note.
 - **PR4 `add-per-row-dpmpp-sde-steps` (#72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` +
   `dpmpp_3m_sde`, sequenced after PR3 (2M SDE = PR2 renoise ∩ PR3 history). SDE spine spec,
   source-line map, label-refresh plumbing, and the task-#76 block are in the child doc.

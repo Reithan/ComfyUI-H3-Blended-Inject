@@ -39,8 +39,10 @@ mechanism bit-for-bit.  See ``observer_split.py`` and the wiki ``clean-kv-split.
 
 The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
 ``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
-and ``sample_euler_ancestral`` (H3's RF-ancestral path) are registered here (PR1 + PR2);
-multistep (PR3) steps plug in via the same ``_StepContext`` protocol.
+and ``sample_euler_ancestral`` (H3's RF-ancestral path) are registered here (PR1 + PR2), as are
+the deterministic multistep samplers ``sample_dpmpp_2m`` and ``sample_res_multistep`` (PR3) whose
+native steps carry per-row ``old_denoised`` history in ``_StepContext.state`` to restore true 2nd
+order under the remap (a black-box ``base_fn`` on a 2-σ slice degrades to first order — Finding 1).
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
 imports stay lazy so this module loads without a ComfyUI environment.
@@ -520,11 +522,155 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     return x
 
 
+def _recover_row_denoised(ctx: _StepContext, carrier: torch.Tensor) -> torch.Tensor:
+    """One model eval at the global carrier σ; recover per-row ``x0`` via the velocity identity.
+
+    Shared spine for the deterministic multistep steps (``_dpmpp_2m_step`` /
+    ``_res_multistep_step``), mirroring the recovery inside :func:`_euler_ancestral_rf_step`.  The
+    conditioning wrapper labels the model with ``t_row = 1 − σ_row`` so a single forward at
+    ``carrier`` returns a velocity ``v = (x_prev − denoised) / carrier`` that maps back to each
+    row's own ``x0``::
+
+        denoised_r = x_prev − sig_row · v
+
+    Fractional VIDEO rows denoise through the clean-K/V observer splice
+    (:func:`_single_forward_denoised`) exactly as the euler steps do, so their noisy K/V do not
+    leak into co-located rows via joint attention (Bug F).  Audio rows carry no observer stream
+    (their fade rides the official composite), so the forward stays axis-blind for audio.  Fires
+    the euler-shaped callback once.
+    """
+    extra_args = {} if ctx.extra_args is None else ctx.extra_args
+    s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
+    st = ctx.state
+    obs = st.get("observer")
+    frac = st.get("frac_mask")
+    if obs is not None and frac is not None and bool(frac.any()):  # pragma: no cover - GPU
+        denoised = _single_forward_denoised(ctx, carrier, s_in, extra_args)
+    else:
+        denoised = ctx.model(ctx.x_prev, carrier * s_in, **extra_args)
+    if ctx.callback is not None:
+        ctx.callback(
+            {
+                "i": 0,
+                "denoised": denoised,
+                "x": ctx.x_prev,
+                "sigma": carrier,
+                "sigma_hat": carrier,
+            }
+        )
+    v = (ctx.x_prev - denoised) / carrier
+    return ctx.x_prev - ctx.sig_row * v
+
+
+def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row DPM-Solver++(2M) step (deterministic).
+
+    Ports comfy's ``sample_dpmpp_2m`` (k_diffusion/sampling.py:796-818) to the schedule-tail
+    remap by integrating each row over its OWN sigma tail.  The ``_fallback_step`` path calls
+    ``base_fn`` on a 2-σ slice per interval, which re-initializes ``old_denoised = None`` on every
+    call and silently degrades to first order everywhere (Finding 1); carrying per-row
+    ``old_denoised`` across the outer loop restores true 2nd order, including on free ``m == 1``
+    rows.
+
+    One model eval per interval at the global carrier σ; per-row ``x0`` recovered via
+    :func:`_recover_row_denoised`.  All time coefficients (``t = −log σ``, ``h``, ``r``) are
+    elementwise over the ``sig_row`` / ``sig_row_next`` tensors.
+
+    Guarantees:
+
+    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **exactly**: ``sig_row == sigmas[i]`` and
+      ``denoised_r == denoised``, so every per-row term equals the scalar stock value.
+    - **First step** (no history) and **terminal rows** (``sig_row_next == 0``) take the
+      first-order exponential branch, matching stock's ``old_denoised is None or sigmas[i+1] == 0``.
+    - **m=0 rows freeze**: ``sig_row ≤ ε`` → held at ``x_prev``; the outer
+      ``where(never, clean, ·)`` guard then restores clean.
+    """
+    eps = 1e-8
+    carrier = ctx.sigmas[ctx.i]
+    denoised_r = _recover_row_denoised(ctx, carrier)
+
+    # Only ``si`` is clamped: leaving ``sig_row_next`` raw makes the terminal step EXACT
+    # (``t_next = +inf`` → ``expm1(-inf) == -1``, ``ratio == 0``), reproducing stock's ``sigmas[i+1]
+    # == 0`` branch bit-for-bit.  Clamping ``si`` alone still avoids the frozen-row ``inf − inf``
+    # NaN (``m=0`` rows are discarded by the ``sig_row <= eps`` guard below regardless).
+    si = ctx.sig_row.clamp(min=eps)
+    sip1 = ctx.sig_row_next
+    t = -torch.log(si)
+    t_next = -torch.log(sip1)
+    h = t_next - t
+    ratio = sip1 / si  # sigma_fn(t_next) / sigma_fn(t)
+    em1 = torch.expm1(-h)  # (-h).expm1()
+
+    first_order = ratio * ctx.x_prev - em1 * denoised_r
+    old = ctx.state.get("dpmpp_2m_old")
+    if old is None:
+        x_new = first_order
+    else:
+        old_denoised_r, old_sig_row = old
+        h_last = t - (-torch.log(old_sig_row.clamp(min=eps)))
+        r = h_last / h
+        denoised_d = (1.0 + 1.0 / (2.0 * r)) * denoised_r - (1.0 / (2.0 * r)) * old_denoised_r
+        second_order = ratio * ctx.x_prev - em1 * denoised_d
+        x_new = torch.where(ctx.sig_row_next <= eps, first_order, second_order)
+
+    ctx.state["dpmpp_2m_old"] = (denoised_r, ctx.sig_row)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
+def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
+    """Native per-row res_multistep step (deterministic, ``eta=0``).
+
+    Ports comfy's ``res_multistep`` (k_diffusion/sampling.py:1417-1456, ``eta=0``/``cfg_pp=False``)
+    to the schedule-tail remap.  Same Finding-1 fix as :func:`_dpmpp_2m_step`: per-row
+    ``old_denoised`` and ``old_sigma_down`` history are carried across the outer loop so the RES
+    exponential integrator runs at 2nd order per row instead of degrading to first order.
+
+    ``eta=0`` makes ``sigma_down == sig_row_next`` and adds no renoise (deterministic).  One model
+    eval per interval; per-row ``x0`` via :func:`_recover_row_denoised`.
+
+    Guarantees mirror :func:`_dpmpp_2m_step`: m=1 rows reproduce stock ``res_multistep`` exactly;
+    first-step / terminal rows take the Euler branch (stock's ``sigma_down == 0 or old_denoised is
+    None``); m=0 rows freeze under the outer ``where(never, clean, ·)`` guard.
+    """
+    eps = 1e-8
+    carrier = ctx.sigmas[ctx.i]
+    denoised_r = _recover_row_denoised(ctx, carrier)
+
+    si = ctx.sig_row
+    sigma_down = ctx.sig_row_next  # eta=0 → sigma_down == sig_row_next, sigma_up == 0
+    # Euler (first-order) branch — used on the first step and terminal rows.
+    d = (ctx.x_prev - denoised_r) / si.clamp(min=eps)
+    euler = ctx.x_prev + d * (sigma_down - si)
+
+    old = ctx.state.get("res_multistep_old")
+    if old is None:
+        x_new = euler
+    else:
+        old_denoised_r, old_sigma_down, old_sig_row = old
+        t = -torch.log(si.clamp(min=eps))
+        t_old = -torch.log(old_sigma_down.clamp(min=eps))
+        t_next = -torch.log(sigma_down.clamp(min=eps))
+        t_prev = -torch.log(old_sig_row.clamp(min=eps))
+        h = t_next - t
+        c2 = (t_prev - t_old) / h
+        phi1 = torch.expm1(-h) / (-h)
+        phi2 = (phi1 - 1.0) / (-h)
+        b1 = torch.nan_to_num(phi1 - phi2 / c2, nan=0.0)
+        b2 = torch.nan_to_num(phi2 / c2, nan=0.0)
+        second = torch.exp(-h) * ctx.x_prev + h * (b1 * denoised_r + b2 * old_denoised_r)
+        x_new = torch.where(sigma_down <= eps, euler, second)
+
+    ctx.state["res_multistep_old"] = (denoised_r, sigma_down, ctx.sig_row)
+    return torch.where(ctx.sig_row <= eps, ctx.x_prev, x_new)
+
+
 #: Registry mapping ``base_fn.__name__`` to a native per-row step function.  Samplers not in
 #: this dict fall back to ``_fallback_step`` (original behavior, no change).
 _NATIVE_ROW_STEPS: dict[str, StepFn] = {
     "sample_euler": _euler_step,
     "sample_euler_ancestral": _euler_ancestral_rf_step,
+    "sample_dpmpp_2m": _dpmpp_2m_step,
+    "sample_res_multistep": _res_multistep_step,
 }
 
 

@@ -1,9 +1,9 @@
-<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68 2026-08-27; PR1 refactor pending; PR3/PR4 design UNVERIFIED) -->
-<!-- verified: 2026-08-28 · PR2 GPU pass task #68 @ede2d8c; Fix A validated free audio (../audio-axis-verdict.md); /sig_g fix FALSIFIED by A/B GPU test branch fix-audio-carrier-recovery @2483914 -->
+<!-- provenance: status + confirmed (PR2 SHIPPED + GPU-CONFIRMED task #68 2026-08-27; PR3 BUILT @6a5e786 + GPU-CONFIRMED user local 2026-09-02 dpmpp_2m + res_multistep both good; PR1 refactor pending; PR4 SDE design UNVERIFIED) -->
+<!-- verified: 2026-09-02 · PR3 multistep BUILT + GPU-CONFIRMED (add-per-row-multistep-steps @6a5e786, user local both good, CPU bit-for-bit m=1 tests, Finding 1 FIXED); PR2 GPU pass task #68 @ede2d8c; audio AXIS-BLIND post-#33 -->
 # Delivery plan (4 PRs, tasks #66–#73)
 
 Child of [sampler-class-support.md](../sampler-class-support.md) — detailed per-PR specs
-(incl. PR3 σ_v-axis coherence detail and PR4 SDE spine spec).
+(incl. PR3 axis-blind note and PR4 SDE spine spec).
 
 Ordering rationale: stochastic first — it is the user-visible failure and validates the leak risk
 before investing in multistep work.
@@ -22,29 +22,33 @@ CPU tests vs scalar reference; analytical audio-carry-identity check for shifted
 GPU spike (task #68) passed: 0.2MP, d=0.20/0.15 injects, fade-in, 20 steps, both euler +
 euler_ancestral — no corruption, no ghosting; leak-risk test clear.
 
-**PR3 `add-per-row-multistep-steps` (task #69)** — per-row dpmpp_2m + res_multistep.
-Deterministic (eta=0) form; per-row `old_denoised` history carried across the outer loop — fixes
-Finding 1's first-order degradation. Key test: all-m=1 rows over a full schedule must reproduce
-the stock sampler bit-for-bit on a toy model. Gated on USER GPU quality check (task #70) at the
-d=0.2/0.15 sweet-spot config.
-Introduces shared DPM++ spine helpers (reused by PR4 SDE family): `_recover_row_denoised(ctx)`
-(velocity-recovery + model-eval block), `_dpmpp_time_coeffs(σ_a, σ_b)` (t = −log σ, h, sigma_ratio),
-`_dpmpp_2m_second_order(denoised_r, old_denoised_r, r)` ((1+1/2r)·d − (1/2r)·d_old multistep combiner).
+**PR3 `add-per-row-multistep-steps` (task #69) — BUILT (@6a5e786) + GPU-CONFIRMED (user local
+quality check 2026-09-02: dpmpp_2m + res_multistep both good), durable feature + tests.**
+Per-row dpmpp_2m + res_multistep, deterministic (eta=0), in the
+`_NATIVE_ROW_STEPS` registry (`_dpmpp_2m_step` under `sample_dpmpp_2m`, `_res_multistep_step` under
+`sample_res_multistep`). Per-row `old_denoised` history (res_multistep also `old_sigma_down`/
+`old_sig_row`) carried across the outer loop via `ctx.state` — fixes Finding 1's first-order
+degradation, restoring true 2nd order per row. m=0 rows freeze (`where(never, clean, ·)`); terminal
+rows take the first-order branch; fractional VIDEO rows still route through `_single_forward_denoised`
+(clean-K/V observer splice, Bug F). Shared spine `_recover_row_denoised(ctx, carrier)`: ONE model
+eval at the global carrier σ, recover per-row x0 via `v = (x_prev − denoised)/carrier`,
+`denoised_r = x_prev − sig_row·v` (same recovery as `_euler_ancestral_rf_step`); reused by PR4.
+Tests (`tests/test_sampler.py::TestMultistepStepEquivalence`, local scalar refs
+`_local_sample_dpmpp_2m`/`_local_sample_res_multistep`): all-m=1 reproduces stock BIT-FOR-BIT
+(atol=1e-6); `test_dpmpp_2m_not_first_order` proves the native path DIFFERS from the first-order
+fallback; m=0 exact-preserve; fractional-finite; audio-finite; callback-per-step. Full suite 655
+passed, 100% diff coverage. GPU-CONFIRMED: user local quality check 2026-09-02 — both dpmpp_2m and
+res_multistep look good.
 
-⚠ **σ_v-axis coherence dependency on Fix A (decision 2026-08-29, branch `add-per-row-multistep-steps`):**
-PR3 PREDATES Fix A ([audio-axis-verdict.md](../audio-axis-verdict.md)) and is being ported onto its σ_v
-axis. Audio-only (video rows: sig_row == sig_row_v). The spine `_recover_row_denoised` recovers
-`denoised_r = x_prev − sig_row·v` on the σ_a-SHIFTED `sig_row` while packed audio rides σ_v — the
-pre-Fix-A ancestral mis-scale (σ_a/σ_v ≈ 0.27→1.0) — so it MUST project onto `sig_row_v`.
-Consequences: (1) the "m=1 reproduces stock bit-for-bit" guarantee holds for VIDEO rows ONLY (audio
-m=1: sig_row = σ_a ≠ carrier σ_v ⇒ denoised_r ≠ denoised, diverging from stock as main's ancestral
-did on free audio); (2) `_dpmpp_2m_step` / `_res_multistep_step` run the full DPM++/RES integration
-(t, h, r, sigma_down, phi1/phi2) on sig_row/next → must use sig_row_v/next for audio, while the σ_a
-LABEL `w = sig_row/sig_g` (outer loop) stays on σ_a, correct/untouched; (3) the same spine seeds
-PR4's SDE family (#72) → fix at the spine or the bug propagates to every future sampler. eta=0 adds
-no renoise, so these escape the LOUD renoise component, but the #1 x0-recovery mis-scale is
-renoise-independent and hits ALL audio rows incl. free m=1. Inherits Fix A's GPU-pending status
-(GPU-validated for the ancestral case; branch #77 unmerged).
+**Axis-blind (post-#33, commit 60fa207) — the old σ_v-axis coherence ⚠ warning is MOOT/SUPERSEDED.**
+The shipped architecture is AXIS-BLIND: `sampler.py::row_sigma`/`global_sigma` return the VIDEO σ_v
+for EVERY row, and audio's fade rides the official KSamplerX0Inpaint noise_mask composite
+([audio-native-composite.md](../audio-native-composite.md)). Consequences for PR3: (1) there is NO
+σ_a/σ_v projection hazard — the spine recovers on σ_v and audio integrates on σ_v exactly as stock;
+(2) audio m=1 rows DO reproduce stock (row σ == carrier σ); (3) PR3 is NOT blocked on task #76 — the
+custom σ_a audio path was DROPPED in #33. Source note: plain `sample_dpmpp_2m` (sampling.py:796-818)
+and `res_multistep` (1417-1456) use the plain log-σ form `t_fn = sigma.log().neg()`, NOT the
+logit/half-log-SNR form — that complication is confined to the SDE family (PR4).
 
 **PR4 `add-per-row-dpmpp-sde-steps` (task #72)** — per-row `dpmpp_sde` + `dpmpp_2m_sde` + `dpmpp_3m_sde`. Sequenced
 AFTER PR3: 2M SDE is literally PR2's stochastic renoise ∩ PR3's history carry. Source facts
@@ -71,5 +75,8 @@ the SNR mapping rather than the clean RF alpha identity, so rerun the label→ti
 Spine composition (PR3 helpers): 2M SDE = recover → time_coeffs → 2nd-order combiner + stochastic
 renoise (1 eval/step, 2M history). 3M SDE = recover → time_coeffs → 3-term 2-deep combiner +
 stochastic renoise (1 eval/step). `dpmpp_sde` = recover → time_coeffs → mid-eval label refresh +
-BrownianTree (2 evals/step, no history). **All three SDE variants blocked on task #76** (the audio-carry
-renoise miscalibration — the euler_a hiss now fixed by Fix A on the σ_v axis, pending merge).
+BrownianTree (2 evals/step, no history). **Axis re-check when built:** the σ_a/σ_v audio plumbing
+above (`w_mid` on σ_a, label refresh) predates #33's axis-blind design — the custom σ_a audio path
+was dropped, so PR4's own axis handling must be re-verified against the axis-blind base (σ_v for
+every row + official noise_mask composite) before implementing, not the old σ_a machinery. Task #76
+is closed/dropped; PR4 is no longer blocked on it.
