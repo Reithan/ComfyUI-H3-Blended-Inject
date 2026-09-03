@@ -3,7 +3,7 @@
 Thank you for your interest in contributing! This document covers setting up a development
 environment and the workflow for landing changes.
 
-## Development Setup
+## Development setup
 
 ### Prerequisites
 
@@ -11,7 +11,7 @@ environment and the workflow for landing changes.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) package manager
 - Git
 
-### Initial Setup
+### Initial setup
 
 1. **Clone the repository**:
 
@@ -47,15 +47,15 @@ environment and the workflow for landing changes.
    uv run pytest                       # run the test suite
    ```
 
-## Git Workflow
+## Git workflow
 
-### Protected Branches
+### Protected branches
 
-- **Direct commits to `main` are blocked** by a git hook (`forbid-main-commit`).
-- **Direct pushes to `main` are blocked** by a git hook (`forbid-main-push`).
+- A git hook (`forbid-main-commit`) blocks direct commits to `main`.
+- A git hook (`forbid-main-push`) blocks direct pushes to `main`.
 - All changes go through feature branches and pull requests.
 
-### Recommended Workflow
+### Recommended workflow
 
 1. **Create a feature branch** off `main` with a descriptive, action-oriented name:
 
@@ -81,17 +81,17 @@ environment and the workflow for landing changes.
 
 4. **Open a pull request** on GitHub and merge after review.
 
-### Bypassing Hooks (Emergency Only)
+### Bypassing hooks (emergency only)
 
 ```bash
 git commit --no-verify    # skip pre-commit hooks
 git push --no-verify      # skip pre-push hooks
 ```
 
-Only use `--no-verify` when you must — it can introduce lint issues, break CI, or push
+Only use `--no-verify` when you must; it can introduce lint issues, break CI, or push
 untested code.
 
-## Development Commands
+## Development commands
 
 ```bash
 # Lint
@@ -109,16 +109,16 @@ uv run pytest --cov=. --cov-branch --cov-report=xml
 uv run diff-cover coverage.xml --compare-branch=origin/main --branch-coverage --fail-under=90
 ```
 
-## Coverage Gate
+## Coverage gate
 
 CI enforces **≥ 90% branch coverage on changed code only** (via
-[diff-cover](https://github.com/Bachmann1234/diff_cover)) — new and modified lines must have
+[diff-cover](https://github.com/Bachmann1234/diff_cover)): new and modified lines must have
 both arms of their branches exercised. It is branch coverage, not line/statement coverage,
 and it applies only to the diff, so pre-existing gaps do not block unrelated PRs. The
-pure-logic modules are kept importable without a running ComfyUI so they can be tested
-CPU-side with a mock model.
+pure-logic modules stay importable without a running ComfyUI so you can test them CPU-side
+with a mock model.
 
-## Code Style
+## Code style
 
 This project uses **ruff** for linting and formatting:
 
@@ -129,23 +129,23 @@ This project uses **ruff** for linting and formatting:
 The `INPUT_TYPES` classmethod is exempted from the naming rule (`# noqa: N802`) because
 ComfyUI's node API requires that exact name.
 
-## Commit Messages
+## Commit messages
 
 Write each message as a short, imperative statement:
 
 - ✓ `fix broken logger call in nodes.py`
 - ✗ `Fixed the logging bug.`
 
-## Pull Request Guidelines
+## Pull request guidelines
 
-1. **Keep PRs focused** — one feature or fix per PR.
-2. **Update documentation** — if you change behavior, update `README.md` and the developer
+1. **Keep PRs focused.** One feature or fix per PR.
+2. **Update documentation.** If you change behavior, update `README.md` and the developer
    wiki under [`.claude/docs/`](.claude/docs/PER_ROW_IMG2IMG_NOTES.md).
-3. **Test your changes** — the pack targets MiniMax H3; GPU-side behavior should be verified
-   on a real H3 run where relevant.
-4. **Run the hooks** — make sure lint, format, tests, and the coverage gate all pass.
+3. **Test your changes.** The pack targets MiniMax H3; verify GPU-side behavior on a real H3
+   run where relevant.
+4. **Run the hooks.** Make sure lint, format, tests, and the coverage gate all pass.
 
-## Project Structure
+## Project structure
 
 ```
 ComfyUI-H3-Blended-Inject/
