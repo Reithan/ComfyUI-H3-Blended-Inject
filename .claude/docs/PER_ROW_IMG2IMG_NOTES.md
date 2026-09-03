@@ -6,7 +6,7 @@
 drill into a detail doc under [`per-row-img2img/`](per-row-img2img/) only when the current task
 needs it. If code contradicts a doc, fix one of them; don't silently diverge.
 
-Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — noise-carry fix IMPLEMENTED (a28a62b, CPU-verified 117 tests, GPU pending); see euler-ancestral-per-row-fix/delta-reinjection.md.
+Last updated: 2026-09-02 (branch `fix-euler-ancestral-per-row-renoise`) — CPU probes de-scope the mid-m leak fix to content-blind POOLED removal with sparse-bin σ_c-neighborhood pooling; see mid-m-denoiser-leak/cpu-probe-results.md.
 
 ⚠ **Code comments/docstrings/tooltips are likely STALE mid-rework** (hold-and-release language,
 "(inclusive)" on the exclusive `end_keyframes`, "compatible with all samplers"). Trust the wiki +
@@ -93,7 +93,9 @@ per-row ancestral step. See
   video, open), F (attributed retrodiction post-#32). *Read for fractional artifacts.*
 - [euler-ancestral-per-row-fix.md](per-row-img2img/euler-ancestral-per-row-fix.md): **C2 CONFIRMED;
   anchor FALSIFIED round 9; PLANT_AXIS revert GPU CONFIRMED round 10 (muffling fixed, static persists);
-  noise-carry fix IMPLEMENTED commit a28a62b (CPU-verified 117 tests; GPU pending).** *Read for euler_a artifacts.*
+  noise-carry fix GPU CONFIRMED PARTIAL round 11; mid-m verdict = residual-accounting PRIMARY
+  (model-level injection error), no ancestral-side fix; levers on clean-estimate axis.**
+  *Read for euler_a artifacts.*
 - [long-fade-grid-beat.md](per-row-img2img/long-fade-grid-beat.md): **THEORY (UNVERIFIED):** Bug E
   DECOUPLED — M-B (held ≥ ~28 AND ramp ≥ 51) unique survivor; M-A/M-C/M-D/M-E refuted; refined to
   FORMATION ∧ NOT-HEALED; full data table + mechanism + children. *Read for Bug E.*
