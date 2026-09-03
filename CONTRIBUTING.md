@@ -147,7 +147,7 @@ Write each message as a short, imperative statement:
 
 ## Project structure
 
-```
+```ascii
 ComfyUI-H3-Blended-Inject/
 ├── comfyui_h3_blended_inject/
 │   ├── nodes.py             # ComfyUI node classes + registration
