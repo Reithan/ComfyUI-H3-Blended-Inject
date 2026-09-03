@@ -34,7 +34,7 @@ class InterpolationType(str, Enum):
     NONE = "none"
 
 
-# Convenience set of valid string values — usable without importing the Enum.
+# Convenience set of valid string values; usable without importing the Enum.
 INTERPOLATION_TYPES: tuple[str, ...] = tuple(m.value for m in InterpolationType)
 
 
@@ -81,7 +81,7 @@ def evaluate_curve(t: float, interpolation_type: str) -> float:
         return 3.0 * t**2 - 2.0 * t**3
     if interpolation_type == "linear":
         return t
-    # "none" — step: 0 for t < 1.0, 1 for t == 1.0
+    # "none": step: 0 for t < 1.0, 1 for t == 1.0
     return 0.0 if t < 1.0 else 1.0
 
 
@@ -136,8 +136,8 @@ def evaluate_envelope(
     """Compute one ``(absolute_latent_row_idx, denoise)`` pair per row covered by this envelope.
 
     ALL fade indices (start_fade_in, start_keyframes, end_keyframes, end_fade_out) are
-    **clip frame indices** — positions within the injected clip's own content.  ``inject_at``
-    is a **latent frame index** (FRAME-space position in the target latent where the clip
+    clip frame indices (positions within the injected clip's own content).  ``inject_at``
+    is a latent frame index (FRAME-space position in the target latent where the clip
     begins).  Clip frame ``k`` corresponds to latent frame ``inject_at + k``.
 
     Row denoise values are evaluated in continuous clip-frame time at each latent row's true
@@ -254,8 +254,8 @@ def is_row_exactly_zero(
 ) -> bool:
     """Return True only if the row's averaged denoise is exactly 0.0.
 
-    No production callers — superseded by :func:`classify_row_region` (``'preserve'``
-    region), which uses integer clip-frame membership instead of float comparison and
+    No production callers. :func:`classify_row_region` (``'preserve'`` region) is
+    preferred: it uses integer clip-frame membership instead of float comparison and
     avoids FP averaging issues.  Kept for documentation and cross-consistency tests.
 
     A row qualifies as ``d = 0`` (exact preserve, routed via the derived noise mask)
@@ -307,10 +307,8 @@ def classify_row_region(
     """Classify a scheduled row as ``'preserve'``, ``'hold'``, ``'fade'``, or ``'free'``.
 
     Uses integer clip-frame membership against the winning inject's half-open markers to
-    determine the region.  Does NOT compare the float denoise value ``d`` — floating-point
+    determine the region.  Does NOT compare the float denoise value ``d``; floating-point
     averaging in :func:`evaluate_envelope` can make a true hold row appear non-exact.
-
-    Classification uses integer clip-frame membership, not the float ``d``.
 
     Regions
     -------
@@ -322,14 +320,13 @@ def classify_row_region(
         ALL clip-frame centers lie in ``[start_keyframes, end_keyframes)`` AND
         ``min_denoise > 0``.  Wrapper applies binary hold-and-release (is_held gate).
         Fade-ramp rows (centers in the fade-in or fade-out span) also return ``'hold'``
-        by default (``crossfade=False``): with per-row release thresholds (task #29)
+        by default (``crossfade=False``): with per-row release thresholds,
         staggered release across the ramp *is* the fade.
     ``'fade'``:
         At least one clip-frame center lies in the fade-in ramp
         ``[start_fade_in, start_keyframes)`` or the fade-out ramp
         ``[end_keyframes, end_fade_out)``, AND ``crossfade=True`` is passed explicitly.
         Wrapper blends prediction permanently: ``(1 - d) * original + d * model_pred``.
-        This is a parked legacy path — it is NOT the default.
     ``'free'``:
         None of the above.  Wrapper does nothing.
 
@@ -355,8 +352,8 @@ def classify_row_region(
         Envelope floor during the hold region.
     crossfade:
         When ``False`` (default), fade-ramp rows are classified as ``'hold'`` and use
-        the ordinary fractional hold-and-release path — staggered per-row release is the
-        fade.  When ``True``, ramp rows classify as ``'fade'`` and activate the legacy
+        the ordinary fractional hold-and-release path; staggered per-row release is the
+        fade.  When ``True``, ramp rows classify as ``'fade'`` and activate the
         persistent prediction-blend path.
 
     Returns
@@ -377,8 +374,8 @@ def classify_row_region(
 
     # 'fade' or 'hold': at least one center in the fade-in ramp [sfi, skf) or
     #                   fade-out ramp [ekf, efo).
-    # Default (crossfade=False): ramp rows use hold-and-release (staggered release IS
-    # the fade).  Legacy prediction-blend path only active when crossfade=True.
+    # Default (crossfade=False): ramp rows use hold-and-release; staggered release is
+    # the fade.  Persistent prediction-blend path active only when crossfade=True.
     in_fade = any(
         (start_fade_in <= cc < start_keyframes) or (end_keyframes <= cc < end_fade_out)
         for cc in clip_centers

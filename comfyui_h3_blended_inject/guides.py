@@ -6,7 +6,7 @@ removal (see the wiki's ``timed-cond-removal-prototype`` doc):
 - :func:`snap_guide_length` / :func:`resolve_frame_index` / :func:`frame_count_for_rows` /
   :func:`crop_audio_latent` mirror comfy's ``MiniMaxH3AddGuide`` node logic
   (``comfy_extras/nodes_minimax_h3.py``), relocated to node/sample time on our side.
-- :func:`filter_released_keyframes` builds the released payload copy — keyframe entries
+- :func:`filter_released_keyframes` builds the released payload copy: keyframe entries
   removed by object identity, ``layout`` popped (its signature does NOT encode keyframes,
   so a stale prebuilt layout would silently desync; forward rebuilds when absent), and the
   cond latent lists rebuilt exactly as ``model_base.MiniMaxH3.extra_conds`` builds them
@@ -164,7 +164,7 @@ def build_keyframe(guide: Guide, resolved_frame_index: int, audio_ticks: int) ->
     ``resolved_frame_index`` always present, ``latent`` / ``audio_latent`` only when the
     guide carries them (audio cropped to the remaining track here, now that the target's
     ``audio_ticks`` is known).  The returned dict's OBJECT IDENTITY is the sampler's
-    release-tracking key — build once per run and pass the same object through.
+    release-tracking key; build once per run and pass the same object through.
     """
     keyframe: dict[str, Any] = {"resolved_frame_index": resolved_frame_index}
     if guide.video_latent is not None:
@@ -181,7 +181,7 @@ def filter_released_keyframes(
 ) -> dict[str, Any]:
     """Return a payload copy with the released keyframe cond entries stripped.
 
-    ``released_ids`` holds ``id()`` values of keyframe dicts to remove — object identity,
+    ``released_ids`` holds ``id()`` values of keyframe dicts to remove; object identity,
     NOT frame index, so official-node / fl2va keyframes anchored at the same frame are
     never caught.  The copy:
 

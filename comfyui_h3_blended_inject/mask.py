@@ -2,11 +2,11 @@
 
 Two masks are built here:
 
-- :func:`derive_fractional_mask` — the *conditioning* mask, consumed by the conditioning
+- :func:`derive_fractional_mask`: the *conditioning* mask, consumed by the conditioning
   wrapper via ``model._denoise_mask_values``.  It encodes each VIDEO row's fractional denoise
   value (``m_r``); audio is always full-generation (``1.0``) because audio does not ride the
   per-row engine.
-- :func:`derive_audio_composite_noise_mask` — the ``noise_mask`` passed to ComfyUI, which drives
+- :func:`derive_audio_composite_noise_mask`: the ``noise_mask`` passed to ComfyUI, which drives
   ``KSamplerX0Inpaint`` to composite the AUDIO fade against the clean inject the official way.
   Its video band is all ``1.0`` (a composite no-op for the video stream).
 
@@ -56,9 +56,9 @@ def derive_fractional_mask(
 
     Each row carries its full fractional schedule so the DiT compresses per-row timesteps:
 
-    - **video**: row ``i`` = ``r.denoise`` (its ``m_r``) for scheduled rows; ``1.0`` for
+    - video: row ``i`` = ``r.denoise`` (its ``m_r``) for scheduled rows; ``1.0`` for
       rows absent from ``schedule`` (full generation).
-    - **audio**: tick ``j`` = the owning row's :attr:`RowSchedule.audio_denoise`
+    - audio: tick ``j`` = the owning row's :attr:`RowSchedule.audio_denoise`
       (keep → ``0.0``, fade → ``r.denoise``, drop/none → ``1.0``); ``1.0`` for absent ticks.
 
     The mask convention matches H3's native ``denoise_mask`` semantics: ``1`` = full
@@ -66,10 +66,10 @@ def derive_fractional_mask(
     is consumed by the conditioning wrapper (via ``model._denoise_mask_values``), *not* set as
     a ``noise_mask`` — the sampler receives ``noise_mask=None`` so no compositing occurs.
 
-    **Non-nested path** (``video_component_shape`` is ``None``): returns
+    Non-nested path (``video_component_shape`` is ``None``): returns
     ``{"video_mask": float32[1, video_rows], "audio_mask": float32[1, audio_ticks]}``.
 
-    **Nested path** (``video_component_shape`` provided): returns
+    Nested path (``video_component_shape`` provided): returns
     ``nested_factory(video_mask_full, audio_mask_full)`` with each mask expanded to the full
     component shape, per-row/per-tick values broadcast across all channels and spatial dims.
 
@@ -116,12 +116,12 @@ def derive_fractional_mask(
             "audio_component_shape must be provided when video_component_shape is given"
         )
 
-    # video_component_shape: (B, C, T, Hl, Wl) — T == video_rows.
+    # video_component_shape: (B, C, T, Hl, Wl); T == video_rows.
     # Broadcast per-row values across all B, C, Hl, Wl dims.
     vt = torch.tensor(video_values, dtype=torch.float32)
     video_mask_full = vt.view(1, 1, -1, 1, 1).expand(*video_component_shape).clone()
 
-    # audio_component_shape: (B, C, 2, audio_t) — audio_t == audio_ticks.
+    # audio_component_shape: (B, C, 2, audio_t); audio_t == audio_ticks.
     # Broadcast per-tick values across all B, C, and the size-2 dim.
     at = torch.tensor(audio_values, dtype=torch.float32)
     audio_mask_full = at.view(1, 1, 1, -1).expand(*audio_component_shape).clone()
@@ -145,12 +145,11 @@ def derive_audio_composite_noise_mask(
     clean inject.  H3's ``denoise_mask`` convention: ``1`` = generated (kept), ``0`` = held to the
     clean ``latent_image``, fractional = per-step release.
 
-    - **video**: ``1.0`` everywhere — the composite is a NO-OP for the video stream, which stays on
+    - video: ``1.0`` everywhere; the composite is a NO-OP for the video stream, which stays on
       our per-row engine (its fade lives in the conditioning mask + observer splice).
-    - **audio**: tick ``j`` = the owning row's :attr:`RowSchedule.audio_denoise`
+    - audio: tick ``j`` = the owning row's :attr:`RowSchedule.audio_denoise`
       (keep → ``0.0`` hold clean, fade → ``r.denoise``, drop/none → ``1.0`` generate); ``1.0`` for
-      absent ticks.  This is the same audio schedule the conditioning mask used to carry before
-      audio was moved onto the official composite (see ``audio-native-composite.md``).
+      absent ticks.  See ``audio-native-composite.md``.
 
     Return structure matches :func:`derive_fractional_mask`: a ``{"video_mask", "audio_mask"}``
     dict on the non-nested path, or ``nested_factory(video_full, audio_full)`` on the nested path.

@@ -9,8 +9,8 @@ Two operations on the *unpacked* AV latent components (video ``[1,C,T,Hl,Wl]``, 
   inject content, and full-generation rows (``m == 1``) ignore the clean term entirely.
 - :func:`post_composite_preserve` performs the binary exact-preserve overwrite *after*
   sampling: ``m == 0`` video rows and audio-preserve ticks are copied verbatim from the clean
-  reference, guaranteeing exact preservation with no compounding ghost (the old ``noise_mask``
-  re-pin, which compounded every step, is gone).
+  reference, guaranteeing exact preservation with no compounding ghost (a per-step
+  ``noise_mask`` re-pin compounds every step and is not used here).
 
 Both are pure tensor ops (no comfy dependency) and CPU-testable.  ``torch`` is required.
 """
@@ -66,7 +66,7 @@ def build_clean_reference(
     clean_audio = audio.clone() if audio is not None else None
 
     # Cache inject_row_map per inject object (Inject uses identity equality, eq=False, so
-    # the same Inject instance is the same key — safe to use as a dict key directly).
+    # the same Inject instance is the same key; safe to use as a dict key directly).
     # Avoids rebuilding the full clip→target row mapping on every scheduled row of the same
     # inject (can be many rows per inject).
     _row_map_cache: dict[object, dict[int, int]] = {}

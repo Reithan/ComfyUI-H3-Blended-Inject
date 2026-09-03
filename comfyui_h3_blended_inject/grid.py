@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 
 # ---------------------------------------------------------------------------
-# Plain literal constants — direct assignments allowed per task contract
+# Plain literal constants
 # ---------------------------------------------------------------------------
 
 #: Frames covered per latent row across the five temporal groups in one chunk.
@@ -34,7 +34,7 @@ FPS: int = 24
 AUDIO_HZ: float = 40.0
 
 # ---------------------------------------------------------------------------
-# VAE temporal-grid parameters — sourced from comfy/ldm/minimax/vae.py
+# VAE temporal-grid parameters, sourced from comfy/ldm/minimax/vae.py
 # ---------------------------------------------------------------------------
 
 #: Number of source frames encoded per VAE chunk (``clip_length`` in MiniMaxVAE).
@@ -55,7 +55,7 @@ VAE_RATIO_T: int = 4
 TOKENS_PER_CHUNK: int = 5  # ceil(17 / 4)
 
 # ---------------------------------------------------------------------------
-# Timestep constants — confirmed from comfy/ldm/minimax/model.py `_forward` 553-626
+# Timestep constants, confirmed from comfy/ldm/minimax/model.py `_forward` 553-626
 # (video pin ~589, audio pin ~601-609).
 # See wiki: .claude/docs/per-row-img2img/native-h3-mechanism/dit-forward.md
 # ---------------------------------------------------------------------------
@@ -171,8 +171,8 @@ def frame_to_row(frame_idx: int) -> int:
 def total_rows(n_frames: int) -> int:
     """Return the total number of latent rows for a clip with ``n_frames`` source frames.
 
-    **Special case — F=1:** The H3 VAE special-cases a single input frame
-    (``x.shape[2] == 1``) and returns exactly **1** latent row, bypassing the
+    Special case (F=1): The H3 VAE special-cases a single input frame
+    (``x.shape[2] == 1``) and returns exactly 1 latent row, bypassing the
     17-frame chunked path and ``token_drop``.  So ``total_rows(1) == 1``.
 
     For ``n_frames >= 2`` each 17-frame chunk encodes to ``TOKENS_PER_CHUNK`` (5) rows;
@@ -335,11 +335,11 @@ def inject_row_map(inject_at: int, n_clip_rows: int, target_rows: int) -> list[t
 
     For each clip row index in ``[0, n_clip_rows)``, the corresponding target row is
     ``frame_to_row(inject_at) + clip_row``.  Only pairs where both indices are in-bounds
-    are returned — clip rows that map to target rows outside ``[0, target_rows)`` are
+    are returned; clip rows that map to target rows outside ``[0, target_rows)`` are
     silently dropped.
 
-    This helper encapsulates the clip↔target mapping used by both the hold-and-release
-    loop and the d==0 composite in ``_run_sampler``.
+    This helper encapsulates the clip↔target mapping used to build the clean-reference
+    composite in :func:`~comfyui_h3_blended_inject.composite.build_clean_reference`.
 
     Because ``inject_at`` is always a multiple of 17 (enforced by
     :func:`~comfyui_h3_blended_inject.sanitize.snap_inject_at`), the result of
@@ -383,9 +383,8 @@ def inject_audio_ticks_for_row(
     ``inject_start_tick = video_row_to_audio_tick(frame_to_row(inject_at))``.  Only pairs
     where ``clip_tick`` falls in ``[0, n_clip_ticks)`` are returned.
 
-    This mirrors the per-tick mapping in the hold-and-release audio loop inside
-    ``_run_sampler``, encapsulated here so both that loop and the d==0 composite
-    use identical bounds logic.
+    Kept parallel to :func:`inject_row_map` so the audio and video sides of the
+    clean-reference composite use identical bounds logic.
 
     Parameters
     ----------

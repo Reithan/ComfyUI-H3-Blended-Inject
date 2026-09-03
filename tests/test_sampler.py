@@ -1,4 +1,4 @@
-"""Tests for comfyui_h3_blended_inject.sampler — schedule-tail remap pure functions.
+"""Tests for comfyui_h3_blended_inject.sampler: schedule-tail remap pure functions.
 
 These cover the CPU-testable pieces of the schedule-tail remap redesign:
   - scale_packed_audio: audio-tail scaling of the packed clean reference
@@ -230,11 +230,11 @@ class TestShiftSchedule:
 
 
 class TestStreamRowSigma:
-    """The extracted per-row sigma helper drives both the loop and the observer init.
+    """The per-row sigma helper drives both the loop and the observer init.
 
-    The whole point of extracting it is that the observer split can pass its OWN token-ordered
-    fractional ``m`` and get the identical ``σ_row`` the sampler loop computes for those rows,
-    with no packed/token layout assumptions.  These lock the dense-exact and coarse-lerp branches
+    Extracted so the observer split can pass its own token-ordered fractional ``m``
+    and get the identical ``σ_row`` the sampler loop computes for those rows, with no
+    packed/token layout assumptions.  These lock the dense-exact and coarse-lerp branches
     and the endpoint behavior at m∈{0,1}.
     """
 
@@ -1126,7 +1126,6 @@ class TestRFAncestralStepEquivalence:
         fixed_noise = torch.randn(1, 3)
         ns = _FixedNoiseSampler(fixed_noise)
 
-        # Stock scalar reference.
         stock_out = _local_sample_euler_ancestral_rf(model, x.clone(), sigmas, noise_sampler=ns)
         # Native per-row (all m=1): name matches registry → _euler_ancestral_rf_step dispatched.
         out = self._run_native(
@@ -1200,7 +1199,7 @@ class TestRFAncestralStepEquivalence:
             m, x, clean, sigmas, model, noise_sampler=_FixedNoiseSampler(fixed_noise), eta=0.0
         )
         # With eta=0 and zero noise, m=1 col gets full denoising; m=0.5 col lands between.
-        # (Values are not clean=0 because x=0 and model denoises toward x*scale=0 — they should
+        # (Values are not clean=0 because x=0 and model denoises toward x*scale=0; they should
         # be equal here, but the point is no NaN and shape is correct.)
         assert out.shape == (1, 2)
         assert torch.isfinite(out).all(), "fractional row must produce finite values"
@@ -1353,7 +1352,7 @@ class TestRFAncestralDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Multistep native steps (PR3): local scalar references
+# Multistep native steps: local scalar references
 # ---------------------------------------------------------------------------
 
 
@@ -1450,9 +1449,9 @@ _local_sample_res_multistep.__name__ = "sample_res_multistep"
 class TestMultistepStepEquivalence:
     """Native dpmpp_2m / res_multistep reproduce stock scalars exactly for all-m=1 latents.
 
-    This is the Finding-1 regression: the fallback (base_fn on a 2-sigma slice) resets
-    old_denoised every step and silently runs first-order.  The native steps carry per-row
-    history across the outer loop, so all-m=1 must match the true 2nd-order stock trajectory.
+    The fallback (base_fn on a 2-sigma slice) resets old_denoised every step and silently
+    runs first-order.  The native steps carry per-row history across the outer loop, so
+    all-m=1 must match the true 2nd-order stock trajectory.
     """
 
     def _run_native(
@@ -1593,7 +1592,7 @@ class TestMultistepStepEquivalence:
 
 
 # ---------------------------------------------------------------------------
-# DPM++ SDE family (PR4) local scalar references (CONST/RF logit form, matching
+# DPM++ SDE family local scalar references (CONST/RF logit form, matching
 # the native per-row steps' clamps so all-m=1 reproduces them bit-for-bit).
 # ---------------------------------------------------------------------------
 

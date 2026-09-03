@@ -2,8 +2,8 @@
 
 Contract source: docstrings in comfyui_h3_blended_inject/schedule.py and envelope.py.
 
-After the frame-space rework, evaluate_envelope returns list[tuple[int, float]] where
-each pair is (absolute_latent_row_idx, denoise).  inject_at is a LATENT FRAME index;
+evaluate_envelope returns list[tuple[int, float]] where each pair is
+(absolute_latent_row_idx, denoise).  inject_at is a LATENT FRAME index;
 the fade indices are CLIP frame indices.  The _reference_merge implementation here uses
 the (row_idx, d) pairs from evaluate_envelope directly, mirroring merge_schedule exactly.
 """
@@ -508,7 +508,7 @@ class TestMergeScheduleLastInWins:
 
 
 class TestAudioFrozen:
-    """audio_frozen on a RowSchedule row is True iff the winning inject has audio_mode=='frozen'."""
+    """audio_frozen on a RowSchedule row is True iff the winning inject has audio_mode=='keep'."""
 
     def test_frozen_inject_sets_audio_frozen_true(self) -> None:
         inj = make_inject(audio_mode="keep")
@@ -529,7 +529,7 @@ class TestAudioFrozen:
             assert rs.audio_frozen is False, f"row {rs.row_idx}: expected audio_frozen=False"
 
     def test_audio_frozen_tracks_winning_inject_not_loser(self) -> None:
-        """When B (frozen) wins over A (match), audio_frozen reflects B's mode."""
+        """When B (keep mode) wins over A (fade mode), audio_frozen reflects B's mode."""
         target_rows = 50
         inj_a = make_inject(
             inject_at=0,
@@ -673,7 +673,7 @@ class TestMergeScheduleProperties:
     def test_audio_frozen_consistent_with_winning_inject(
         self, inject_list: list[Inject], target_rows: int
     ) -> None:
-        """audio_frozen must always equal (winning inject's audio_mode == 'frozen')."""
+        """audio_frozen must always equal (winning inject's audio_mode == 'keep')."""
         result = merge_schedule(inject_list, target_rows=target_rows)
         for rs in result:
             assert rs.inject is not None  # precondition
@@ -691,14 +691,10 @@ class TestMergeScheduleProperties:
 class TestAudioPreserve:
     """Truth-table for RowSchedule.audio_preserve.
 
-    Regression for the bug where fade-mode d==0 audio was generated from scratch
-    instead of preserved.  audio_preserve must return True exactly for:
+    audio_preserve must return True exactly for:
       - keep mode (audio_frozen=True), any denoise value, and
       - fade mode with denoise==0.0.
     All other combinations must return False.
-
-    Pre-fix these tests fail with:
-      AttributeError: 'RowSchedule' object has no attribute 'audio_preserve'
     """
 
     def _make_rs(
@@ -730,7 +726,7 @@ class TestAudioPreserve:
         )
 
     def test_fade_denoise_zero_is_true(self) -> None:
-        """fade mode + denoise==0.0 → audio_preserve is True (the bug case)."""
+        """fade mode + denoise==0.0 → audio_preserve is True."""
         rs = self._make_rs(audio_mode="fade", denoise=0.0)
         assert rs.audio_preserve is True
 
@@ -839,9 +835,8 @@ class TestAudioDenoise:
 class TestMergeScheduleRampRegions:
     """Verify merge_schedule classifies ramp rows as 'hold'.
 
-    The crossfade toggle was removed with the per-row img2img rework; ramp rows always
-    classify as 'hold' (the per-row img2img sampler drives the fade via each row's
-    fractional denoise, not via a distinct region).
+    Ramp rows always classify as 'hold'; the per-row img2img sampler drives fades via
+    each row's fractional denoise rather than a distinct region type.
 
     Uses inject_at=0, start_fade_in=0, start_keyframes=5, end_keyframes=10,
     end_fade_out=17.  Row 1 (centers 1.5–4.5) lies in the fade-in ramp [0,5).

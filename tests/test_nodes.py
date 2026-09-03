@@ -25,10 +25,6 @@ from comfyui_h3_blended_inject.nodes import (
 )
 from comfyui_h3_blended_inject.schedule import Guide, Inject
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 INTERPOLATION_TYPES = ["ease_in", "ease_out", "ease_in_out", "linear", "none"]
 AUDIO_MODES = ["fade", "drop", "keep"]
 
@@ -101,16 +97,11 @@ def _make_add_inject_args(**overrides: Any) -> dict[str, Any]:
         "vae": FakeEncodeVAE(),  # images-without-vae now raises; baseline must wire one
     }
     defaults.update(overrides)
-    # Images without a VAE is now a hard error; drop the default vae only when the
+    # Images without a VAE is a hard error; drop the default vae only when the
     # override explicitly removed the images too.
     if defaults.get("images") is None and "vae" not in overrides:
         defaults["vae"] = None
     return defaults
-
-
-# ---------------------------------------------------------------------------
-# _unpack_av
-# ---------------------------------------------------------------------------
 
 
 class TestUnpackAv:
@@ -168,13 +159,8 @@ class TestUnpackAv:
         assert result_audio is None
 
 
-# ---------------------------------------------------------------------------
-# INPUT_TYPES / wiring tests
-# ---------------------------------------------------------------------------
-
-
 class TestH3AddInjectInputTypes:
-    """Static INPUT_TYPES schema for H3AddInject.  All of these pass now."""
+    """Static INPUT_TYPES schema for H3AddInject."""
 
     def test_required_keys_order(self):
         required = list(H3AddInject.INPUT_TYPES()["required"].keys())
@@ -217,7 +203,7 @@ class TestH3AddInjectInputTypes:
 
 
 class TestH3AddInjectClassAttrs:
-    """Class-level attributes on H3AddInject.  Pass now."""
+    """Class-level attributes on H3AddInject."""
 
     def test_return_types(self):
         assert H3AddInject.RETURN_TYPES == (INJECT_LIST,)
@@ -230,7 +216,7 @@ class TestH3AddInjectClassAttrs:
 
 
 class TestH3InjectSamplerInputTypes:
-    """Static INPUT_TYPES schema for H3InjectSampler.  Pass now.
+    """Static INPUT_TYPES schema for H3InjectSampler.
 
     Sampler/scheduler lists fall back to [] when comfy is absent, so calling
     INPUT_TYPES() in tests is safe.
@@ -287,7 +273,7 @@ class TestH3InjectSamplerInputTypes:
         assert "negative" in optional
 
     def test_crossfade_widget_removed(self):
-        """The crossfade toggle was removed with the per-row img2img rework."""
+        """Crossfade is absent; per-row img2img makes it unsupported."""
         optional = H3InjectSampler.INPUT_TYPES().get("optional", {})
         assert "crossfade" not in optional, "'crossfade' widget must no longer be present"
 
@@ -299,7 +285,7 @@ class TestH3InjectSamplerInputTypes:
 
 
 class TestNodeMappings:
-    """NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS.  Pass now."""
+    """NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS."""
 
     def test_class_mappings_h3_add_inject(self):
         assert NODE_CLASS_MAPPINGS["H3AddInject"] is H3AddInject
@@ -365,11 +351,6 @@ class TestNodeMappings:
 
         assert "H3AddInject" in mod.NODE_CLASS_MAPPINGS
         assert "H3InjectSampler" in mod.NODE_CLASS_MAPPINGS
-
-
-# ---------------------------------------------------------------------------
-# Behavioral tests
-# ---------------------------------------------------------------------------
 
 
 class TestH3AddInjectBehavior:
@@ -463,8 +444,6 @@ class TestH3AddInjectBehavior:
 
 
 class TestH3AddInjectBehaviorExtra:
-    """Additional behavioral tests for H3AddInject.add_inject covering edge-case branches."""
-
     def test_ordering_violation_raises_value_error(self):
         """start_fade_in > start_keyframes must raise ValueError before constructing Inject."""
         node = H3AddInject()
@@ -511,7 +490,7 @@ class TestH3AddInjectBehaviorExtra:
         assert inject_list[0].video_latent is FakeVAE.sentinel
 
     def test_audio_without_audio_vae_raises(self):
-        """audio + audio_mode!='drop' + no audio_vae → hard error (was silently dropped)."""
+        """audio + audio_mode != 'drop' + no audio_vae → hard error."""
         import torch
 
         audio = {"waveform": torch.zeros(1, 8000), "sample_rate": 16000}
@@ -531,7 +510,7 @@ class TestH3AddInjectBehaviorExtra:
         assert inject_list[0].audio_latent is None
 
     def test_images_without_vae_raises(self):
-        """images + no vae → hard error instead of silently ignored inject content."""
+        """images + no vae → hard error."""
         node = H3AddInject()
         with pytest.raises(ValueError, match="vae"):
             node.add_inject(**_make_add_inject_args(vae=None))
@@ -550,8 +529,6 @@ class TestH3InjectSamplerBehavior:
         """An inject whose resolution does not match the target latent must raise ValueError.
 
         The inject has resolution (64, 64); the latent tensor implies a different size.
-        Once implemented, sample() should validate resolution before attempting to sample
-        and raise ValueError with the offending values.
         """
         import torch
 
@@ -571,7 +548,6 @@ class TestH3InjectSamplerBehavior:
             source_length=4,
         )
 
-        # Latent samples shape implying a different spatial resolution than 64x64.
         latent_image: dict[str, Any] = {"samples": torch.zeros(1, 16, 16, 16)}
 
         node = H3InjectSampler()
@@ -749,13 +725,10 @@ class TestH3InjectSamplerBehavior:
         assert calls[0]["negative"] is sentinel_negative
 
     def test_nested_tensor_latent_does_not_crash_at_dim(self, monkeypatch):
-        """Regression: NestedTensor latent (FLOW_AV) must not raise AttributeError.
+        """NestedTensor latent (FLOW_AV) must not raise AttributeError.
 
-        Before the fix, sample() called samples.dim() which NestedTensor does not
-        implement, crashing on GPU with a real H3 latent.  After the fix, sample()
-        must detect is_nested and extract dims from .tensors[0] / .tensors[1].
-
-        This test MUST fail before the fix and pass after.
+        sample() detects is_nested and extracts dims from .tensors[0] / .tensors[1]
+        instead of calling .dim(), which NestedTensor does not implement.
         """
         import torch
 
@@ -812,17 +785,8 @@ class TestH3InjectSamplerBehavior:
         assert len(calls) == 1, "sample() must call _run_sampler for a nested latent"
 
 
-# ---------------------------------------------------------------------------
-# E8: content-length snapping and audio tail-alignment warning
-# ---------------------------------------------------------------------------
-
-
 class TestE8LengthSnapping:
-    """E8: snap injected content length down to the 17n+5 grid; trim image/audio tensors.
-
-    Fail-then-pass requirement: each test that covers new behaviour must FAIL before
-    snap_length_down is wired into add_inject and PASS after.
-    """
+    """Snap injected content length down to the 17n+5 grid; trim image/audio tensors."""
 
     @staticmethod
     def _images(frames: int, h: int = 64, w: int = 64) -> Any:
@@ -836,8 +800,6 @@ class TestE8LengthSnapping:
         import torch
 
         return {"waveform": torch.zeros(1, samples), "sample_rate": sr}
-
-    # -- Snap-down: tensor trimmed, source_length updated ----------------------
 
     def test_snap_100_to_90_trims_image_tensor(self):
         """Source 100 → snaps to 90; image tensor trimmed; source_length=90."""
@@ -931,8 +893,6 @@ class TestE8LengthSnapping:
         expected_samples = round(90 / 24 * 32000)
         assert inj.audio["waveform"].shape[-1] == expected_samples
 
-    # -- No-op when already valid ----------------------------------------------
-
     def test_no_op_when_source_length_is_39(self):
         """Source 39 (= 5+17*2): valid 17n+5 → returned unchanged; no UserWarning from snap."""
         import warnings
@@ -987,8 +947,6 @@ class TestE8LengthSnapping:
         assert not snap_warns
         assert inject_list[0].source_length == 90
 
-    # -- Hard error: source_length < 5 -----------------------------------------
-
     def test_error_source_length_4(self):
         """source_length=4 < 5 → ValueError (minimum valid H3 clip length is 5)."""
         node = H3AddInject()
@@ -1010,9 +968,7 @@ class TestE8LengthSnapping:
     def test_error_source_length_1_is_now_valid(self):
         """source_length=1 at a valid chunk boundary with audio_mode='drop' succeeds.
 
-        F=1 is now a first-class valid inject length (single-keyframe path).
-        This test was updated from 'expects ValueError' to 'expects success' when the
-        valid-length set changed from {17n+5} to {1} ∪ {17n+5}.
+        F=1 is a valid inject length (single-keyframe path); valid set is {1} ∪ {17n+5}.
         inject_at=0 is a multiple of 17 and audio_mode='drop' → all guards pass.
         """
         node = H3AddInject()
@@ -1032,14 +988,8 @@ class TestE8LengthSnapping:
         inj = inject_list[0]
         assert inj.source_length == 1
 
-    # -- Hard error: fade index outside post-trim context ----------------------
-
     def test_error_efo_exceeds_snapped_length(self):
-        """Source 100 → snaps to 90; end_fade_out=95 > 90 → ValueError at add_inject time.
-
-        FAIL-THEN-PASS: Before snap_length_down is wired in, efo=95 <= 100 passes; no error.
-        After: snap to 90, efo=95 > 90 → ValueError.
-        """
+        """Source 100 → snaps to 90; end_fade_out=95 > 90 → ValueError at add_inject time."""
         node = H3AddInject()
         images = self._images(100)
         with pytest.raises(ValueError, match="end_fade_out"):
@@ -1074,15 +1024,8 @@ class TestE8LengthSnapping:
                 vae=FakeEncodeVAE(),
             )
 
-    # -- Half-open boundary: efo == snapped_length is ACCEPTED -----------------
-
     def test_half_open_efo_equals_snapped_length_accepted(self):
-        """efo == snapped_length (90) is VALID: exclusive upper bound, half-open model.
-
-        FAIL-THEN-PASS: Without snap, source_length=100, so efo=90 passes trivially
-        (90 <= 100); BUT inj.source_length would be 100, not 90. After snap: source=90,
-        efo=90 == 90 is valid, and inj.source_length==90.
-        """
+        """efo == snapped_length (90) is valid; half-open model: end_fade_out is exclusive."""
         node = H3AddInject()
         images = self._images(100)
         with pytest.warns(UserWarning):
@@ -1099,21 +1042,12 @@ class TestE8LengthSnapping:
                 vae=FakeEncodeVAE(),
             )
         inj = inject_list[0]
-        assert inj.source_length == 90  # snapped; fails without implementation (would be 100)
+        assert inj.source_length == 90  # snapped
         assert inj.end_fade_out == 90
 
 
-# ---------------------------------------------------------------------------
-# E8: audio tail-alignment warning (from add_inject)
-# ---------------------------------------------------------------------------
-
-
 class TestE8AudioTailAlignment:
-    """E8 addition: warn when non-audio-aligned clip end is exposed without a fade-out.
-
-    Fail-then-pass: Before warn_audio_tail_alignment is wired in, no warning is emitted;
-    tests expecting pytest.warns fail. After wiring, tests pass.
-    """
+    """Warn when a non-audio-aligned clip end is exposed without a fade-out."""
 
     @staticmethod
     def _images(frames: int) -> Any:
@@ -1152,13 +1086,8 @@ class TestE8AudioTailAlignment:
             )
         return [str(x.message) for x in w if issubclass(x.category, UserWarning)]
 
-    # -- WARN cases ------------------------------------------------------------
-
     def test_warn_keep_mode_non_aligned_length(self):
-        """keep-mode + non-aligned length (56 = 5+17*3) → tail warning emitted.
-
-        FAIL-THEN-PASS: Without the warning logic, no UserWarning is emitted.
-        """
+        """keep-mode + non-aligned length (56 = 5+17*3) → tail warning emitted."""
         node = H3AddInject()
         # 56 is a valid 17n+5 length; ceil(56/17)=4, 4%3=1 → not audio-aligned.
         with pytest.warns(UserWarning, match="audio-sync-aligned"):
@@ -1219,16 +1148,9 @@ class TestE8AudioTailAlignment:
                 audio_vae=FakeAudioVAE(),
             )
 
-    # -- NO-WARN cases ---------------------------------------------------------
-
     def test_warn_keep_mode_video_fadeout_reaching_tail(self):
-        """Regression: keep-mode + video fade-out reaching tail → MUST warn (end-to-end).
-
-        Bug: is_faded_through was not gated on fade mode; keep+non-aligned+faded-through
-        video envelope wrongly suppressed the warning.  After fix, keep is never
-        treated as faded-through and always warns when non-aligned + has_audio.
-
-        FAIL-THEN-PASS: DID NOT WARN against the unfixed code; warns after fix.
+        """keep mode is never faded-through: warns when non-aligned and has_audio,
+        even when the video fade-out envelope reaches the clip tail.
         """
         node = H3AddInject()
         # 56 = 5+17*3, not audio-aligned; video fade-out end_keyframes=50, end_fade_out=56
@@ -1351,17 +1273,11 @@ class TestE8AudioTailAlignment:
         assert not tail_warns
 
 
-# ---------------------------------------------------------------------------
-# F=1 single-frame (keyframe) inject constraints
-# ---------------------------------------------------------------------------
-
-
 class TestF1SingleFrameInject:
     """F=1 keyframe inject: placement, audio, and %51 warning gating.
 
-    All fail-then-pass tests in this class require two nodes.py changes:
-    1. The single-frame placement guard (inject_at % 17 == 0 for F=1 injects).
-    2. The %51 audio-tick warning gate (only fire when audio is present and audio_mode != 'drop').
+    Two invariants: (1) placement guard: inject_at % 17 == 0 for F=1 injects;
+    (2) %51 warning gates on audio present and audio_mode != 'drop'.
     """
 
     @staticmethod
@@ -1376,17 +1292,12 @@ class TestF1SingleFrameInject:
 
         return {"waveform": torch.zeros(1, samples), "sample_rate": sr}
 
-    # -- (i) Valid single-frame inject succeeds and produces source_length=1 -------
-
     def test_single_frame_at_chunk_boundary_drop_succeeds(self):
         """inject_at=187 (=11*17) + 1 frame + audio_mode='drop' → succeeds; no %51 warning.
 
         inject_at=187 is a chunk boundary (11*17) but not a multiple of 51 (187 % 51 = 34).
         With audio_mode='drop' the %51 warning must NOT fire (gated by audio presence).
         source_length must be 1 and inject_at on the Inject must be 187.
-
-        FAIL-THEN-PASS: Before the %51 gate, a warning fires even for drop mode.
-        After the gate, no warning fires and the inject succeeds.
         """
         import warnings
 
@@ -1441,16 +1352,11 @@ class TestF1SingleFrameInject:
         assert inj.source_length == 1
         assert total_rows(inj.source_length) == 1
 
-    # -- (ii) Non-chunk-boundary inject_at raises ValueError for F=1 ---------------
-
     def test_single_frame_nonmultiple_inject_at_raises(self):
         """inject_at=188 (not a multiple of 17) + 1 frame → ValueError.
 
-        Single-frame injects must land exactly on a chunk boundary (inject_at % 17 == 0).
-        The guard must use the ORIGINAL inject_at (188), not the post-snap value (187).
-
-        FAIL-THEN-PASS: Before the guard, inject_at=188 is silently snapped to 187 and
-        the inject succeeds. After the guard, ValueError is raised naming inject_at=188.
+        Single-frame injects must land on a chunk boundary (inject_at % 17 == 0).
+        The guard uses the ORIGINAL inject_at (188), not the post-snap value (187).
         """
         node = H3AddInject()
         import warnings
@@ -1501,15 +1407,11 @@ class TestF1SingleFrameInject:
             f"Error message must mention edges 34 and 51; got: {msg}"
         )
 
-    # -- (iii) Single-frame inject with non-drop audio raises ValueError -------------
-
     def test_single_frame_keep_audio_raises(self):
         """inject_at=0 + 1 frame + audio_mode='keep' + audio → ValueError.
 
-        Single-frame (keyframe) injects have no audio extent to preserve.
+        Single-frame injects have no audio extent to preserve;
         audio_mode='keep' with audio present must raise ValueError.
-
-        FAIL-THEN-PASS: Before the guard the inject succeeds; after it raises ValueError.
         """
         node = H3AddInject()
         with pytest.raises(ValueError, match="audio_mode"):
@@ -1568,16 +1470,11 @@ class TestF1SingleFrameInject:
         )
         assert inject_list[0].source_length == 1
 
-    # -- (iv) %51 warning is gated on audio presence and audio_mode ----------------
-
     def test_no_51_warning_for_drop_mode_at_nonmultiple_of_51(self):
         """audio_mode='drop' + audio + inject_at=17 (not mult of 51) → no %51 UserWarning.
 
         The %51 position warning must be suppressed when audio_mode='drop'.
         Uses a 22-frame inject (F>1) to stay in the multi-frame path.
-
-        FAIL-THEN-PASS: Before the gate, the warning fires regardless of audio_mode.
-        After the gate, it is suppressed when audio_mode='drop'.
         """
         import warnings
 
@@ -1635,11 +1532,7 @@ class TestF1SingleFrameInject:
             )
 
     def test_51_warning_suppressed_when_no_audio(self):
-        """%51 warning must not fire when audio=None (regardless of audio_mode).
-
-        FAIL-THEN-PASS: Before the gate, warning fires even without audio.
-        After: only fires when audio is present and audio_mode != 'drop'.
-        """
+        """%51 warning must not fire when audio=None (regardless of audio_mode)."""
         import warnings
 
         import torch
@@ -1665,11 +1558,6 @@ class TestF1SingleFrameInject:
         assert not audio_tick_warns, (
             f"%51 warning must NOT fire when audio=None; fired: {audio_tick_warns}"
         )
-
-
-# ---------------------------------------------------------------------------
-# H3AddGuide
-# ---------------------------------------------------------------------------
 
 
 class RecordingVAE:
@@ -1761,7 +1649,7 @@ class TestH3AddGuideBehavior:
         assert len(result) == 1
         g = result[0]
         assert isinstance(g, Guide)
-        assert g.inject_at == -1  # raw, unresolved — negative kept as entered
+        assert g.inject_at == -1  # raw, unresolved; negative kept as entered
         assert g.start_percent == 0.0
         assert g.end_percent == 0.6
         assert g.guide_frames == 1
@@ -1822,7 +1710,7 @@ class TestH3AddGuideBehavior:
 class TestH3InjectSamplerGuideBehavior:
     """Sample-time guide resolution: partition, resolution gate, bounds, keyframe build.
 
-    _run_sampler is monkeypatched to capture its kwargs — everything before it is the
+    _run_sampler is monkeypatched to capture its kwargs; everything before it is the
     CPU-testable contract under test.
     """
 
@@ -1951,7 +1839,7 @@ class TestH3InjectSamplerGuideBehavior:
     def test_none_inject_list_runs_as_passthrough(self, monkeypatch):
         """inject_list=None must not raise: empty schedule + empty guides = passthrough.
 
-        Regression for the required-input bug — with no injects wired (or all bypassed),
+        Regression for the required-input bug; with no injects wired (or all bypassed),
         ComfyUI passes nothing and sample() previously died partitioning None. The node
         must sample natively: empty schedule, no guides, and return a LATENT dict.
         """

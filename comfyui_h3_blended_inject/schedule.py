@@ -24,7 +24,7 @@ from comfyui_h3_blended_inject.envelope import classify_row_region, evaluate_env
 InjectList = list["Inject | Guide"]
 
 
-# eq=False: identity equality — the same Inject object IS the same inject (no value-based dedup).
+# eq=False: identity equality; the same Inject object IS the same inject (no value-based dedup).
 @dataclass(eq=False)
 class Inject:
     """All parameters needed to schedule and apply one inject into the target latent.
@@ -95,7 +95,7 @@ class Inject:
     audio_latent: Any | None = None
 
 
-# eq=False: identity equality — the same Guide object IS the same guide.  The sampler's
+# eq=False: identity equality; the same Guide object IS the same guide.  The sampler's
 # timed cond removal tracks the keyframe dicts built from guides by object identity, so
 # value-based equality would be actively wrong here.
 @dataclass(eq=False)
@@ -210,9 +210,9 @@ class RowSchedule:
 
         Fractional generalization of :attr:`audio_preserve`:
 
-        - **keep** mode (``audio_frozen``): ``0.0`` everywhere — audio is frozen/preserved.
-        - **fade** mode: follows the video envelope, so it equals this row's ``denoise``.
-        - **drop** mode / no inject: ``1.0`` — audio is generated from scratch.
+        - keep mode (``audio_frozen``): ``0.0`` everywhere; audio is frozen/preserved.
+        - fade mode: follows the video envelope, so it equals this row's ``denoise``.
+        - drop mode / no inject: ``1.0``; audio is generated from scratch.
 
         Consistency: ``audio_preserve`` is ``True`` exactly when ``audio_denoise == 0.0``.
         """

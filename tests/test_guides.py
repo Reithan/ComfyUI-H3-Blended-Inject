@@ -284,7 +284,7 @@ class TestFilterReleasedKeyframes:
         assert out["cond_video_latents"] == ["OFFICIAL_LAT", "REF_LAT", None]
 
     def test_keyframe_video_predicate_is_none_check(self) -> None:
-        """Keyframes video uses ``kf.get("latent") is not None`` — audio-only entries skipped."""
+        """Keyframes video uses ``kf.get("latent") is not None``; audio-only entries skipped."""
         payload, _, kf_ours, _ = _payload()
         kf_audio_only = {"resolved_frame_index": 10, "audio_latent": "AUD_ONLY"}
         payload["keyframes"] = list(payload["keyframes"]) + [kf_audio_only]

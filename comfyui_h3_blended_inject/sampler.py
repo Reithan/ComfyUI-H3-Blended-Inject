@@ -1,48 +1,47 @@
 """Per-row img2img sampler helpers (schedule-tail remap).
 
 This module turns ComfyUI's global sampler into a per-row img2img sampler for H3 blended
-injects using the GPU-validated **schedule-tail remap** mechanism.  Each fractional row
-(``0 < m < 1``) runs the LAST ``d``-fraction (``d = m``) of the schedule's sigma values,
-stretched over ALL steps:
+injects using the schedule-tail remap.  Each fractional row (``0 < m < 1``) runs the LAST
+``d``-fraction (``d = m``) of the schedule's sigma values, stretched over ALL steps:
 
 - Release step ``k_d = round(steps·(1−m))`` (clamped to ``[0, steps]``); ``never = k_d ≥ steps``
   marks ``m == 0`` (exact-preserve) rows.  Stretch factor ``span = (steps − k_d) / steps``.
 - ``row_sigma(i)`` is read EXACTLY from a dense ``steps²+1`` sigma grid at grid index
-  ``k_d·(steps − i) + i·steps`` — an integer index for every row/step, so there is no
+  ``k_d·(steps − i) + i·steps``, an integer index for every row/step, so there is no
   interpolation error against the shift-12 schedule curvature.  A coarse-grid lerp is used
   only if that dense grid is absent.
 - The DiT label is ``w = (sig_row / sig_g).clamp(max=1.0)`` so the model computes the truthful
   ``t_row = 1 − w·σ_g = 1 − σ_row`` in both the held and free phases.
 - Per-step per-row scaling ``r = (sig_row − sig_row_next) / (sig_g − sig_g_next)`` is applied
   as ``x_cur = x_prev + r·(x_cur − x_prev)`` so each row integrates its own compressed tail
-  instead of the global interval — this replaces the old denoised correction entirely.
+  instead of the global interval.
 - An init-only clean composite fires ONCE at ``i == 0`` (``x = w·x + (1−w)·clean``) to place
   each row on its own noise-line at ``σ_row(0)``; it is never re-injected (per-region SDEdit
   on the stretched tail).  A final ``where(never, clean, x_cur)`` guarantees ``m == 0`` preserve.
 
-**Audio is axis-blind.**  Audio does NOT ride this per-row engine.  Its conditioning is
+Audio is axis-blind.  Audio does NOT ride this per-row engine.  Its conditioning is
 full-generation (``m == 1``), so ``row_sigma``/``sig_g``/``w``/``r`` run on the VIDEO σ_v axis
 for every row and audio integrates exactly as stock at σ_v (the σ_a shift is applied inside the
 H3 forward, not here).  Audio's fade is applied by the official ``KSamplerX0Inpaint`` composite
 via a ``noise_mask`` built in ``nodes.py``
-(:func:`~comfyui_h3_blended_inject.mask.derive_audio_composite_noise_mask`).  This retires the
-earlier σ_a-axis per-row audio path (the Bug-B static source); see ``audio-native-composite.md``.
+(:func:`~comfyui_h3_blended_inject.mask.derive_audio_composite_noise_mask`).  Audio does not run
+on its own σ_a axis: a per-row σ_a path decodes to static; see ``audio-native-composite.md``.
 The audio-modality boundary (packed video-prefix length) is still tracked for
 :func:`scale_packed_audio` and the observer plumbing.
 
-**Clean-K/V splice (single-forward, Option II).**  When the observer-split block patches are
-installed and fractional rows exist, the euler step runs ONE forward per interval
+Clean-K/V splice (single-forward).  When the observer-split block patches are installed and
+fractional rows exist, the euler step runs ONE forward per interval
 (:func:`_single_forward_denoised`) that carries an exact band-only side stream, letting a
 fractional row broadcast (and perceive itself) as its clean anchor at ``σ_obs = m·σ_g`` while its
-own velocity stays truthful — no ghost.  It reproduces the (removed) two-forward capture/splice
-mechanism bit-for-bit.  See ``observer_split.py`` and the wiki ``clean-kv-split.md``.
+own velocity stays truthful (no ghost).  It reproduces the two-forward capture/splice mechanism
+bit-for-bit at half the model cost.  See ``observer_split.py`` and the wiki ``clean-kv-split.md``.
 
 The sampler loop dispatches each step through a ``_NATIVE_ROW_STEPS`` registry (keyed by
-``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``
-and ``sample_euler_ancestral`` (H3's RF-ancestral path) are registered here (PR1 + PR2), as are
-the deterministic multistep samplers ``sample_dpmpp_2m`` and ``sample_res_multistep`` (PR3) whose
-native steps carry per-row ``old_denoised`` history in ``_StepContext.state`` to restore true 2nd
-order under the remap (a black-box ``base_fn`` on a 2-σ slice degrades to first order — Finding 1).
+``base_fn.__name__``); ``_fallback_step`` is the default for unknown samplers.  ``sample_euler``,
+``sample_euler_ancestral`` (H3's RF-ancestral path), and the deterministic multistep samplers
+``sample_dpmpp_2m`` and ``sample_res_multistep`` are registered here; the multistep steps carry
+per-row ``old_denoised`` history in ``_StepContext.state`` to restore true 2nd order under the
+remap (a black-box ``base_fn`` on a 2-σ slice degrades to first order).
 
 Everything here is pure and CPU-testable; ``torch`` is the only heavy dependency.  ``comfy``
 imports stay lazy so this module loads without a ComfyUI environment.
@@ -81,11 +80,11 @@ def scale_packed_audio(
     its audio slice carries the identical scale here.
 
     ``packed`` is a flat ``[B, video_elems + audio_elems]`` latent; ``video_element_count`` is
-    ``prod(video_shape[1:])`` — the packed video-prefix length (and the same boundary the
+    ``prod(video_shape[1:])``, the packed video-prefix length (and the same boundary the
     audio-modality mask uses in :func:`build_per_row_sampler_function`).  A no-op when
     ``audio_scale == 1.0`` or there is no audio tail.
 
-    **Dual contract:** mutates ``packed`` in place *and* returns the same tensor.  Both are
+    Dual contract: mutates ``packed`` in place *and* returns the same tensor.  Both are
     relied on: call sites use the return value for assignment, and tests assert ``out is packed``
     (identity) to confirm no copy was made.
 
@@ -101,7 +100,7 @@ def scale_packed_audio(
     Returns
     -------
     torch.Tensor
-        ``packed`` — the same object, audio tail scaled in place.
+        ``packed``, the same object, audio tail scaled in place.
     """
     if audio_scale != 1.0 and video_element_count < packed.shape[-1]:
         packed[..., video_element_count:] *= audio_scale
@@ -127,10 +126,10 @@ def sampler_is_stochastic(fn: Callable[..., Any]) -> bool:
     Detection is signature-based (no hardcoded sampler list): a sampler is stochastic
     when it declares an ``eta`` parameter whose default is > 0 (ancestral/SDE families
     inject fresh noise scaled by ``eta`` each step).  Deterministic samplers either omit
-    ``eta`` (euler, dpmpp_2m, res_multistep — whose public wrapper hardcodes ``eta=0.``
+    ``eta`` (euler, dpmpp_2m, res_multistep, whose public wrapper hardcodes ``eta=0.``
     internally) or default it to 0.  Known blind spot: samplers that inject noise
-    unconditionally without an ``eta`` knob (ddpm, lcm, er_sde) are not detected —
-    acceptable for a warning heuristic; do not rely on this for a hard gate.  The
+    unconditionally without an ``eta`` knob (ddpm, lcm, er_sde) are not detected.
+    Acceptable for a warning heuristic; do not rely on this for a hard gate.  The
     schedule-tail remap steps the base sampler one interval at a time and is not
     scale-invariant under stochastic renoise on H3's rectified-flow path, so stochastic
     samplers corrupt fractional/preserved rows and only warrant a warning.
@@ -159,17 +158,17 @@ def build_conditioning_wrapper(
     ``schedule_tail["pooled_current"]`` (pooled DiT conditioning built from ``w`` so the model
     computes ``t_row = 1 − w·σ = 1 − σ_row``, truthful in both the held and free phases).  This
     wrapper places that conditioning into a COPY of ``c`` and returns the raw denoised
-    prediction — there is NO denoised correction: the sampler loop's per-row ``r``-scaling
+    prediction; there is no denoised correction: the sampler loop's per-row ``r``-scaling
     confines each row's integral to its compressed tail.  Before the loop's first step
     ``pooled_current`` is absent, so ``pooled_ones`` (native full-denoise labels) is used.
 
     Two optional jobs layer on top:
 
-    - **Observer-label K/V split.**  When ``schedule_tail["observer"]`` is populated (by
+    - Observer-label K/V split: when ``schedule_tail["observer"]`` is populated (by
       :func:`~comfyui_h3_blended_inject.observer_split.install_observer_split`), the per-call
       observer labels (``t_obs = 1 − m·σ``) consumed by the DiT block patches are refreshed via
-      ``observer_call_update`` — imported lazily so this module needs no ComfyUI at load time.
-    - **Per-guide step-gated cond.**  When ``guide_release["entries"]`` and/or
+      ``observer_call_update`` (imported lazily so this module needs no ComfyUI at load time).
+    - Per-guide step-gated cond: when ``guide_release["entries"]`` and/or
       ``guide_release["pending_entries"]`` are armed, each guide's keyframe cond row is
       stripped from a COPY of ``minimax_payload`` whenever the step falls outside that
       guide's ``[start_step, end_step)`` window.  Current step is read from
@@ -188,9 +187,9 @@ def build_conditioning_wrapper(
     guide_release:
         Mutable state dict for per-guide step-gated cond, shared with ``_run_sampler``:
 
-        - ``"entries"``: list of ``(keyframe_id, end_step)`` pairs — guide is excluded when
+        - ``"entries"``: list of ``(keyframe_id, end_step)`` pairs; guide is excluded when
           ``current_step >= end_step``.
-        - ``"pending_entries"``: list of ``(keyframe_id, start_step)`` pairs — guide is
+        - ``"pending_entries"``: list of ``(keyframe_id, start_step)`` pairs; guide is
           excluded when ``current_step < start_step``.
         - ``"cache"``: filled here; filtered payload copies keyed by
           ``(id(payload), frozenset(excluded_ids))`` so cond/uncond streams never cross.
@@ -274,7 +273,7 @@ def _stream_row_sigma(
     is lerped at ``k_d + i·span``.
 
     Extracted so the sampler loop's ``row_sigma`` AND the observer split's single-forward
-    block-0 side-hidden init compute the identical ``σ_row`` from the same ``m`` — the observer
+    block-0 side-hidden init compute the identical ``σ_row`` from the same ``m``; the observer
     passes its own token-ordered fractional ``m`` so there is no packed/token layout mismatch.
     """
     k_d = torch.round(steps_n * (1.0 - m)).clamp(0, steps_n)
@@ -294,15 +293,16 @@ class _StepContext:
     """Per-step context passed to each row step function.
 
     Carries all information a step function needs to compute the r-scaled row update for one
-    global step interval.  ``state`` is a mutable per-row history store reserved for multistep
-    samplers (PR3); it is unused in PR1.
+    global step interval.  ``state`` is a mutable per-row history store for multistep samplers
+    that need to persist state (old_denoised, seeded noise sampler, observer refs) across
+    loop iterations.
     """
 
     model: Any
     x_prev: torch.Tensor
     i: int
-    sigmas: torch.Tensor  # raw schedule arg — same tensor the original passed to base_fn
-    sig_row: torch.Tensor  # per-row sigma at step i (audio rows on shifted schedule)
+    sigmas: torch.Tensor  # raw schedule arg, same tensor the original passed to base_fn
+    sig_row: torch.Tensor  # per-row sigma at step i (σ_v for all rows; audio is axis-blind)
     sig_row_next: torch.Tensor  # per-row sigma at step i+1
     sig_g: torch.Tensor  # global_sigma(i).clamp(min=1e-8), per-row
     sig_g_next: torch.Tensor  # global_sigma(i+1), per-row
@@ -322,7 +322,7 @@ def _fallback_step(ctx: _StepContext) -> torch.Tensor:
     """Reproduce the original loop body: delegate to ``base_fn`` then apply r-scale.
 
     This is the default path for any sampler not registered in ``_NATIVE_ROW_STEPS``.  It
-    preserves the original behavior exactly — no numerical change for any sampler.
+    preserves the original behavior exactly; no numerical change for any sampler.
     """
     x_base = ctx.base_fn(
         ctx.model,
@@ -346,15 +346,15 @@ def _single_forward_denoised(  # pragma: no cover - requires live H3 model (GPU)
     extra_args: dict[str, Any],
     x: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Exact single-forward clean-K/V denoise for fractional fade rows (Option II).
+    """Single-forward clean-K/V denoise for fractional fade rows.
 
-    Reproduces the (removed) two-forward clean-K/V mechanism bit-for-bit in ONE forward.  The
-    two-forward mechanism — a capture forward on the static ``clean`` inject re-noised to the
-    observed level ``σ_obs = m·σ_g`` whose fractional-band K/V are spliced into a truthful ``σ_row``
-    self forward — is preserved in wiki ``observed-level-plant/clean-kv-split.md``.
+    Reproduces the two-forward clean-K/V mechanism bit-for-bit in ONE forward.  That mechanism
+    (a capture forward on the static ``clean`` inject re-noised to the observed level
+    ``σ_obs = m·σ_g``, whose fractional-band K/V are spliced into a truthful ``σ_row`` self
+    forward) is described in the wiki ``observed-level-plant/clean-kv-split.md``.
 
     Primes the band-only side stream for this step (per-row embed ``ratio``, observer modulation
-    ``t_emb_m`` + mod indices — computed from the observer's OWN token-ordered ``m`` so there is no
+    ``t_emb_m`` + mod indices, computed from the observer's OWN token-ordered ``m`` so there is no
     packed/token layout mismatch), publishes the truthful ``σ_row`` labels for the main stream, and
     runs ONE forward in ``single`` mode.  The block patches carry ``h_m`` block-to-block and read
     one combined K/V with two queries, reproducing the two-forward ``denoised`` bit-for-bit at ~half
@@ -381,12 +381,12 @@ def _euler_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row euler step: inline comfy's deterministic euler then apply r-scale.
 
     Numerically equivalent to ``_fallback_step`` when ``base_fn`` is ``sample_euler`` with
-    default ``s_churn=0``.  Using the inlined version opens the seam for PR2 (RF-ancestral)
-    and PR3 (multistep) to extend this protocol without going through ``base_fn``.
+    default ``s_churn=0``.  Using the inlined version opens the seam for RF-ancestral and
+    multistep steps to extend this protocol without going through ``base_fn``.
 
     The denom and dt use the raw ``ctx.sigmas[i]`` / ``ctx.sigmas[i+1]`` (the unmodified
     schedule tensor, same dtype/device as the original ``base_fn`` call), exactly as
-    ``sample_euler`` would see; the per-row/audio behavior enters only through ``r``.
+    ``sample_euler`` would see; the per-row behavior enters only through ``r``.
     """
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
@@ -441,15 +441,14 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row RF-ancestral step for euler_ancestral on H3.
 
     Implements one step of ``sample_euler_ancestral_RF`` elementwise over the per-row sigma
-    tensors from the schedule-tail remap.  No r-scaling — the per-row sigma integration is
+    tensors from the schedule-tail remap.  No r-scaling; the per-row sigma integration is
     handled directly by the ancestral math.
 
-    **Audio is axis-blind here.**  ``sig_row``/``sig_g`` run on the video σ_v axis for every row
+    Audio is axis-blind here.  ``sig_row``/``sig_g`` run on the video σ_v axis for every row
     (:func:`row_sigma`), so audio rows integrate exactly as stock ancestral at σ_v (the σ_a shift
-    is applied inside the H3 forward) — no per-row σ_a compression.  Audio's fade is applied by the
+    is applied inside the H3 forward); no per-row σ_a compression.  Audio's fade is applied by the
     official ``KSamplerX0Inpaint`` composite via ``noise_mask``, which acts inside ``ctx.model``
-    here.  This retires the earlier σ_a-axis audio-ancestral path (the Bug-B static source); see
-    ``audio-native-composite.md``.
+    here.  See ``audio-native-composite.md``.
 
     One model eval per interval at the global carrier sigma.  Per-row ``x0`` is recovered as
     ``denoised_r = x_prev − σ_row·(x_prev − denoised)/σ_carrier`` (the conditioning wrapper
@@ -460,17 +459,17 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
 
     Guarantees:
 
-    - **m=1 rows reproduce stock** ``sample_euler_ancestral_RF`` **exactly**: for m=1,
+    - m=1 rows reproduce stock ``sample_euler_ancestral_RF`` exactly: for m=1,
       ``sig_row == sigmas[i]``, so ``denoised_r == denoised`` and all per-row terms match the
-      scalar stock values — given an identical noise draw the outputs are bit-for-bit equal.
-    - **Terminal step** (``sig_row_next == 0``) falls out without a branch: ``sigma_down=0``,
+      scalar stock values; given an identical noise draw the outputs are bit-for-bit equal.
+    - Terminal step (``sig_row_next == 0``) falls out without a branch: ``sigma_down=0``,
       ``ratio=0`` → ``x = denoised_r``; ``renoise_coeff=0`` → no noise added.
-    - **m=0 rows** freeze: ``sig_row=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
+    - m=0 rows freeze: ``sig_row=0`` clamped to ``eps`` → ``ratio→0``, ``coeff→0`` →
       ``x = denoised_r = x_prev``; the outer ``where(never, clean, x)`` guard restores clean.
 
     The seeded noise sampler is built once on the first call (or taken from
     ``ctx.kwargs["noise_sampler"]`` for CPU tests) and persists across steps via
-    ``ctx.state`` — the outer loop shares one ``step_state`` dict across all iterations so the
+    ``ctx.state``; the outer loop shares one ``step_state`` dict across all iterations so the
     generator advances correctly, matching stock's single pre-loop build.
     GPU-only paths (``noise_scale`` attribute, ``default_noise_sampler`` import) are
     ``# pragma: no cover``.
@@ -491,8 +490,8 @@ def _euler_ancestral_rf_step(ctx: _StepContext) -> torch.Tensor:
     carrier = ctx.sigmas[ctx.i]
     s_in = ctx.x_prev.new_ones([ctx.x_prev.shape[0]])
     # Fractional VIDEO rows must denoise through the clean-K/V observer splice, exactly like
-    # _euler_step — otherwise a fractional row's noisy K/V leak into co-located rows via joint
-    # attention and re-imprint the fade artifact (Bug F).  Audio rows carry no observer stream
+    # _euler_step; otherwise a fractional row's noisy K/V leak into co-located rows via joint
+    # attention and re-imprint the fade artifact.  Audio rows carry no observer stream
     # (audio conditioning is full-gen m=1; the fade is handled by the official composite), so this
     # forward stays axis-blind for audio.
     st = ctx.state
@@ -547,7 +546,7 @@ def _recover_at(
     """One model eval at ``carrier`` on ``x_input``; recover per-row ``x0`` at ``sig_row_target``.
 
     Generalises :func:`_recover_row_denoised` for callers that must denoise a tensor other than
-    ``ctx.x_prev`` and/or map to a per-row sigma other than ``ctx.sig_row`` — specifically the
+    ``ctx.x_prev`` and/or map to a per-row sigma other than ``ctx.sig_row``; specifically the
     second (midpoint) eval of :func:`_dpmpp_sde_step`.  The conditioning wrapper labels the model
     with ``t = 1 − w·σ`` so a single forward returns a velocity ``v = (x_input − denoised)/carrier``
     that maps back to each row's own ``x0`` at the requested level::
@@ -556,7 +555,7 @@ def _recover_at(
 
     Fractional VIDEO rows denoise through the clean-K/V observer splice
     (:func:`_single_forward_denoised`) so their noisy K/V do not leak into co-located rows via
-    joint attention (Bug F); audio rows carry no observer stream (axis-blind, fade rides the
+    joint attention; audio rows carry no observer stream (axis-blind, fade rides the
     official composite).  ``fire_callback`` gates the euler-shaped callback so a multi-eval step
     reports only its first eval.
     """
@@ -596,7 +595,7 @@ def _recover_row_denoised(ctx: _StepContext, carrier: torch.Tensor) -> torch.Ten
 
     Fractional VIDEO rows denoise through the clean-K/V observer splice
     (:func:`_single_forward_denoised`) exactly as the euler steps do, so their noisy K/V do not
-    leak into co-located rows via joint attention (Bug F).  Audio rows carry no observer stream
+    leak into co-located rows via joint attention.  Audio rows carry no observer stream
     (their fade rides the official composite), so the forward stays axis-blind for audio.  Fires
     the euler-shaped callback once.
     """
@@ -609,9 +608,8 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
     Ports comfy's ``sample_dpmpp_2m`` (k_diffusion/sampling.py:796-818) to the schedule-tail
     remap by integrating each row over its OWN sigma tail.  The ``_fallback_step`` path calls
     ``base_fn`` on a 2-σ slice per interval, which re-initializes ``old_denoised = None`` on every
-    call and silently degrades to first order everywhere (Finding 1); carrying per-row
-    ``old_denoised`` across the outer loop restores true 2nd order, including on free ``m == 1``
-    rows.
+    call and silently degrades to first order everywhere; carrying per-row ``old_denoised`` across
+    the outer loop restores true 2nd order, including on free ``m == 1`` rows.
 
     One model eval per interval at the global carrier σ; per-row ``x0`` recovered via
     :func:`_recover_row_denoised`.  All time coefficients (``t = −log σ``, ``h``, ``r``) are
@@ -619,11 +617,11 @@ def _dpmpp_2m_step(ctx: _StepContext) -> torch.Tensor:
 
     Guarantees:
 
-    - **m=1 rows reproduce stock** ``sample_dpmpp_2m`` **exactly**: ``sig_row == sigmas[i]`` and
+    - m=1 rows reproduce stock ``sample_dpmpp_2m`` exactly: ``sig_row == sigmas[i]`` and
       ``denoised_r == denoised``, so every per-row term equals the scalar stock value.
-    - **First step** (no history) and **terminal rows** (``sig_row_next == 0``) take the
-      first-order exponential branch, matching stock's ``old_denoised is None or sigmas[i+1] == 0``.
-    - **m=0 rows freeze**: ``sig_row ≤ ε`` → held at ``x_prev``; the outer
+    - First step (no history) and terminal rows (``sig_row_next == 0``) take the first-order
+      exponential branch, matching stock's ``old_denoised is None or sigmas[i+1] == 0``.
+    - m=0 rows freeze: ``sig_row ≤ ε`` → held at ``x_prev``; the outer
       ``where(never, clean, ·)`` guard then restores clean.
     """
     eps = 1e-8
@@ -662,9 +660,9 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row res_multistep step (deterministic, ``eta=0``).
 
     Ports comfy's ``res_multistep`` (k_diffusion/sampling.py:1417-1456, ``eta=0``/``cfg_pp=False``)
-    to the schedule-tail remap.  Same Finding-1 fix as :func:`_dpmpp_2m_step`: per-row
-    ``old_denoised`` and ``old_sigma_down`` history are carried across the outer loop so the RES
-    exponential integrator runs at 2nd order per row instead of degrading to first order.
+    to the schedule-tail remap.  As in :func:`_dpmpp_2m_step`, per-row ``old_denoised`` and
+    ``old_sigma_down`` history are carried across the outer loop so the RES exponential integrator
+    runs at 2nd order per row instead of degrading to first order.
 
     ``eta=0`` makes ``sigma_down == sig_row_next`` and adds no renoise (deterministic).  One model
     eval per interval; per-row ``x0`` via :func:`_recover_row_denoised`.
@@ -679,7 +677,7 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 
     si = ctx.sig_row
     sigma_down = ctx.sig_row_next  # eta=0 → sigma_down == sig_row_next, sigma_up == 0
-    # Euler (first-order) branch — used on the first step and terminal rows.
+    # Euler (first-order) branch, used on the first step and terminal rows.
     d = (ctx.x_prev - denoised_r) / si.clamp(min=eps)
     euler = ctx.x_prev + d * (sigma_down - si)
 
@@ -706,19 +704,19 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Per-row DPM++ SDE family (PR4): dpmpp_sde, dpmpp_2m_sde, dpmpp_3m_sde.
+# Per-row DPM++ SDE family: dpmpp_sde, dpmpp_2m_sde, dpmpp_3m_sde.
 #
 # Ports comfy's SDE samplers (k_diffusion/sampling.py @b78cec87: sample_dpmpp_sde 737-792,
 # sample_dpmpp_2m_sde 821-873, sample_dpmpp_3m_sde 881-941) to the schedule-tail remap.  H3 is
 # ``CONST`` (rectified flow) so ``sigma_to_half_log_snr(σ) = logit(σ).neg() = log((1−σ)/σ)`` and
-# ``alpha_t = σ·exp(λ) = 1 − σ`` — the RF ``α = 1 − σ`` identity lives INSIDE the SNR helpers.  The
+# ``alpha_t = σ·exp(λ) = 1 − σ``; the RF ``α = 1 − σ`` identity lives INSIDE the SNR helpers.  The
 # per-row steps run the logit form elementwise over ``sig_row`` clamped to ``[ε, 1−ε]`` (comfy's
 # ``offset_first_sigma_for_snr`` only fixes the global scalar σ≈1).  One model eval per interval at
 # the global carrier σ recovers per-row ``x0`` via the shared velocity spine; SDE renoise is queried
 # from a scalar-interval BrownianTree at the GLOBAL carrier interval (unit-variance output, so all
-# per-row scaling stays in the elementwise coefficients — noise correlation follows the global
+# per-row scaling stays in the elementwise coefficients; noise correlation follows the global
 # schedule, an accepted approximation).  Axis-blind: σ_v for every row, audio fade rides the
-# official composite.  See ``sampler-class-support/delivery-plan.md`` (PR4), ``native-step-design``.
+# official composite.  See ``sampler-class-support/delivery-plan.md``, ``native-step-design``.
 # ---------------------------------------------------------------------------
 
 
@@ -726,7 +724,7 @@ def _res_multistep_step(ctx: _StepContext) -> torch.Tensor:
 #: (percent offset ``1e-4`` → σ≈0.9999 for CONST/RF): σ=1 gives λ=−∞ and ``exp(−λ)`` overflow that
 #: makes ``get_ancestral_step`` (called in exp(−λ) space) lose all precision.  ``1e-4`` keeps λ
 #: finite/moderate at the first step; the exact boundary value is an accepted approximation (the
-#: task-#73 GPU spike validates the real schedule).  Lower clamp stays ``1e-8`` (terminal rows are
+#: GPU spike validates the real schedule).  Lower clamp stays ``1e-8`` (terminal rows are
 #: handled by the ``sig_row_next <= eps`` branch, so this only guards ``log(0)``).
 _SNR_SIGMA_HI = 1.0 - 1e-4
 
@@ -796,8 +794,8 @@ def _sde_s_noise(ctx: _StepContext) -> float:
 def _dpmpp_2m_sde_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row DPM-Solver++(2M) SDE step (``solver_type='midpoint'``).
 
-    Ports comfy's ``sample_dpmpp_2m_sde`` (sampling.py:821-873): PR3's 2M ``old_denoised`` history
-    carry ∩ PR2's stochastic renoise.  One model eval per interval; per-row ``x0`` via the shared
+    Ports comfy's ``sample_dpmpp_2m_sde`` (sampling.py:821-873): 2M ``old_denoised`` history
+    carry ∩ stochastic renoise.  One model eval per interval; per-row ``x0`` via the shared
     spine.  Per-row ``(denoised_r, h)`` history in ``ctx.state``.  m=1 rows reproduce stock exactly
     (``sig_row == sigmas[i]``); terminal rows (``sig_row_next == 0``) take the denoising branch;
     m=0 rows freeze under the outer ``where(never, clean, ·)`` guard.
@@ -907,7 +905,7 @@ def _dpmpp_sde_step(ctx: _StepContext) -> torch.Tensor:
     denoising branch; m=0 rows freeze under the outer guard.
 
     Fractional-row caveat: eval 2's clean-K/V side stream is primed at step ``i``'s ``sig_row`` (not
-    the midpoint) — the task-#73 GPU risk.  CPU/non-observer and audio paths publish ``w_mid``
+    the midpoint; the GPU risk).  CPU/non-observer and audio paths publish ``w_mid``
     correctly; the fractional VIDEO midpoint refinement is deferred to GPU validation.
     """
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
@@ -970,13 +968,12 @@ def _dpmpp_sde_step(ctx: _StepContext) -> torch.Tensor:
 def _dpmpp_2s_ancestral_step(ctx: _StepContext) -> torch.Tensor:
     """Native per-row DPM-Solver++(2S) ancestral step (stochastic, TWO model evals, no history).
 
-    Ports comfy's ``sample_dpmpp_2s_ancestral_RF`` (sampling.py:686-734): PR2's exact RF-ancestral
-    renoise algebra (``downstep_ratio`` → ``sigma_down``, ``alpha_ip1/alpha_down``,
-    ``renoise_coeff``, ``default_noise_sampler``) wrapped around a second-order midpoint refine
-    (the DPM++(2S) inner solve), shaped like :func:`_dpmpp_sde_step`'s 2-eval structure with a
-    :func:`publish_labels` refresh — but the midpoint is deterministic (no ancestral noise on the
-    inner ``u``) and the noise draw is comfy's plain per-interval Gaussian, not the SDE Brownian
-    tree.
+    Ports comfy's ``sample_dpmpp_2s_ancestral_RF`` (sampling.py:686-734): the RF-ancestral renoise
+    algebra (``downstep_ratio`` → ``sigma_down``, ``alpha_ip1/alpha_down``, ``renoise_coeff``,
+    ``default_noise_sampler``) wrapped around a second-order midpoint refine (the DPM++(2S) inner
+    solve), shaped like :func:`_dpmpp_sde_step`'s 2-eval structure with a :func:`publish_labels`
+    refresh; the midpoint is deterministic (no ancestral noise on the inner ``u``) and the noise
+    draw is comfy's plain per-interval Gaussian, not the SDE Brownian tree.
 
     Eval 1 recovers per-row ``x0`` at the global carrier σ (fires the callback).  The per-row
     midpoint ``σ_s = sigmoid(−(λ_i + r·(λ_down − λ_i)))`` sits in half-log-SNR space between the
@@ -988,7 +985,7 @@ def _dpmpp_2s_ancestral_step(ctx: _StepContext) -> torch.Tensor:
     m=1 rows reproduce stock (``σ_s == σ_s_g`` → ``w_mid = 1``, identical noise draw); terminal rows
     (``sig_row_next == 0``) take the denoising branch (matching stock's Euler terminal → denoised);
     m=0 rows freeze under the outer guard.  Fractional-row caveat matches :func:`_dpmpp_sde_step`:
-    eval 2's clean-K/V side stream is primed at step ``i``'s ``sig_row`` (the task-#73 GPU risk).
+    eval 2's clean-K/V side stream is primed at step ``i``'s ``sig_row`` (the GPU risk).
     """
     extra_args = {} if ctx.extra_args is None else ctx.extra_args
     eps = 1e-8
@@ -1140,10 +1137,10 @@ def build_per_row_sampler_function(
         def row_sigma(i: int) -> torch.Tensor:
             """Per-row target sigma on the video σ_v axis for ALL rows (axis-blind).
 
-            Audio no longer integrates on its own σ_a axis in our per-row engine: audio
-            conditioning is full-generation (``m == 1``) so this returns ``sig_v[i]`` for every
-            audio element, matching the official axis-blind ``sample_euler_ancestral_RF`` (the σ_a
-            shift is applied inside the H3 forward).  The audio fade is delegated to the official
+            Audio does not integrate on its own σ_a axis in the per-row engine: audio conditioning
+            is full-generation (``m == 1``) so this returns ``sig_v[i]`` for every audio element,
+            matching the official axis-blind ``sample_euler_ancestral_RF`` (the σ_a shift is
+            applied inside the H3 forward).  The audio fade is delegated to the official
             KSamplerX0Inpaint composite via ``noise_mask``; see ``audio-native-composite.md``.
             """
             return _stream_row_sigma(
@@ -1151,7 +1148,7 @@ def build_per_row_sampler_function(
             )
 
         def global_sigma(i: int) -> torch.Tensor:
-            """Per-row global sigma at step ``i`` — σ_v for all rows (audio axis-blind)."""
+            """Per-row global sigma at step ``i``; σ_v for all rows (audio axis-blind)."""
             return sig_v[i]
 
         def _cb(offset: int) -> Any:  # remap per-step callback index to the global step
@@ -1180,17 +1177,16 @@ def build_per_row_sampler_function(
         step = _NATIVE_ROW_STEPS.get(getattr(base_fn, "__name__", ""), _fallback_step)
 
         # Shared mutable state for native steps that need persistence across iterations
-        # (e.g. the seeded noise sampler in _euler_ancestral_rf_step, old_denoised for PR3).
-        # Must be created once here so each step call shares the same dict object.
+        # (e.g. the seeded noise sampler in _euler_ancestral_rf_step, old_denoised for multistep
+        # steps).  Must be created once here so each step call shares the same dict object.
         step_state: dict[str, Any] = {}
 
-        # Clean-K/V root fix (Option II, single-forward): when the observer-split patches are
-        # installed and fractional rows exist, each euler step runs ONE forward that carries an
-        # exact band-only side stream (:func:`_single_forward_denoised`), reproducing the
-        # two-forward clean-K/V denoise bit-for-bit.  The two-forward code was removed on branch
-        # single-forward-clean-kv-splice; the removed mechanism is preserved in wiki
-        # c2-rho-fix-paths/observed-level-plant/clean-kv-split.md.  observer is None (no fractional
-        # rows / install skipped) → single-forward euler, unchanged.
+        # Clean-K/V single-forward: when the observer-split patches are installed and fractional
+        # rows exist, each euler step runs ONE forward that carries an exact band-only side stream
+        # (:func:`_single_forward_denoised`), reproducing the two-forward clean-K/V denoise
+        # bit-for-bit.  The two-forward mechanism is described in wiki
+        # c2-rho-fix-paths/observed-level-plant/clean-kv-split.md.  observer is None (no
+        # fractional rows / install skipped) → single-forward euler, unchanged.
         step_state["observer"] = schedule_tail.get("observer")
         step_state["clean"] = clean
         step_state["m_dev"] = m_dev
@@ -1301,7 +1297,7 @@ def build_per_row_sampler_function(
                 model=model,
                 x_prev=x_prev,
                 i=i,
-                sigmas=sigmas,  # raw schedule arg — matches what the original passed to base_fn
+                sigmas=sigmas,  # raw schedule arg, matches what the original passed to base_fn
                 sig_row=sig_row,
                 sig_row_next=sig_row_next,
                 sig_g=sig_g,
@@ -1322,7 +1318,7 @@ def build_per_row_sampler_function(
 
 
 # ---------------------------------------------------------------------------
-# Audio sigma shift — lives here (not grid.py) because it is a scheduling
+# Audio sigma shift: lives here (not grid.py) because it is a scheduling
 # formula used at sample time, not a grid geometry helper.
 # ---------------------------------------------------------------------------
 

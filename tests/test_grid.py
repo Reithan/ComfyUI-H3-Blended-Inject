@@ -131,8 +131,7 @@ def test_total_rows_single_frame_returns_1():
     """H3 VAE single-frame path: n_frames=1 returns exactly 1 latent row.
 
     The H3 VAE special-cases a single input frame and bypasses the 17-frame chunked
-    path, producing 1 latent row instead of the formula's 5*ceil(1/17)-3=2.
-    FAIL-THEN-PASS: Before the special case, total_rows(1) returns 2; after it returns 1.
+    path, producing 1 latent row instead of the formula result 5*ceil(1/17)-3=2.
     """
     assert total_rows(1) == 1
 
@@ -376,8 +375,8 @@ class TestAudioTickRange:
 #
 # These values were verified against the real MiniMaxVAE source at
 # comfy/ldm/minimax/vae.py (clip_length=17, token_drop=3, time_down→vae_ratio_t=4).
-# The BOLD entries below are the ones the OLD uniform-4 code got wrong.
-# Every test in this class MUST FAIL on the old implementation and PASS after.
+# Inline "OLD: ... WRONG" labels mark values where the prior uniform-4 formula
+# was incorrect; those specific inputs are covered to guard against regression.
 # ---------------------------------------------------------------------------
 
 
@@ -484,7 +483,7 @@ class TestPerChunkGridRegressions:
 
 
 class TestInjectRowMap:
-    """inject_row_map: clip↔target row correspondence for hold-and-release + composite."""
+    """inject_row_map: clip↔target row correspondence for the clean-reference composite."""
 
     def test_inject_at_0_identity(self):
         """inject_at=0 → clip row j maps to target row j (frame_to_row(0)=0)."""
@@ -543,7 +542,7 @@ class TestInjectRowMap:
 
 
 class TestInjectAudioTicksForRow:
-    """inject_audio_ticks_for_row: per-row audio tick mapping for hold-and-release + composite."""
+    """inject_audio_ticks_for_row: per-row audio tick mapping for the clean-reference composite."""
 
     def test_inject_at_0_row_0_maps_to_self(self):
         """inject_at=0, row 0: inject_start_tick=0; target_tick == clip_tick for each tick."""

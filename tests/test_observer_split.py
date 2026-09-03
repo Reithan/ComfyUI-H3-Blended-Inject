@@ -21,8 +21,8 @@ from comfyui_h3_blended_inject.observer_split import (
 
 
 class TestObserverCallUpdate:
-    """The clean-K/V mechanism carries no per-call labels — the single forward publishes the
-    truthful σ_row labels through ``pooled_current`` (the one-time embed-capture publishes m) — so
+    """The clean-K/V mechanism carries no per-call labels; the single forward publishes the
+    truthful σ_row labels through ``pooled_current`` (the one-time embed-capture publishes m), so
     this helper only bumps the per-forward token that invalidates the cached splice-position plan
     between forwards.
     """
@@ -151,7 +151,7 @@ class TestFractionalRows:
 
 
 class TestObserverTimestep:
-    """``t_obs = clamp(1 − m·σ, max=pin)`` — the second (side-stream) time-embed level."""
+    """``t_obs = clamp(1 − m·σ, max=pin)``: the second (side-stream) time-embed level."""
 
     def test_basic_formula(self) -> None:
         m = torch.tensor([0.5, 0.25])
@@ -175,7 +175,7 @@ class TestObserverTimestep:
 
 
 class TestEmbedRatio:
-    """``ratio = clamp(σ_obs/σ_row, 0, 1)`` — the block-0 embed-blend weight."""
+    """``ratio = clamp(σ_obs/σ_row, 0, 1)``: the block-0 embed-blend weight."""
 
     def test_basic_quotient(self) -> None:
         sig_obs = torch.tensor([0.2, 0.5])
@@ -217,7 +217,7 @@ class TestBlendHidden:
 
 
 class TestBandModIndex:
-    """``searchsorted(levels, obs)·3 + tag`` — mirrors the model's rows_to_mod_index."""
+    """``searchsorted(levels, obs)·3 + tag``: mirrors the model's rows_to_mod_index."""
 
     def test_video_tag_indices(self) -> None:
         levels = torch.tensor([0.2, 0.5, 0.8])
